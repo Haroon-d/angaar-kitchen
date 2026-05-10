@@ -38,7 +38,7 @@ function DashboardPage() {
   if (!branch) {
     return (
       <div className="p-6 sm:p-10">
-        <Card><CardContent className="py-12 text-center text-muted-foreground">No branch selected. <Link to="/branches" className="text-primary">Create one</Link>.</CardContent></Card>
+        <Card><CardContent className="py-12 text-center text-muted-foreground">Angaar Kitchen location is being prepared. Please refresh in a moment.</CardContent></Card>
       </div>
     );
   }

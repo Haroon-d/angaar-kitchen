@@ -103,7 +103,7 @@ function TaxesTab() {
       return data ?? [];
     },
   });
-  const [f, setF] = useState({ name: "", rate: "5", is_inclusive: false, apply_by_default: true });
+  const [f, setF] = useState({ name: "", rate: "15", is_inclusive: false, apply_by_default: true });
   const [loading, setLoading] = useState(false);
 
   async function add() {
@@ -115,7 +115,7 @@ function TaxesTab() {
     });
     setLoading(false);
     if (error) toast.error(error.message);
-    else { toast.success("Tax added"); setF({ name: "", rate: "5", is_inclusive: false, apply_by_default: true }); qc.invalidateQueries({ queryKey: ["taxes"] }); }
+    else { toast.success("Tax added"); setF({ name: "", rate: "15", is_inclusive: false, apply_by_default: true }); qc.invalidateQueries({ queryKey: ["taxes"] }); }
   }
   async function del(id: string) {
     const { error } = await supabase.from("taxes").delete().eq("id", id);
