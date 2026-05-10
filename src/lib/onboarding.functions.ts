@@ -11,6 +11,7 @@ export const setupAngaarKitchen = createServerFn({ method: "POST" })
   }).parse(input))
   .handler(async ({ data, context }) => {
     const { userId, claims } = context;
+    const metadata = (claims as { user_metadata?: { full_name?: string }; email?: string } | undefined);
     const phone = data.phone?.trim() || null;
     const address = data.address?.trim() || "Pakistan";
 
@@ -57,7 +58,7 @@ export const setupAngaarKitchen = createServerFn({ method: "POST" })
 
     const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
       id: userId,
-      full_name: String(claims?.user_metadata?.full_name || claims?.email || "Angaar Kitchen user"),
+      full_name: String(metadata?.user_metadata?.full_name || metadata?.email || "Angaar Kitchen user"),
       phone,
     });
     if (profileError) throw new Error(profileError.message);
