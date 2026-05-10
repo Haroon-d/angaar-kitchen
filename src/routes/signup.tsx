@@ -52,7 +52,7 @@ function SignupPage() {
         </div>
         <div className="relative z-10 max-w-md">
           <h1 className="font-display text-5xl leading-tight">Start your<br/><span className="text-primary">restaurant journey.</span></h1>
-          <p className="mt-4 text-muted-foreground">Set up your restaurant, branches, menus, and POS in minutes.</p>
+          <p className="mt-4 text-muted-foreground">Set up Angaar Kitchen for Pakistan with menus, billing, and POS in minutes.</p>
         </div>
         <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} Angaar Kitchen</p>
       </div>
