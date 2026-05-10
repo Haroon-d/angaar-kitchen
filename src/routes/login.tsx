@@ -47,7 +47,7 @@ function LoginPage() {
         </div>
         <div className="relative z-10 max-w-md">
           <h1 className="font-display text-5xl leading-tight">Run the kitchen.<br/><span className="text-primary">Own the fire.</span></h1>
-          <p className="mt-4 text-muted-foreground">A complete restaurant operating system — menus, billing, branches, and reporting in one premium dashboard.</p>
+          <p className="mt-4 text-muted-foreground">A complete Angaar Kitchen operating system for Pakistan — menus, billing, POS, and reporting in one premium dashboard.</p>
         </div>
         <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} Angaar Kitchen</p>
       </div>
