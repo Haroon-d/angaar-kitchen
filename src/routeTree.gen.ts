@@ -15,9 +15,12 @@ import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedStaffRouteImport } from './routes/_authenticated/staff'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
+import { Route as AuthenticatedPosRouteImport } from './routes/_authenticated/pos'
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
+import { Route as AuthenticatedMenuRouteImport } from './routes/_authenticated/menu'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedBranchesRouteImport } from './routes/_authenticated/branches'
+import { Route as AuthenticatedPosReceiptOrderIdRouteImport } from './routes/_authenticated/pos.receipt.$orderId'
 
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
@@ -48,9 +51,19 @@ const AuthenticatedSettingsRoute = AuthenticatedSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedPosRoute = AuthenticatedPosRouteImport.update({
+  id: '/pos',
+  path: '/pos',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 const AuthenticatedOnboardingRoute = AuthenticatedOnboardingRouteImport.update({
   id: '/onboarding',
   path: '/onboarding',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedMenuRoute = AuthenticatedMenuRouteImport.update({
+  id: '/menu',
+  path: '/menu',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
@@ -63,6 +76,12 @@ const AuthenticatedBranchesRoute = AuthenticatedBranchesRouteImport.update({
   path: '/branches',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedPosReceiptOrderIdRoute =
+  AuthenticatedPosReceiptOrderIdRouteImport.update({
+    id: '/receipt/$orderId',
+    path: '/receipt/$orderId',
+    getParentRoute: () => AuthenticatedPosRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -70,9 +89,12 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
+  '/pos': typeof AuthenticatedPosRouteWithChildren
   '/settings': typeof AuthenticatedSettingsRoute
   '/staff': typeof AuthenticatedStaffRoute
+  '/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -80,9 +102,12 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
+  '/pos': typeof AuthenticatedPosRouteWithChildren
   '/settings': typeof AuthenticatedSettingsRoute
   '/staff': typeof AuthenticatedStaffRoute
+  '/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -92,9 +117,12 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/_authenticated/branches': typeof AuthenticatedBranchesRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/menu': typeof AuthenticatedMenuRoute
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
+  '/_authenticated/pos': typeof AuthenticatedPosRouteWithChildren
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/staff': typeof AuthenticatedStaffRoute
+  '/_authenticated/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -104,9 +132,12 @@ export interface FileRouteTypes {
     | '/signup'
     | '/branches'
     | '/dashboard'
+    | '/menu'
     | '/onboarding'
+    | '/pos'
     | '/settings'
     | '/staff'
+    | '/pos/receipt/$orderId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -114,9 +145,12 @@ export interface FileRouteTypes {
     | '/signup'
     | '/branches'
     | '/dashboard'
+    | '/menu'
     | '/onboarding'
+    | '/pos'
     | '/settings'
     | '/staff'
+    | '/pos/receipt/$orderId'
   id:
     | '__root__'
     | '/'
@@ -125,9 +159,12 @@ export interface FileRouteTypes {
     | '/signup'
     | '/_authenticated/branches'
     | '/_authenticated/dashboard'
+    | '/_authenticated/menu'
     | '/_authenticated/onboarding'
+    | '/_authenticated/pos'
     | '/_authenticated/settings'
     | '/_authenticated/staff'
+    | '/_authenticated/pos/receipt/$orderId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -181,11 +218,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/pos': {
+      id: '/_authenticated/pos'
+      path: '/pos'
+      fullPath: '/pos'
+      preLoaderRoute: typeof AuthenticatedPosRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/onboarding': {
       id: '/_authenticated/onboarding'
       path: '/onboarding'
       fullPath: '/onboarding'
       preLoaderRoute: typeof AuthenticatedOnboardingRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/menu': {
+      id: '/_authenticated/menu'
+      path: '/menu'
+      fullPath: '/menu'
+      preLoaderRoute: typeof AuthenticatedMenuRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/dashboard': {
@@ -202,13 +253,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedBranchesRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/pos/receipt/$orderId': {
+      id: '/_authenticated/pos/receipt/$orderId'
+      path: '/receipt/$orderId'
+      fullPath: '/pos/receipt/$orderId'
+      preLoaderRoute: typeof AuthenticatedPosReceiptOrderIdRouteImport
+      parentRoute: typeof AuthenticatedPosRoute
+    }
   }
 }
+
+interface AuthenticatedPosRouteChildren {
+  AuthenticatedPosReceiptOrderIdRoute: typeof AuthenticatedPosReceiptOrderIdRoute
+}
+
+const AuthenticatedPosRouteChildren: AuthenticatedPosRouteChildren = {
+  AuthenticatedPosReceiptOrderIdRoute: AuthenticatedPosReceiptOrderIdRoute,
+}
+
+const AuthenticatedPosRouteWithChildren =
+  AuthenticatedPosRoute._addFileChildren(AuthenticatedPosRouteChildren)
 
 interface AuthenticatedRouteChildren {
   AuthenticatedBranchesRoute: typeof AuthenticatedBranchesRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedMenuRoute: typeof AuthenticatedMenuRoute
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
+  AuthenticatedPosRoute: typeof AuthenticatedPosRouteWithChildren
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedStaffRoute: typeof AuthenticatedStaffRoute
 }
@@ -216,7 +287,9 @@ interface AuthenticatedRouteChildren {
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedBranchesRoute: AuthenticatedBranchesRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedMenuRoute: AuthenticatedMenuRoute,
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
+  AuthenticatedPosRoute: AuthenticatedPosRouteWithChildren,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedStaffRoute: AuthenticatedStaffRoute,
 }
