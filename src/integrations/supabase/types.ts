@@ -14,16 +14,809 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      addon_groups: {
+        Row: {
+          branch_id: string
+          created_at: string
+          id: string
+          is_required: boolean
+          max_select: number
+          min_select: number
+          name: string
+        }
+        Insert: {
+          branch_id: string
+          created_at?: string
+          id?: string
+          is_required?: boolean
+          max_select?: number
+          min_select?: number
+          name: string
+        }
+        Update: {
+          branch_id?: string
+          created_at?: string
+          id?: string
+          is_required?: boolean
+          max_select?: number
+          min_select?: number
+          name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "addon_groups_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      addons: {
+        Row: {
+          group_id: string
+          id: string
+          is_active: boolean
+          name: string
+          price: number
+        }
+        Insert: {
+          group_id: string
+          id?: string
+          is_active?: boolean
+          name: string
+          price?: number
+        }
+        Update: {
+          group_id?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "addons_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "addon_groups"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      branches: {
+        Row: {
+          address: string | null
+          code: string
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          phone: string | null
+          restaurant_id: string
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          code: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          phone?: string | null
+          restaurant_id: string
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          code?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          phone?: string | null
+          restaurant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "branches_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      item_addon_groups: {
+        Row: {
+          group_id: string
+          item_id: string
+        }
+        Insert: {
+          group_id: string
+          item_id: string
+        }
+        Update: {
+          group_id?: string
+          item_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "item_addon_groups_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "addon_groups"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "item_addon_groups_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "menu_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      item_variants: {
+        Row: {
+          id: string
+          is_default: boolean
+          item_id: string
+          name: string
+          price_delta: number
+          sort_order: number
+        }
+        Insert: {
+          id?: string
+          is_default?: boolean
+          item_id: string
+          name: string
+          price_delta?: number
+          sort_order?: number
+        }
+        Update: {
+          id?: string
+          is_default?: boolean
+          item_id?: string
+          name?: string
+          price_delta?: number
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "item_variants_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "menu_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      menu_categories: {
+        Row: {
+          branch_id: string
+          created_at: string
+          description: string | null
+          id: string
+          image_url: string | null
+          is_active: boolean
+          name: string
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          branch_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean
+          name: string
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          branch_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean
+          name?: string
+          sort_order?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "menu_categories_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      menu_items: {
+        Row: {
+          base_price: number
+          branch_id: string
+          category_id: string
+          created_at: string
+          description: string | null
+          id: string
+          image_url: string | null
+          is_available: boolean
+          is_veg: boolean | null
+          name: string
+          prep_time_min: number | null
+          sort_order: number
+          updated_at: string
+        }
+        Insert: {
+          base_price: number
+          branch_id: string
+          category_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_available?: boolean
+          is_veg?: boolean | null
+          name: string
+          prep_time_min?: number | null
+          sort_order?: number
+          updated_at?: string
+        }
+        Update: {
+          base_price?: number
+          branch_id?: string
+          category_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          image_url?: string | null
+          is_available?: boolean
+          is_veg?: boolean | null
+          name?: string
+          prep_time_min?: number | null
+          sort_order?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "menu_items_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "menu_items_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "menu_categories"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      operating_hours: {
+        Row: {
+          branch_id: string
+          close_time: string | null
+          id: string
+          is_closed: boolean
+          open_time: string | null
+          weekday: number
+        }
+        Insert: {
+          branch_id: string
+          close_time?: string | null
+          id?: string
+          is_closed?: boolean
+          open_time?: string | null
+          weekday: number
+        }
+        Update: {
+          branch_id?: string
+          close_time?: string | null
+          id?: string
+          is_closed?: boolean
+          open_time?: string | null
+          weekday?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "operating_hours_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_counters: {
+        Row: {
+          branch_id: string
+          counter_date: string
+          last_seq: number
+        }
+        Insert: {
+          branch_id: string
+          counter_date: string
+          last_seq?: number
+        }
+        Update: {
+          branch_id?: string
+          counter_date?: string
+          last_seq?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_counters_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_item_addons: {
+        Row: {
+          addon_id: string | null
+          id: string
+          name_snapshot: string
+          order_item_id: string
+          price_snapshot: number
+        }
+        Insert: {
+          addon_id?: string | null
+          id?: string
+          name_snapshot: string
+          order_item_id: string
+          price_snapshot: number
+        }
+        Update: {
+          addon_id?: string | null
+          id?: string
+          name_snapshot?: string
+          order_item_id?: string
+          price_snapshot?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_item_addons_addon_id_fkey"
+            columns: ["addon_id"]
+            isOneToOne: false
+            referencedRelation: "addons"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_item_addons_order_item_id_fkey"
+            columns: ["order_item_id"]
+            isOneToOne: false
+            referencedRelation: "order_items"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_items: {
+        Row: {
+          addons_total: number
+          id: string
+          item_id: string | null
+          line_subtotal: number
+          name_snapshot: string
+          notes: string | null
+          order_id: string
+          qty: number
+          unit_price: number
+          variant_id: string | null
+          variant_snapshot: string | null
+        }
+        Insert: {
+          addons_total?: number
+          id?: string
+          item_id?: string | null
+          line_subtotal: number
+          name_snapshot: string
+          notes?: string | null
+          order_id: string
+          qty: number
+          unit_price: number
+          variant_id?: string | null
+          variant_snapshot?: string | null
+        }
+        Update: {
+          addons_total?: number
+          id?: string
+          item_id?: string | null
+          line_subtotal?: number
+          name_snapshot?: string
+          notes?: string | null
+          order_id?: string
+          qty?: number
+          unit_price?: number
+          variant_id?: string | null
+          variant_snapshot?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_items_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "menu_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_variant_id_fkey"
+            columns: ["variant_id"]
+            isOneToOne: false
+            referencedRelation: "item_variants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      order_taxes: {
+        Row: {
+          amount: number
+          id: string
+          name_snapshot: string
+          order_id: string
+          rate_snapshot: number
+          tax_id: string | null
+        }
+        Insert: {
+          amount: number
+          id?: string
+          name_snapshot: string
+          order_id: string
+          rate_snapshot: number
+          tax_id?: string | null
+        }
+        Update: {
+          amount?: number
+          id?: string
+          name_snapshot?: string
+          order_id?: string
+          rate_snapshot?: number
+          tax_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_taxes_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_taxes_tax_id_fkey"
+            columns: ["tax_id"]
+            isOneToOne: false
+            referencedRelation: "taxes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      orders: {
+        Row: {
+          amount_paid: number
+          branch_id: string
+          completed_at: string | null
+          created_at: string
+          created_by: string | null
+          customer_name: string | null
+          customer_phone: string | null
+          dining_type: Database["public"]["Enums"]["dining_type"]
+          discount_total: number
+          grand_total: number
+          id: string
+          notes: string | null
+          order_no: string
+          status: Database["public"]["Enums"]["order_status"]
+          subtotal: number
+          table_label: string | null
+          tax_total: number
+          updated_at: string
+        }
+        Insert: {
+          amount_paid?: number
+          branch_id: string
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          dining_type?: Database["public"]["Enums"]["dining_type"]
+          discount_total?: number
+          grand_total?: number
+          id?: string
+          notes?: string | null
+          order_no: string
+          status?: Database["public"]["Enums"]["order_status"]
+          subtotal?: number
+          table_label?: string | null
+          tax_total?: number
+          updated_at?: string
+        }
+        Update: {
+          amount_paid?: number
+          branch_id?: string
+          completed_at?: string | null
+          created_at?: string
+          created_by?: string | null
+          customer_name?: string | null
+          customer_phone?: string | null
+          dining_type?: Database["public"]["Enums"]["dining_type"]
+          discount_total?: number
+          grand_total?: number
+          id?: string
+          notes?: string | null
+          order_no?: string
+          status?: Database["public"]["Enums"]["order_status"]
+          subtotal?: number
+          table_label?: string | null
+          tax_total?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orders_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      payments: {
+        Row: {
+          amount: number
+          id: string
+          method: Database["public"]["Enums"]["payment_method"]
+          order_id: string
+          paid_at: string
+          received_by: string | null
+          reference: string | null
+        }
+        Insert: {
+          amount: number
+          id?: string
+          method: Database["public"]["Enums"]["payment_method"]
+          order_id: string
+          paid_at?: string
+          received_by?: string | null
+          reference?: string | null
+        }
+        Update: {
+          amount?: number
+          id?: string
+          method?: Database["public"]["Enums"]["payment_method"]
+          order_id?: string
+          paid_at?: string
+          received_by?: string | null
+          reference?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payments_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+          phone: string | null
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          full_name?: string | null
+          id: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      restaurants: {
+        Row: {
+          address: string | null
+          created_at: string
+          currency: string
+          currency_symbol: string
+          email: string | null
+          id: string
+          legal_name: string | null
+          logo_url: string | null
+          name: string
+          owner_id: string
+          phone: string | null
+          timezone: string
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          created_at?: string
+          currency?: string
+          currency_symbol?: string
+          email?: string | null
+          id?: string
+          legal_name?: string | null
+          logo_url?: string | null
+          name: string
+          owner_id: string
+          phone?: string | null
+          timezone?: string
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          created_at?: string
+          currency?: string
+          currency_symbol?: string
+          email?: string | null
+          id?: string
+          legal_name?: string | null
+          logo_url?: string | null
+          name?: string
+          owner_id?: string
+          phone?: string | null
+          timezone?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      taxes: {
+        Row: {
+          apply_by_default: boolean
+          created_at: string
+          id: string
+          is_active: boolean
+          is_inclusive: boolean
+          name: string
+          rate: number
+          restaurant_id: string
+        }
+        Insert: {
+          apply_by_default?: boolean
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          is_inclusive?: boolean
+          name: string
+          rate: number
+          restaurant_id: string
+        }
+        Update: {
+          apply_by_default?: boolean
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          is_inclusive?: boolean
+          name?: string
+          rate?: number
+          restaurant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "taxes_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      user_roles: {
+        Row: {
+          branch_id: string | null
+          created_at: string
+          id: string
+          restaurant_id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          branch_id?: string | null
+          created_at?: string
+          id?: string
+          restaurant_id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          branch_id?: string | null
+          created_at?: string
+          id?: string
+          restaurant_id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_roles_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "user_roles_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      can_access_branch: {
+        Args: { _branch: string; _user: string }
+        Returns: boolean
+      }
+      can_manage_branch: {
+        Args: { _branch: string; _user: string }
+        Returns: boolean
+      }
+      current_user_restaurant: { Args: never; Returns: string }
+      has_role_in_restaurant: {
+        Args: {
+          _restaurant: string
+          _role: Database["public"]["Enums"]["app_role"]
+          _user: string
+        }
+        Returns: boolean
+      }
+      is_restaurant_admin: {
+        Args: { _restaurant: string; _user: string }
+        Returns: boolean
+      }
+      is_restaurant_member: {
+        Args: { _restaurant: string; _user: string }
+        Returns: boolean
+      }
+      next_order_number: { Args: { _branch: string }; Returns: string }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "owner" | "admin" | "manager" | "cashier" | "kitchen" | "waiter"
+      dining_type: "dine_in" | "takeaway" | "delivery"
+      order_status:
+        | "open"
+        | "placed"
+        | "preparing"
+        | "ready"
+        | "served"
+        | "completed"
+        | "cancelled"
+      payment_method: "cash" | "card" | "upi" | "wallet" | "other"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +943,19 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["owner", "admin", "manager", "cashier", "kitchen", "waiter"],
+      dining_type: ["dine_in", "takeaway", "delivery"],
+      order_status: [
+        "open",
+        "placed",
+        "preparing",
+        "ready",
+        "served",
+        "completed",
+        "cancelled",
+      ],
+      payment_method: ["cash", "card", "upi", "wallet", "other"],
+    },
   },
 } as const
