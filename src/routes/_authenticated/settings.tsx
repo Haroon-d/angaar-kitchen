@@ -121,8 +121,10 @@ function TaxesTab() {
     const { error } = await supabase.from("taxes").delete().eq("id", id);
     if (error) toast.error(error.message); else { qc.invalidateQueries({ queryKey: ["taxes"] }); toast.success("Removed"); }
   }
-  async function toggle(id: string, field: string, val: boolean) {
-    await supabase.from("taxes").update({ [field]: val }).eq("id", id);
+  async function toggle(id: string, field: "is_active" | "apply_by_default", val: boolean) {
+    const patch: { is_active?: boolean; apply_by_default?: boolean } = {};
+    patch[field] = val;
+    await supabase.from("taxes").update(patch).eq("id", id);
     qc.invalidateQueries({ queryKey: ["taxes"] });
   }
 
