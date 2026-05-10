@@ -3,14 +3,12 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
-const SetupSchema = z.object({
-  phone: z.string().max(40).optional(),
-  address: z.string().max(240).optional(),
-});
-
 export const setupAngaarKitchen = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input) => SetupSchema.parse(input))
+  .inputValidator((input) => z.object({
+    phone: z.string().max(40).optional(),
+    address: z.string().max(240).optional(),
+  }).parse(input))
   .handler(async ({ data, context }) => {
     const { userId, claims } = context;
     const phone = data.phone?.trim() || null;
