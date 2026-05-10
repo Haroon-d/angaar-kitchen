@@ -55,7 +55,7 @@ export function ActiveBranchProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   useEffect(() => {
-    if (!branchId && branchesQ.data && branchesQ.data.length) {
+    if (branchesQ.data?.length && (!branchId || !branchesQ.data.some((b) => b.id === branchId))) {
       setBranchId(branchesQ.data[0].id);
     }
   }, [branchesQ.data, branchId]);

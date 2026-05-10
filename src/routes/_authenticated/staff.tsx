@@ -51,7 +51,7 @@ function StaffPage() {
                   <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">{r.role.slice(0,2).toUpperCase()}</div>
                   <div className="flex-1">
                     <div className="font-mono text-xs text-muted-foreground">{r.user_id.slice(0,8)}…</div>
-                    <div className="text-sm capitalize">{r.role}{r.branch_id ? "" : " · all branches"}</div>
+                    <div className="text-sm capitalize">{r.role}{r.branch_id ? "" : " · restaurant access"}</div>
                   </div>
                 </div>
               ))}

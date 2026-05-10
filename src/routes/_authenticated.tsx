@@ -1,6 +1,6 @@
 import { createFileRoute, Outlet, redirect, Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { Flame, LayoutDashboard, ChefHat, ScrollText, Building2, Users, Settings, LogOut, Loader2, ChevronDown, Store } from "lucide-react";
+import { Flame, LayoutDashboard, ChefHat, ScrollText, Users, Settings, LogOut, Loader2, Store } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, useMyRoles, isAdmin } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
@@ -64,7 +64,6 @@ const NAV = [
   { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
   { label: "POS", to: "/pos", icon: ScrollText },
   { label: "Menu", to: "/menu", icon: ChefHat },
-  { label: "Branches", to: "/branches", icon: Building2, adminOnly: true },
   { label: "Staff", to: "/staff", icon: Users, adminOnly: true },
   { label: "Settings", to: "/settings", icon: Settings, adminOnly: true },
 ];
@@ -145,31 +144,16 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
 }
 
 function Topbar() {
-  const { branches, branch, setBranchId, restaurant } = useActiveBranch();
+  const { branch, restaurant } = useActiveBranch();
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-3 backdrop-blur sm:px-6">
       <SidebarTrigger />
       <div className="hidden text-sm text-muted-foreground sm:block">{restaurant?.name}</div>
       <div className="ml-auto flex items-center gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-2">
-              <Store className="h-4 w-4" />
-              <span className="max-w-[160px] truncate">{branch?.name ?? "Select branch"}</span>
-              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuLabel>Switch branch</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {branches.length === 0 && <DropdownMenuItem disabled>No branches yet</DropdownMenuItem>}
-            {branches.map((b) => (
-              <DropdownMenuItem key={b.id} onClick={() => setBranchId(b.id)}>
-                <Store className="mr-2 h-4 w-4" />{b.name} <span className="ml-auto text-xs text-muted-foreground">{b.code}</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button variant="outline" size="sm" className="gap-2" disabled>
+          <Store className="h-4 w-4" />
+          <span className="max-w-[180px] truncate">{branch?.name ?? "Angaar Kitchen"}</span>
+        </Button>
       </div>
     </header>
   );
