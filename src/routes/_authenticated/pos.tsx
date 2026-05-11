@@ -23,7 +23,7 @@ type CartItem = {
 function POSPage() {
   const { user } = useAuth();
   const { branch, restaurant } = useActiveBranch();
-  const symbol = restaurant?.currency_symbol ?? "₹";
+  const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
 
   const [search, setSearch] = useState("");
