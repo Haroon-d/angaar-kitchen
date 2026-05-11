@@ -21,7 +21,7 @@ export const Route = createFileRoute("/_authenticated/menu")({ component: MenuPa
 function MenuPage() {
   const { branch, restaurant } = useActiveBranch();
   const qc = useQueryClient();
-  const symbol = restaurant?.currency_symbol ?? "₹";
+  const symbol = restaurant?.currency_symbol ?? "₨";
   const [activeCat, setActiveCat] = useState<string | null>(null);
 
   const catsQ = useQuery({

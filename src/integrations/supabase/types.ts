@@ -84,6 +84,57 @@ export type Database = {
           },
         ]
       }
+      audit_log: {
+        Row: {
+          action: string
+          actor_id: string | null
+          branch_id: string | null
+          created_at: string
+          entity: string
+          entity_id: string | null
+          id: string
+          meta: Json | null
+          restaurant_id: string
+        }
+        Insert: {
+          action: string
+          actor_id?: string | null
+          branch_id?: string | null
+          created_at?: string
+          entity: string
+          entity_id?: string | null
+          id?: string
+          meta?: Json | null
+          restaurant_id: string
+        }
+        Update: {
+          action?: string
+          actor_id?: string | null
+          branch_id?: string | null
+          created_at?: string
+          entity?: string
+          entity_id?: string | null
+          id?: string
+          meta?: Json | null
+          restaurant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_log_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "audit_log_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       branches: {
         Row: {
           address: string | null
@@ -519,6 +570,7 @@ export type Database = {
           discount_total: number
           grand_total: number
           id: string
+          idempotency_key: string | null
           notes: string | null
           order_no: string
           status: Database["public"]["Enums"]["order_status"]
@@ -539,6 +591,7 @@ export type Database = {
           discount_total?: number
           grand_total?: number
           id?: string
+          idempotency_key?: string | null
           notes?: string | null
           order_no: string
           status?: Database["public"]["Enums"]["order_status"]
@@ -559,6 +612,7 @@ export type Database = {
           discount_total?: number
           grand_total?: number
           id?: string
+          idempotency_key?: string | null
           notes?: string | null
           order_no?: string
           status?: Database["public"]["Enums"]["order_status"]
@@ -786,6 +840,23 @@ export type Database = {
         Args: { _branch: string; _user: string }
         Returns: boolean
       }
+      create_pos_order: {
+        Args: {
+          _branch: string
+          _customer_name: string
+          _customer_phone: string
+          _dining_type: Database["public"]["Enums"]["dining_type"]
+          _discount: number
+          _idempotency_key: string
+          _items: Json
+          _payment_method: Database["public"]["Enums"]["payment_method"]
+          _table_label: string
+        }
+        Returns: {
+          order_id: string
+          order_no: string
+        }[]
+      }
       current_user_restaurant: { Args: never; Returns: string }
       has_role_in_restaurant: {
         Args: {
@@ -816,6 +887,8 @@ export type Database = {
         | "served"
         | "completed"
         | "cancelled"
+        | "voided"
+        | "refunded"
       payment_method: "cash" | "card" | "upi" | "wallet" | "other"
     }
     CompositeTypes: {
@@ -954,6 +1027,8 @@ export const Constants = {
         "served",
         "completed",
         "cancelled",
+        "voided",
+        "refunded",
       ],
       payment_method: ["cash", "card", "upi", "wallet", "other"],
     },

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, Minus, Trash2, Loader2, Receipt, Search, X } from "lucide-react";
@@ -23,7 +23,7 @@ type CartItem = {
 function POSPage() {
   const { user } = useAuth();
   const { branch, restaurant } = useActiveBranch();
-  const symbol = restaurant?.currency_symbol ?? "₹";
+  const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
 
   const [search, setSearch] = useState("");
@@ -35,6 +35,7 @@ function POSPage() {
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "upi" | "wallet" | "other">("cash");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
 
   const itemsQ = useQuery({
     queryKey: ["pos-items", branch?.id],
@@ -105,47 +106,27 @@ function POSPage() {
     if (!branch || !user) return;
     if (cart.length === 0) { toast.error("Cart is empty"); return; }
     if (diningType === "dine_in" && !tableLabel.trim()) { toast.error("Enter a table label"); return; }
+    if (submitting) return;
     setSubmitting(true);
     try {
-      const { data: orderNo, error: numErr } = await supabase.rpc("next_order_number", { _branch: branch.id });
-      if (numErr) throw numErr;
-
-      const { data: order, error: oErr } = await supabase.from("orders").insert({
-        branch_id: branch.id,
-        order_no: orderNo as unknown as string,
-        dining_type: diningType,
-        status: "completed",
-        customer_name: customerName || null,
-        customer_phone: customerPhone || null,
-        table_label: diningType === "dine_in" ? tableLabel : null,
-        subtotal, discount_total: discountNum, tax_total: taxTotal, grand_total: grandTotal,
-        amount_paid: grandTotal,
-        created_by: user.id,
-        completed_at: new Date().toISOString(),
-      }).select().single();
-      if (oErr) throw oErr;
-
-      const { error: oiErr } = await supabase.from("order_items").insert(
-        cart.map((x) => ({
-          order_id: order.id, item_id: x.item_id, name_snapshot: x.name,
-          unit_price: x.unit_price, qty: x.qty, line_subtotal: x.unit_price * x.qty,
-        }))
-      );
-      if (oiErr) throw oiErr;
-
-      if (taxBreakdown.length) {
-        await supabase.from("order_taxes").insert(taxBreakdown.map((t) => ({
-          order_id: order.id, tax_id: t.tax_id, name_snapshot: t.name, rate_snapshot: t.rate, amount: t.amount,
-        })));
-      }
-
-      await supabase.from("payments").insert({
-        order_id: order.id, method: paymentMethod, amount: grandTotal, received_by: user.id,
+      const { data, error } = await supabase.rpc("create_pos_order", {
+        _branch: branch.id,
+        _dining_type: diningType,
+        _customer_name: customerName,
+        _customer_phone: customerPhone,
+        _table_label: tableLabel,
+        _discount: discountNum,
+        _payment_method: paymentMethod,
+        _items: cart.map((x) => ({ item_id: x.item_id, qty: x.qty, notes: x.notes ?? null })),
+        _idempotency_key: idempotencyKeyRef.current,
       });
-
-      toast.success(`Order ${order.order_no} placed`);
+      if (error) throw error;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row?.order_id) throw new Error("No order returned");
+      toast.success(`Order ${row.order_no} placed`);
+      idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
-      nav({ to: "/pos/receipt/$orderId", params: { orderId: order.id } });
+      nav({ to: "/pos/receipt/$orderId", params: { orderId: row.order_id } });
     } catch (err: any) {
       toast.error(err.message ?? "Failed to place order");
     } finally {

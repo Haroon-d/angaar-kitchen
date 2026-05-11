@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated/pos/receipt/$orderId")({ c
 function ReceiptPage() {
   const { orderId } = Route.useParams();
   const { restaurant, branch } = useActiveBranch();
-  const symbol = restaurant?.currency_symbol ?? "₹";
+  const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
 
   const q = useQuery({

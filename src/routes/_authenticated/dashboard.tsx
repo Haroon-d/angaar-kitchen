@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({ component: D
 
 function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
-  const symbol = restaurant?.currency_symbol ?? "₹";
+  const symbol = restaurant?.currency_symbol ?? "₨";
 
   const todayQ = useQuery({
     queryKey: ["dashboard-today", branch?.id],
