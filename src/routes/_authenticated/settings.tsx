@@ -44,10 +44,12 @@ function SettingsPage() {
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="taxes">Taxes</TabsTrigger>
           <TabsTrigger value="hours">Hours</TabsTrigger>
+          <TabsTrigger value="printer">Printer</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-6"><ProfileTab /></TabsContent>
         <TabsContent value="taxes" className="mt-6"><TaxesTab /></TabsContent>
         <TabsContent value="hours" className="mt-6">{branch ? <HoursTab branchId={branch.id} /> : <p className="text-muted-foreground">Select a branch.</p>}</TabsContent>
+        <TabsContent value="printer" className="mt-6"><PrinterTab /></TabsContent>
       </Tabs>
     </div>
   );
