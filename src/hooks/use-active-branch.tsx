@@ -6,6 +6,7 @@ import { useAuth, useMyRoles } from "./use-auth";
 type Restaurant = {
   id: string; name: string; currency: string; currency_symbol: string;
   logo_url: string | null; legal_name: string | null;
+  address: string | null; phone: string | null; email: string | null;
 };
 type Branch = { id: string; restaurant_id: string; name: string; code: string; address: string | null; phone: string | null; is_active: boolean; };
 

@@ -13,7 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { WEEKDAYS } from "@/lib/format";
+import { usePrinterSettings } from "@/lib/print/settings";
+import { PrintService } from "@/lib/print/print-service";
+import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
+import type { PaperSize, ReceiptData } from "@/lib/print/types";
+import { Printer } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/settings")({ component: SettingsPage });
 
@@ -37,10 +44,12 @@ function SettingsPage() {
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="taxes">Taxes</TabsTrigger>
           <TabsTrigger value="hours">Hours</TabsTrigger>
+          <TabsTrigger value="printer">Printer</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-6"><ProfileTab /></TabsContent>
         <TabsContent value="taxes" className="mt-6"><TaxesTab /></TabsContent>
         <TabsContent value="hours" className="mt-6">{branch ? <HoursTab branchId={branch.id} /> : <p className="text-muted-foreground">Select a branch.</p>}</TabsContent>
+        <TabsContent value="printer" className="mt-6"><PrinterTab /></TabsContent>
       </Tabs>
     </div>
   );
@@ -195,5 +204,121 @@ function HoursTab({ branchId }: { branchId: string }) {
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+function PrinterTab() {
+  const { restaurant, branch } = useActiveBranch();
+  const { settings, update } = usePrinterSettings();
+  const symbol = restaurant?.currency_symbol ?? "₨";
+
+  const sample: ReceiptData = {
+    brandName: restaurant?.name ?? "Angaar Kitchen",
+    legalName: restaurant?.legal_name ?? null,
+    address: branch?.address ?? restaurant?.address ?? null,
+    phone: branch?.phone ?? restaurant?.phone ?? null,
+    taxId: settings.taxId || null,
+    logoUrl: restaurant?.logo_url ?? null,
+    orderNo: "AK-PREVIEW-0001",
+    orderId: "preview",
+    diningType: "dine_in",
+    tableLabel: "T-04",
+    customerName: "Test Customer",
+    customerPhone: null,
+    customerAddress: null,
+    cashierName: "Cashier",
+    createdAt: new Date().toISOString(),
+    currencySymbol: symbol,
+    items: [
+      { name: "Angaar Signature Beef Tikka", qty: 2, unit_price: 1200, line_total: 2400 },
+      { name: "Smoked Chicken Burger", qty: 1, unit_price: 950, line_total: 950, notes: "No mayo" },
+      { name: "Mint Margarita", qty: 2, unit_price: 350, line_total: 700 },
+    ],
+    subtotal: 4050,
+    discount: 0,
+    taxes: [{ name: "GST", rate: 15, amount: 607.5 }],
+    grandTotal: 4657.5,
+    payments: [{ method: "cash", amount: 4657.5 }],
+    amountReceived: 5000,
+    changeReturned: 342.5,
+    footerNote: settings.footerNote,
+  };
+
+  async function testPrint() {
+    const html = PrintService.renderHtml(<ReceiptTemplate data={sample} paperSize={settings.paperSize} />);
+    await PrintService.print({ html, kind: "receipt", paperSize: settings.paperSize });
+    toast.success("Print job sent");
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+      <Card>
+        <CardHeader>
+          <CardTitle>Printer & Receipt</CardTitle>
+          <CardDescription>Configure how receipts and KOTs are printed.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Paper size</Label>
+              <Select value={settings.paperSize} onValueChange={(v: PaperSize) => update({ paperSize: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="80mm">80 mm thermal</SelectItem>
+                  <SelectItem value="58mm">58 mm thermal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Driver</Label>
+              <Select value={settings.driver} onValueChange={(v: "browser" | "qz") => update({ driver: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="browser">Browser / OS Printer</SelectItem>
+                  <SelectItem value="qz">QZ Tray (advanced)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Browser mode works with any installed printer. QZ Tray enables direct ESC/POS thermal printing (requires QZ Tray app).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-border p-3">
+            <div>
+              <Label className="text-sm">Auto-print on payment</Label>
+              <p className="text-xs text-muted-foreground">Automatically open the print dialog after charging an order.</p>
+            </div>
+            <Switch checked={settings.autoPrint} onCheckedChange={(v) => update({ autoPrint: v })} />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Tax / GST registration ID (optional)</Label>
+            <Input value={settings.taxId} onChange={(e) => update({ taxId: e.target.value })} placeholder="e.g. NTN 1234567-8" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Receipt footer message</Label>
+            <Textarea
+              rows={2}
+              value={settings.footerNote}
+              onChange={(e) => update({ footerNote: e.target.value })}
+              placeholder="Thank you for dining with us!"
+            />
+          </div>
+
+          <Button onClick={testPrint}><Printer className="mr-2 h-4 w-4" /> Test print</Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Live preview</CardTitle><CardDescription>Mock receipt at {settings.paperSize}.</CardDescription></CardHeader>
+        <CardContent className="flex justify-center bg-coal-gradient rounded-b-xl py-6">
+          <div className="w-full max-w-[340px]">
+            <ReceiptTemplate data={sample} paperSize={settings.paperSize} preview />
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
