@@ -1,102 +1,191 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Printer, ArrowLeft, Flame, Loader2 } from "lucide-react";
+import { z } from "zod";
+import { Printer, ArrowLeft, Download, Loader2, CheckCircle2, RotateCcw, Flame } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Button } from "@/components/ui/button";
-import { formatMoney, formatDate } from "@/lib/format";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
+import { PrintService } from "@/lib/print/print-service";
+import { downloadReceiptPdf } from "@/lib/print/pdf";
+import { usePrinterSettings } from "@/lib/print/settings";
+import type { PaperSize, ReceiptData } from "@/lib/print/types";
 
-export const Route = createFileRoute("/_authenticated/pos/receipt/$orderId")({ component: ReceiptPage });
+const SearchSchema = z.object({ success: z.coerce.boolean().optional() });
+
+export const Route = createFileRoute("/_authenticated/pos/receipt/$orderId")({
+  validateSearch: (s) => SearchSchema.parse(s),
+  component: ReceiptPage,
+});
 
 function ReceiptPage() {
   const { orderId } = Route.useParams();
+  const search = useSearch({ from: Route.id });
+  const isSuccess = !!search.success;
   const { restaurant, branch } = useActiveBranch();
-  const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
+  const { settings, update } = usePrinterSettings();
 
   const q = useQuery({
     queryKey: ["receipt", orderId],
     queryFn: async () => {
       const { data: order, error } = await supabase.from("orders").select("*").eq("id", orderId).single();
       if (error) throw error;
-      const [{ data: items }, { data: taxes }, { data: payments }] = await Promise.all([
+      const [{ data: items }, { data: taxes }, { data: payments }, { data: profile }] = await Promise.all([
         supabase.from("order_items").select("*").eq("order_id", orderId),
         supabase.from("order_taxes").select("*").eq("order_id", orderId),
         supabase.from("payments").select("*").eq("order_id", orderId),
+        order.created_by ? supabase.from("profiles").select("full_name").eq("id", order.created_by).maybeSingle() : Promise.resolve({ data: null }),
       ]);
-      return { order, items: items ?? [], taxes: taxes ?? [], payments: payments ?? [] };
+      return { order, items: items ?? [], taxes: taxes ?? [], payments: payments ?? [], cashier: profile?.full_name ?? null };
     },
   });
 
-  if (q.isLoading) return <div className="flex h-[60vh] items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>;
-  if (q.error || !q.data) return <div className="p-8 text-center text-destructive">Receipt not found.</div>;
-  const { order, items, taxes, payments } = q.data;
+  const data: ReceiptData | null = useMemo(() => {
+    if (!q.data || !restaurant) return null;
+    const { order, items, taxes, payments, cashier } = q.data;
+    return {
+      brandName: restaurant.name,
+      legalName: restaurant.legal_name,
+      address: branch?.address ?? restaurant.address,
+      phone: branch?.phone ?? restaurant.phone,
+      taxId: settings.taxId || null,
+      logoUrl: restaurant.logo_url ?? null,
+      orderNo: order.order_no,
+      orderId: order.id,
+      diningType: order.dining_type,
+      tableLabel: order.table_label,
+      customerName: order.customer_name,
+      customerPhone: order.customer_phone,
+      customerAddress: null,
+      cashierName: cashier,
+      createdAt: order.created_at,
+      currencySymbol: restaurant.currency_symbol ?? "₨",
+      items: items.map((i: any) => ({
+        id: i.id,
+        name: i.name_snapshot,
+        qty: i.qty,
+        unit_price: Number(i.unit_price),
+        line_total: Number(i.line_subtotal),
+        notes: i.notes,
+      })),
+      subtotal: Number(order.subtotal),
+      discount: Number(order.discount_total),
+      taxes: taxes.map((t: any) => ({ name: t.name_snapshot, rate: Number(t.rate_snapshot), amount: Number(t.amount) })),
+      grandTotal: Number(order.grand_total),
+      payments: payments.map((p: any) => ({ method: p.method, amount: Number(p.amount), reference: p.reference })),
+      amountReceived: Number(order.amount_paid),
+      changeReturned: Math.max(0, Number(order.amount_paid) - Number(order.grand_total)),
+      footerNote: settings.footerNote,
+    };
+  }, [q.data, restaurant, branch, settings.footerNote, settings.taxId]);
+
+  // Auto-print once when navigated from POS with ?success=1
+  const printedRef = useRef(false);
+  useEffect(() => {
+    if (!isSuccess || !data || printedRef.current || !settings.autoPrint) return;
+    printedRef.current = true;
+    void doPrint(data, settings.paperSize);
+  }, [isSuccess, data, settings.autoPrint, settings.paperSize]);
+
+  if (q.isLoading || !data) {
+    return (
+      <div className="flex h-[60vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+  if (q.error) return <div className="p-8 text-center text-destructive">Receipt not found.</div>;
 
   return (
-    <div className="min-h-screen bg-background p-4 sm:p-8">
-      <div className="mx-auto max-w-md">
-        <div className="no-print mb-4 flex items-center justify-between">
-          <Button variant="ghost" size="sm" onClick={() => nav({ to: "/pos" })}><ArrowLeft className="mr-2 h-4 w-4" />Back to POS</Button>
-          <Button onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print</Button>
+    <div className="min-h-screen bg-coal-gradient">
+      {/* Success ribbon */}
+      {isSuccess && <SuccessRibbon orderNo={data.orderNo} total={data.grandTotal} symbol={data.currencySymbol} />}
+
+      <div className="mx-auto grid max-w-6xl gap-6 p-4 sm:p-8 lg:grid-cols-[1fr_360px]">
+        {/* Receipt preview */}
+        <div className="flex justify-center">
+          <div className="w-full max-w-[420px]">
+            <ReceiptTemplate data={data} paperSize={settings.paperSize} preview />
+          </div>
         </div>
 
-        <div className="rounded-lg bg-white p-6 text-black shadow-card font-mono text-[13px] leading-snug">
-          <div className="text-center">
-            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-orange-500"><Flame className="h-5 w-5 text-white" /></div>
-            <div className="font-display text-xl text-black">{restaurant?.name}</div>
-            {branch && <div className="text-xs text-gray-600">{branch.name} · {branch.address ?? ""}</div>}
-            {branch?.phone && <div className="text-xs text-gray-600">{branch.phone}</div>}
+        {/* Action panel */}
+        <aside className="space-y-4 rounded-xl border border-border bg-card/60 p-5 shadow-card backdrop-blur lg:sticky lg:top-6 lg:self-start">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Order</div>
+            <div className="font-display text-2xl">{data.orderNo}</div>
           </div>
 
-          <div className="my-3 border-t border-dashed border-gray-300" />
-
-          <div className="flex justify-between text-xs"><span>Order #</span><span className="font-semibold">{order.order_no}</span></div>
-          <div className="flex justify-between text-xs"><span>Date</span><span>{formatDate(order.created_at)}</span></div>
-          <div className="flex justify-between text-xs"><span>Type</span><span className="capitalize">{order.dining_type.replace("_"," ")}</span></div>
-          {order.table_label && <div className="flex justify-between text-xs"><span>Table</span><span>{order.table_label}</span></div>}
-          {order.customer_name && <div className="flex justify-between text-xs"><span>Customer</span><span>{order.customer_name}</span></div>}
-
-          <div className="my-3 border-t border-dashed border-gray-300" />
-
-          <div className="space-y-1">
-            {items.map((i: any) => (
-              <div key={i.id}>
-                <div className="flex justify-between"><span>{i.qty} × {i.name_snapshot}</span><span>{formatMoney(i.line_subtotal, symbol)}</span></div>
-                {Number(i.unit_price) > 0 && <div className="text-[10px] text-gray-500">@ {formatMoney(i.unit_price, symbol)}</div>}
-              </div>
-            ))}
-          </div>
-
-          <div className="my-3 border-t border-dashed border-gray-300" />
-
-          <div className="space-y-0.5 text-xs">
-            <div className="flex justify-between"><span>Subtotal</span><span>{formatMoney(order.subtotal, symbol)}</span></div>
-            {Number(order.discount_total) > 0 && <div className="flex justify-between"><span>Discount</span><span>-{formatMoney(order.discount_total, symbol)}</span></div>}
-            {taxes.map((t: any) => (
-              <div key={t.id} className="flex justify-between"><span>{t.name_snapshot} ({t.rate_snapshot}%)</span><span>{formatMoney(t.amount, symbol)}</span></div>
-            ))}
-          </div>
-
-          <div className="mt-2 flex justify-between border-t border-gray-400 pt-2 text-base font-bold">
-            <span>TOTAL</span><span>{formatMoney(order.grand_total, symbol)}</span>
-          </div>
-
-          {payments.length > 0 && (
-            <div className="mt-2 space-y-0.5 text-xs">
-              {payments.map((p: any) => (
-                <div key={p.id} className="flex justify-between"><span className="capitalize">Paid · {p.method}</span><span>{formatMoney(p.amount, symbol)}</span></div>
-              ))}
+          <div className="grid gap-2">
+            <Button size="lg" onClick={() => doPrint(data, settings.paperSize)} className="bg-primary text-primary-foreground hover:bg-primary/90">
+              <Printer className="mr-2 h-4 w-4" /> Print Receipt
+            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" onClick={() => downloadReceiptPdf(data, settings.paperSize)}>
+                <Download className="mr-2 h-4 w-4" /> PDF
+              </Button>
+              <Button variant="outline" onClick={() => doPrint(data, settings.paperSize)}>
+                <RotateCcw className="mr-2 h-4 w-4" /> Reprint
+              </Button>
             </div>
-          )}
+            <Button variant="ghost" onClick={() => nav({ to: "/pos" })}>
+              <ArrowLeft className="mr-2 h-4 w-4" /> New Order
+            </Button>
+          </div>
 
-          <div className="my-3 border-t border-dashed border-gray-300" />
-          <div className="text-center text-xs text-gray-600">Thank you for dining with us!</div>
-          <div className="text-center text-[10px] text-gray-400">Powered by Angaar Kitchen</div>
-        </div>
+          <div className="space-y-3 rounded-lg border border-border/60 bg-background/40 p-4">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Print settings</div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="auto-print" className="text-sm">Auto-print on charge</Label>
+              <Switch id="auto-print" checked={settings.autoPrint} onCheckedChange={(v) => update({ autoPrint: v })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Paper size</Label>
+              <Select value={settings.paperSize} onValueChange={(v: PaperSize) => update({ paperSize: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="80mm">80 mm thermal</SelectItem>
+                  <SelectItem value="58mm">58 mm thermal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
-        <div className="no-print mt-4 text-center text-sm">
-          <Link to="/pos" className="text-primary hover:underline">Start a new order →</Link>
-        </div>
+          <Link to="/pos" className="block text-center text-xs text-muted-foreground hover:text-primary">
+            ← Back to POS
+          </Link>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+async function doPrint(data: ReceiptData, paperSize: PaperSize) {
+  try {
+    const html = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={paperSize} />);
+    await PrintService.print({ html, kind: "receipt", paperSize });
+  } catch (err: any) {
+    toast.error(err?.message ?? "Print failed");
+  }
+}
+
+function SuccessRibbon({ orderNo, total, symbol }: { orderNo: string; total: number; symbol: string }) {
+  const [show, setShow] = useState(true);
+  useEffect(() => { const t = setTimeout(() => setShow(false), 3500); return () => clearTimeout(t); }, []);
+  return (
+    <div className={`pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center transition-all duration-500 ${show ? "translate-y-4 opacity-100" : "-translate-y-6 opacity-0"}`}>
+      <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-success/30 bg-success/15 px-5 py-2.5 text-success-foreground shadow-ember backdrop-blur">
+        <CheckCircle2 className="h-5 w-5 text-success" />
+        <span className="text-sm">
+          Order <span className="font-mono font-semibold">{orderNo}</span> placed · <span className="font-mono">{symbol}{total.toFixed(2)}</span>
+        </span>
+        <Flame className="h-4 w-4 text-primary" />
       </div>
     </div>
   );
