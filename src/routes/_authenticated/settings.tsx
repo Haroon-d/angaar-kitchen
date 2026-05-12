@@ -13,7 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { WEEKDAYS } from "@/lib/format";
+import { usePrinterSettings } from "@/lib/print/settings";
+import { PrintService } from "@/lib/print/print-service";
+import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
+import type { PaperSize, ReceiptData } from "@/lib/print/types";
+import { Printer } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/settings")({ component: SettingsPage });
 
