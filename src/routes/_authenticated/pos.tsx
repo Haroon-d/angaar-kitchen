@@ -126,7 +126,7 @@ function POSPage() {
       toast.success(`Order ${row.order_no} placed`);
       idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
-      nav({ to: "/pos/receipt/$orderId", params: { orderId: row.order_id } });
+      nav({ to: "/pos/receipt/$orderId", params: { orderId: row.order_id }, search: { success: true } });
     } catch (err: any) {
       toast.error(err.message ?? "Failed to place order");
     } finally {
