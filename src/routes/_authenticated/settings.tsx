@@ -271,26 +271,51 @@ function PrinterTab() {
             </div>
             <div className="space-y-1.5">
               <Label>Driver</Label>
-              <Select value={settings.driver} onValueChange={(v: "browser" | "qz") => update({ driver: v })}>
+              <Select value={settings.driver} onValueChange={(v: "browser" | "qz" | "network") => update({ driver: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="browser">Browser / OS Printer</SelectItem>
-                  <SelectItem value="qz">QZ Tray (advanced)</SelectItem>
+                  <SelectItem value="qz">QZ Tray (USB / local thermal)</SelectItem>
+                  <SelectItem value="network">Network thermal (TCP / ESC-POS)</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Browser mode works with any installed printer. QZ Tray enables direct ESC/POS thermal printing (requires QZ Tray app).
+                Browser uses the OS print dialog. QZ Tray prints silently to USB / Bluetooth thermal printers (requires the QZ Tray app). Network mode streams ESC/POS bytes directly to a printer over TCP — no client install.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border p-3">
-            <div>
-              <Label className="text-sm">Auto-print on payment</Label>
-              <p className="text-xs text-muted-foreground">Automatically open the print dialog after charging an order.</p>
+          {settings.driver === "qz" && (
+            <div className="grid gap-4 sm:grid-cols-2 rounded-lg border border-border p-4">
+              <div className="space-y-1.5">
+                <Label>Receipt printer name</Label>
+                <Input value={settings.receiptPrinter ?? ""} onChange={(e) => update({ receiptPrinter: e.target.value })} placeholder="e.g. EPSON TM-T20" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Kitchen printer name</Label>
+                <Input value={settings.kitchenPrinter ?? ""} onChange={(e) => update({ kitchenPrinter: e.target.value })} placeholder="e.g. XPrinter XP-58" />
+              </div>
+              <p className="sm:col-span-2 text-xs text-muted-foreground">
+                These names must match the OS-level printer names exposed by QZ Tray. Open QZ Tray on the cashier machine to confirm.
+              </p>
             </div>
-            <Switch checked={settings.autoPrint} onCheckedChange={(v) => update({ autoPrint: v })} />
-          </div>
+          )}
+
+          {settings.driver === "network" && (
+            <div className="grid gap-4 sm:grid-cols-[1fr_120px] rounded-lg border border-border p-4">
+              <div className="space-y-1.5">
+                <Label>Printer host / IP</Label>
+                <Input value={settings.networkHost ?? ""} onChange={(e) => update({ networkHost: e.target.value })} placeholder="192.168.1.50" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Port</Label>
+                <Input type="number" value={settings.networkPort ?? 9100} onChange={(e) => update({ networkPort: Number(e.target.value) || 9100 })} />
+              </div>
+              <p className="sm:col-span-2 text-xs text-muted-foreground">
+                Standard ESC/POS thermal printers listen on port 9100 (RAW). The printer must be reachable from the server.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <Label>Tax / GST registration ID (optional)</Label>

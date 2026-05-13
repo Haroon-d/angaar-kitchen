@@ -560,6 +560,7 @@ export type Database = {
       orders: {
         Row: {
           amount_paid: number
+          bill_print_count: number
           branch_id: string
           completed_at: string | null
           created_at: string
@@ -571,8 +572,12 @@ export type Database = {
           grand_total: number
           id: string
           idempotency_key: string | null
+          kot_print_count: number
+          last_printed_at: string | null
           notes: string | null
           order_no: string
+          payment_status: Database["public"]["Enums"]["payment_status_t"]
+          receipt_print_count: number
           status: Database["public"]["Enums"]["order_status"]
           subtotal: number
           table_label: string | null
@@ -581,6 +586,7 @@ export type Database = {
         }
         Insert: {
           amount_paid?: number
+          bill_print_count?: number
           branch_id: string
           completed_at?: string | null
           created_at?: string
@@ -592,8 +598,12 @@ export type Database = {
           grand_total?: number
           id?: string
           idempotency_key?: string | null
+          kot_print_count?: number
+          last_printed_at?: string | null
           notes?: string | null
           order_no: string
+          payment_status?: Database["public"]["Enums"]["payment_status_t"]
+          receipt_print_count?: number
           status?: Database["public"]["Enums"]["order_status"]
           subtotal?: number
           table_label?: string | null
@@ -602,6 +612,7 @@ export type Database = {
         }
         Update: {
           amount_paid?: number
+          bill_print_count?: number
           branch_id?: string
           completed_at?: string | null
           created_at?: string
@@ -613,8 +624,12 @@ export type Database = {
           grand_total?: number
           id?: string
           idempotency_key?: string | null
+          kot_print_count?: number
+          last_printed_at?: string | null
           notes?: string | null
           order_no?: string
+          payment_status?: Database["public"]["Enums"]["payment_status_t"]
+          receipt_print_count?: number
           status?: Database["public"]["Enums"]["order_status"]
           subtotal?: number
           table_label?: string | null
@@ -849,7 +864,6 @@ export type Database = {
           _discount: number
           _idempotency_key: string
           _items: Json
-          _payment_method: Database["public"]["Enums"]["payment_method"]
           _table_label: string
         }
         Returns: {
@@ -875,6 +889,23 @@ export type Database = {
         Returns: boolean
       }
       next_order_number: { Args: { _branch: string }; Returns: string }
+      record_payment: {
+        Args: {
+          _amount: number
+          _method: Database["public"]["Enums"]["payment_method"]
+          _order_id: string
+          _reference?: string
+        }
+        Returns: {
+          new_amount_paid: number
+          new_payment_status: Database["public"]["Enums"]["payment_status_t"]
+          payment_id: string
+        }[]
+      }
+      record_print: {
+        Args: { _kind: string; _order_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
       app_role: "owner" | "admin" | "manager" | "cashier" | "kitchen" | "waiter"
@@ -890,6 +921,7 @@ export type Database = {
         | "voided"
         | "refunded"
       payment_method: "cash" | "card" | "upi" | "wallet" | "other"
+      payment_status_t: "pending" | "partial" | "paid" | "refunded"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1031,6 +1063,7 @@ export const Constants = {
         "refunded",
       ],
       payment_method: ["cash", "card", "upi", "wallet", "other"],
+      payment_status_t: ["pending", "partial", "paid", "refunded"],
     },
   },
 } as const

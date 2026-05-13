@@ -1,24 +1,33 @@
 import { useEffect, useState } from "react";
 import type { PaperSize } from "./types";
 
+export type DriverId = "browser" | "qz" | "network";
+
 export type PrinterSettings = {
   paperSize: PaperSize;
-  autoPrint: boolean;
-  driver: "browser" | "qz";
+  driver: DriverId;
+  /** QZ Tray printer names */
   receiptPrinter?: string;
   kitchenPrinter?: string;
+  /** Network ESC/POS printer */
+  networkHost?: string;
+  networkPort?: number;
+  /** Receipt content */
   footerNote: string;
   taxId: string;
+  /** Operational */
+  printKotCopies: number;
 };
 
-const KEY = "ak.printer.settings.v1";
+const KEY = "ak.printer.settings.v2";
 
 export const defaultSettings: PrinterSettings = {
   paperSize: "80mm",
-  autoPrint: true,
   driver: "browser",
+  networkPort: 9100,
   footerNote: "Thank you for dining with Angaar Kitchen — visit us again!",
   taxId: "",
+  printKotCopies: 1,
 };
 
 export function loadSettings(): PrinterSettings {
@@ -41,10 +50,7 @@ export function saveSettings(s: PrinterSettings) {
 export function usePrinterSettings() {
   const [settings, setSettings] = useState<PrinterSettings>(() => loadSettings());
   useEffect(() => {
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent<PrinterSettings>;
-      setSettings(ce.detail);
-    };
+    const handler = (e: Event) => setSettings((e as CustomEvent<PrinterSettings>).detail);
     window.addEventListener("ak:printer-settings", handler);
     return () => window.removeEventListener("ak:printer-settings", handler);
   }, []);

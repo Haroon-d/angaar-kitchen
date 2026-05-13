@@ -2,21 +2,22 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { BrowserPrintDriver } from "./browser-driver";
 import { QZTrayDriver } from "./qz-driver";
+import { NetworkPrinterDriver } from "./network-driver";
 import { loadSettings } from "./settings";
 import type { PaperSize, PrintJob, PrinterDriver } from "./types";
 
 const drivers: Record<string, PrinterDriver> = {
   browser: new BrowserPrintDriver(),
   qz: new QZTrayDriver(),
+  network: new NetworkPrinterDriver(),
 };
 
-/** Simple in-memory queue. Future: persist to IndexedDB + retry. */
 class PrintQueue {
   private q: PrintJob[] = [];
   private running = false;
 
-  enqueue(job: PrintJob) {
-    this.q.push(job);
+  enqueue(job: PrintJob, onResult?: (err?: Error) => void) {
+    this.q.push(Object.assign(job, { __cb: onResult }));
     void this.drain();
   }
 
@@ -25,12 +26,14 @@ class PrintQueue {
     this.running = true;
     try {
       while (this.q.length) {
-        const job = this.q.shift()!;
+        const job = this.q.shift()! as PrintJob & { __cb?: (e?: Error) => void };
         const driver = await pickDriver();
         try {
           await driver.print(job);
-        } catch (err) {
+          job.__cb?.();
+        } catch (err: any) {
           console.error("[print] job failed", err);
+          job.__cb?.(err);
         }
       }
     } finally {
@@ -49,22 +52,30 @@ async function pickDriver(): Promise<PrinterDriver> {
 }
 
 export const PrintService = {
-  /** Render a React element to an HTML string suitable for the print iframe. */
   renderHtml(node: ReactElement): string {
     return renderToStaticMarkup(node);
   },
 
-  /** Print receipt / KOT html. Resolves once the OS print dialog is invoked. */
-  async print(opts: { html: string; kind: "receipt" | "kot"; paperSize?: PaperSize; copies?: number }) {
+  /**
+   * Print a job. Resolves when the job is done (success or error).
+   * Manual button-triggered flow only — never call automatically.
+   */
+  print(opts: { html: string; kind: "receipt" | "kot" | "bill"; paperSize?: PaperSize; copies?: number }): Promise<void> {
     const s = loadSettings();
-    const job: PrintJob = {
-      kind: opts.kind,
-      paperSize: opts.paperSize ?? s.paperSize,
-      html: opts.html,
-      copies: opts.copies ?? 1,
-    };
-    queue.enqueue(job);
+    return new Promise((resolve, reject) => {
+      const job: PrintJob = {
+        kind: opts.kind === "bill" ? "receipt" : opts.kind,
+        paperSize: opts.paperSize ?? s.paperSize,
+        html: opts.html,
+        copies: opts.copies ?? 1,
+      };
+      queue.enqueue(job, (err) => (err ? reject(err) : resolve()));
+    });
   },
 
   drivers,
+
+  async activeDriverId(): Promise<string> {
+    return (await pickDriver()).id;
+  },
 };
