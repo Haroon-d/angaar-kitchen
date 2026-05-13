@@ -1,46 +1,63 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
-import { Printer, ArrowLeft, Download, Loader2, CheckCircle2, RotateCcw, Flame } from "lucide-react";
+import {
+  Printer, ArrowLeft, Loader2, CheckCircle2, RotateCcw, Flame, ChefHat,
+  ReceiptText, CreditCard, AlertCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
+import { KotTemplate } from "@/components/receipt/KotTemplate";
 import { PrintService } from "@/lib/print/print-service";
-import { downloadReceiptPdf } from "@/lib/print/pdf";
+import { renderReceiptText, renderKotText } from "@/lib/print/text-render";
 import { usePrinterSettings } from "@/lib/print/settings";
-import type { PaperSize, ReceiptData } from "@/lib/print/types";
+import { formatMoney } from "@/lib/format";
+import type { ReceiptData } from "@/lib/print/types";
 
-const SearchSchema = z.object({ success: z.coerce.boolean().optional() });
+const SearchSchema = z.object({ placed: z.coerce.boolean().optional() });
 
 export const Route = createFileRoute("/_authenticated/pos/receipt/$orderId")({
   validateSearch: (s) => SearchSchema.parse(s),
-  component: ReceiptPage,
+  component: OrderTicketPage,
 });
 
-function ReceiptPage() {
+type PaymentMethod = "cash" | "card" | "upi" | "wallet" | "other";
+
+function OrderTicketPage() {
   const { orderId } = Route.useParams();
   const search = useSearch({ from: Route.id });
-  const isSuccess = !!search.success;
+  const justPlaced = !!search.placed;
   const { restaurant, branch } = useActiveBranch();
+  const { settings } = usePrinterSettings();
   const nav = useNavigate();
-  const { settings, update } = usePrinterSettings();
+  const qc = useQueryClient();
 
   const q = useQuery({
-    queryKey: ["receipt", orderId],
+    queryKey: ["order", orderId],
     queryFn: async () => {
-      const { data: order, error } = await supabase.from("orders").select("*").eq("id", orderId).single();
+      const { data: order, error } = await supabase
+        .from("orders").select("*").eq("id", orderId).single();
       if (error) throw error;
       const [{ data: items }, { data: taxes }, { data: payments }, { data: profile }] = await Promise.all([
         supabase.from("order_items").select("*").eq("order_id", orderId),
         supabase.from("order_taxes").select("*").eq("order_id", orderId),
-        supabase.from("payments").select("*").eq("order_id", orderId),
-        order.created_by ? supabase.from("profiles").select("full_name").eq("id", order.created_by).maybeSingle() : Promise.resolve({ data: null }),
+        supabase.from("payments").select("*").eq("order_id", orderId).order("paid_at"),
+        order.created_by
+          ? supabase.from("profiles").select("full_name").eq("id", order.created_by).maybeSingle()
+          : Promise.resolve({ data: null }),
       ]);
       return { order, items: items ?? [], taxes: taxes ?? [], payments: payments ?? [], cashier: profile?.full_name ?? null };
     },
@@ -67,11 +84,8 @@ function ReceiptPage() {
       createdAt: order.created_at,
       currencySymbol: restaurant.currency_symbol ?? "₨",
       items: items.map((i: any) => ({
-        id: i.id,
-        name: i.name_snapshot,
-        qty: i.qty,
-        unit_price: Number(i.unit_price),
-        line_total: Number(i.line_subtotal),
+        id: i.id, name: i.name_snapshot, qty: i.qty,
+        unit_price: Number(i.unit_price), line_total: Number(i.line_subtotal),
         notes: i.notes,
       })),
       subtotal: Number(order.subtotal),
@@ -85,14 +99,6 @@ function ReceiptPage() {
     };
   }, [q.data, restaurant, branch, settings.footerNote, settings.taxId]);
 
-  // Auto-print once when navigated from POS with ?success=1
-  const printedRef = useRef(false);
-  useEffect(() => {
-    if (!isSuccess || !data || printedRef.current || !settings.autoPrint) return;
-    printedRef.current = true;
-    void doPrint(data, settings.paperSize);
-  }, [isSuccess, data, settings.autoPrint, settings.paperSize]);
-
   if (q.isLoading || !data) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
@@ -100,14 +106,41 @@ function ReceiptPage() {
       </div>
     );
   }
-  if (q.error) return <div className="p-8 text-center text-destructive">Receipt not found.</div>;
+  if (q.error) return <div className="p-8 text-center text-destructive">Order not found.</div>;
+
+  const order = q.data!.order as any;
+  const paymentStatus = (order.payment_status ?? "pending") as "pending" | "partial" | "paid" | "refunded";
+  const remaining = Math.max(0, Number(order.grand_total) - Number(order.amount_paid));
+
+  async function doPrint(kind: "kot" | "bill" | "receipt") {
+    if (!data) return;
+    try {
+      const driverId = await PrintService.activeDriverId();
+      let body: string;
+      if (driverId === "network") {
+        body = kind === "kot" ? renderKotText(data) : renderReceiptText(data);
+      } else if (kind === "kot") {
+        body = PrintService.renderHtml(<KotTemplate data={data} paperSize={settings.paperSize} />);
+      } else {
+        // bill = same template, sentinel below the header tells customer it's unpaid
+        body = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={settings.paperSize} />);
+      }
+      await PrintService.print({ html: body, kind, paperSize: settings.paperSize });
+      await (supabase.rpc as any)("record_print", { _order_id: orderId, _kind: kind });
+      qc.invalidateQueries({ queryKey: ["order", orderId] });
+      toast.success(`${labelForKind(kind)} sent to printer`);
+    } catch (err: any) {
+      toast.error(err?.message ?? "Print failed");
+    }
+  }
 
   return (
     <div className="min-h-screen bg-coal-gradient">
-      {/* Success ribbon */}
-      {isSuccess && <SuccessRibbon orderNo={data.orderNo} total={data.grandTotal} symbol={data.currencySymbol} />}
+      {justPlaced && (
+        <SuccessRibbon orderNo={data.orderNo} total={data.grandTotal} symbol={data.currencySymbol} />
+      )}
 
-      <div className="mx-auto grid max-w-6xl gap-6 p-4 sm:p-8 lg:grid-cols-[1fr_360px]">
+      <div className="mx-auto grid max-w-6xl gap-6 p-4 sm:p-8 lg:grid-cols-[1fr_380px]">
         {/* Receipt preview */}
         <div className="flex justify-center">
           <div className="w-full max-w-[420px]">
@@ -117,45 +150,83 @@ function ReceiptPage() {
 
         {/* Action panel */}
         <aside className="space-y-4 rounded-xl border border-border bg-card/60 p-5 shadow-card backdrop-blur lg:sticky lg:top-6 lg:self-start">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Order</div>
-            <div className="font-display text-2xl">{data.orderNo}</div>
-          </div>
+          <header className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">Order</div>
+              <div className="font-display text-2xl">{data.orderNo}</div>
+            </div>
+            <PaymentBadge status={paymentStatus} />
+          </header>
 
-          <div className="grid gap-2">
-            <Button size="lg" onClick={() => doPrint(data, settings.paperSize)} className="bg-primary text-primary-foreground hover:bg-primary/90">
-              <Printer className="mr-2 h-4 w-4" /> Print Receipt
-            </Button>
+          {paymentStatus !== "paid" && paymentStatus !== "refunded" && (
+            <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Outstanding</span>
+                <span className="font-mono text-base text-primary">{formatMoney(remaining, data.currencySymbol)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Print actions */}
+          <div className="space-y-2">
+            <SectionLabel>Print</SectionLabel>
             <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" onClick={() => downloadReceiptPdf(data, settings.paperSize)}>
-                <Download className="mr-2 h-4 w-4" /> PDF
+              <Button variant="outline" className="justify-start" onClick={() => doPrint("kot")}>
+                <ChefHat className="mr-2 h-4 w-4" /> KOT
+                <PrintCount n={order.kot_print_count} />
               </Button>
-              <Button variant="outline" onClick={() => doPrint(data, settings.paperSize)}>
+              <Button
+                variant="outline"
+                className="justify-start"
+                onClick={() => doPrint("bill")}
+                disabled={paymentStatus === "paid"}
+                title={paymentStatus === "paid" ? "Order already paid" : "Print unpaid bill"}
+              >
+                <ReceiptText className="mr-2 h-4 w-4" /> Bill
+                <PrintCount n={order.bill_print_count} />
+              </Button>
+              <Button
+                variant="outline"
+                className="justify-start"
+                onClick={() => doPrint("receipt")}
+                disabled={paymentStatus !== "paid"}
+                title={paymentStatus !== "paid" ? "Take payment first" : "Print final receipt"}
+              >
+                <Printer className="mr-2 h-4 w-4" /> Receipt
+                <PrintCount n={order.receipt_print_count} />
+              </Button>
+              <Button
+                variant="ghost"
+                className="justify-start"
+                onClick={() => doPrint(paymentStatus === "paid" ? "receipt" : "bill")}
+              >
                 <RotateCcw className="mr-2 h-4 w-4" /> Reprint
               </Button>
             </div>
-            <Button variant="ghost" onClick={() => nav({ to: "/pos" })}>
-              <ArrowLeft className="mr-2 h-4 w-4" /> New Order
-            </Button>
           </div>
 
-          <div className="space-y-3 rounded-lg border border-border/60 bg-background/40 p-4">
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">Print settings</div>
-            <div className="flex items-center justify-between">
-              <Label htmlFor="auto-print" className="text-sm">Auto-print on charge</Label>
-              <Switch id="auto-print" checked={settings.autoPrint} onCheckedChange={(v) => update({ autoPrint: v })} />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Paper size</Label>
-              <Select value={settings.paperSize} onValueChange={(v: PaperSize) => update({ paperSize: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="80mm">80 mm thermal</SelectItem>
-                  <SelectItem value="58mm">58 mm thermal</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Payment */}
+          <div className="space-y-2">
+            <SectionLabel>Payment</SectionLabel>
+            {paymentStatus === "paid" ? (
+              <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success-foreground">
+                <CheckCircle2 className="h-4 w-4 text-success" />
+                Fully paid · {data.payments.length} payment{data.payments.length === 1 ? "" : "s"}
+              </div>
+            ) : (
+              <TakePaymentDialog
+                orderId={orderId}
+                grandTotal={data.grandTotal}
+                remaining={remaining}
+                currencySymbol={data.currencySymbol}
+                onPaid={() => qc.invalidateQueries({ queryKey: ["order", orderId] })}
+              />
+            )}
           </div>
+
+          <Button variant="ghost" onClick={() => nav({ to: "/pos" })} className="w-full">
+            <ArrowLeft className="mr-2 h-4 w-4" /> New Order
+          </Button>
 
           <Link to="/pos" className="block text-center text-xs text-muted-foreground hover:text-primary">
             ← Back to POS
@@ -166,24 +237,133 @@ function ReceiptPage() {
   );
 }
 
-async function doPrint(data: ReceiptData, paperSize: PaperSize) {
-  try {
-    const html = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={paperSize} />);
-    await PrintService.print({ html, kind: "receipt", paperSize });
-  } catch (err: any) {
-    toast.error(err?.message ?? "Print failed");
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
+}
+
+function PrintCount({ n }: { n?: number }) {
+  if (!n || n <= 0) return null;
+  return <span className="ml-auto text-[10px] font-mono text-muted-foreground">×{n}</span>;
+}
+
+function labelForKind(k: "kot" | "bill" | "receipt") {
+  return k === "kot" ? "Kitchen ticket" : k === "bill" ? "Bill" : "Receipt";
+}
+
+function PaymentBadge({ status }: { status: "pending" | "partial" | "paid" | "refunded" }) {
+  const map: Record<typeof status, { cls: string; label: string }> = {
+    pending:  { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", label: "Unpaid" },
+    partial:  { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",   label: "Partial" },
+    paid:     { cls: "bg-success/15 text-success border-success/30",       label: "Paid" },
+    refunded: { cls: "bg-muted text-muted-foreground border-border",       label: "Refunded" },
+  };
+  const m = map[status];
+  return <Badge variant="outline" className={`${m.cls} font-medium`}>{m.label}</Badge>;
+}
+
+function TakePaymentDialog(props: {
+  orderId: string;
+  grandTotal: number;
+  remaining: number;
+  currencySymbol: string;
+  onPaid: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [amount, setAmount] = useState(props.remaining.toFixed(2));
+  const [reference, setReference] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast.error("Enter a valid amount");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { error } = await (supabase.rpc as any)("record_payment", {
+        _order_id: props.orderId,
+        _method: method,
+        _amount: amt,
+        _reference: reference || null,
+      });
+      if (error) throw error;
+      toast.success(`Payment of ${props.currencySymbol}${amt.toFixed(2)} recorded`);
+      setOpen(false);
+      props.onPaid();
+    } catch (err: any) {
+      toast.error(err?.message ?? "Failed to record payment");
+    } finally {
+      setSubmitting(false);
+    }
   }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setAmount(props.remaining.toFixed(2)); }}>
+      <DialogTrigger asChild>
+        <Button size="lg" className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
+          <CreditCard className="mr-2 h-4 w-4" /> Take Payment
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Record payment</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/40 p-3 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">Grand total</span><span className="font-mono">{props.currencySymbol}{props.grandTotal.toFixed(2)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Outstanding</span><span className="font-mono text-primary">{props.currencySymbol}{props.remaining.toFixed(2)}</span></div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Method</Label>
+            <Select value={method} onValueChange={(v: PaymentMethod) => setMethod(v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cash">Cash</SelectItem>
+                <SelectItem value="card">Card</SelectItem>
+                <SelectItem value="upi">UPI</SelectItem>
+                <SelectItem value="wallet">Wallet</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Amount</Label>
+            <Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono text-lg" />
+            {Number(amount) > props.remaining && (
+              <p className="flex items-center gap-1 text-xs text-amber-400">
+                <AlertCircle className="h-3 w-3" /> Change due: {props.currencySymbol}{(Number(amount) - props.remaining).toFixed(2)}
+              </p>
+            )}
+          </div>
+          {(method === "card" || method === "upi" || method === "wallet" || method === "other") && (
+            <div className="space-y-1.5">
+              <Label>Reference (optional)</Label>
+              <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Txn ID / approval code" />
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Record payment
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function SuccessRibbon({ orderNo, total, symbol }: { orderNo: string; total: number; symbol: string }) {
   const [show, setShow] = useState(true);
-  useEffect(() => { const t = setTimeout(() => setShow(false), 3500); return () => clearTimeout(t); }, []);
+  useMemo(() => { setTimeout(() => setShow(false), 3500); }, []);
   return (
     <div className={`pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center transition-all duration-500 ${show ? "translate-y-4 opacity-100" : "-translate-y-6 opacity-0"}`}>
       <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-success/30 bg-success/15 px-5 py-2.5 text-success-foreground shadow-ember backdrop-blur">
         <CheckCircle2 className="h-5 w-5 text-success" />
         <span className="text-sm">
-          Order <span className="font-mono font-semibold">{orderNo}</span> placed · <span className="font-mono">{symbol}{total.toFixed(2)}</span>
+          Order <span className="font-mono font-semibold">{orderNo}</span> placed · sent to kitchen · <span className="font-mono">{symbol}{total.toFixed(2)}</span>
         </span>
         <Flame className="h-4 w-4 text-primary" />
       </div>
