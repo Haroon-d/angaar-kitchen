@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatMoney } from "@/lib/format";
 
@@ -32,7 +31,6 @@ function POSPage() {
   const [customerPhone, setCustomerPhone] = useState("");
   const [tableLabel, setTableLabel] = useState("");
   const [discount, setDiscount] = useState("0");
-  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "upi" | "wallet" | "other">("cash");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
@@ -108,24 +106,23 @@ function POSPage() {
     if (submitting) return;
     setSubmitting(true);
     try {
-      const { data, error } = await supabase.rpc("create_pos_order", {
+      const { data, error } = await (supabase.rpc as any)("create_pos_order", {
         _branch: branch.id,
         _dining_type: diningType,
         _customer_name: customerName,
         _customer_phone: customerPhone,
         _table_label: tableLabel,
         _discount: discountNum,
-        _payment_method: paymentMethod,
         _items: cart.map((x) => ({ item_id: x.item_id, qty: x.qty, notes: x.notes ?? null })),
         _idempotency_key: idempotencyKeyRef.current,
       });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       if (!row?.order_id) throw new Error("No order returned");
-      toast.success(`Order ${row.order_no} placed`);
+      toast.success(`Order ${row.order_no} placed · sent to kitchen`);
       idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
-      nav({ to: "/pos/receipt/$orderId", params: { orderId: row.order_id }, search: { success: true } });
+      nav({ to: "/pos/receipt/$orderId", params: { orderId: row.order_id }, search: { placed: true } });
     } catch (err: any) {
       toast.error(err.message ?? "Failed to place order");
     } finally {
@@ -232,21 +229,13 @@ function POSPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <Select value={paymentMethod} onValueChange={(v: any) => setPaymentMethod(v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cash">Cash</SelectItem>
-                <SelectItem value="card">Card</SelectItem>
-                <SelectItem value="upi">UPI</SelectItem>
-                <SelectItem value="wallet">Wallet</SelectItem>
-                <SelectItem value="other">Other</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={placeOrder} disabled={submitting || cart.length === 0} size="lg">
-              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Charge
-            </Button>
-          </div>
+          <Button onClick={placeOrder} disabled={submitting || cart.length === 0} size="lg" className="w-full">
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Place Order · Send to Kitchen
+          </Button>
+          <p className="text-center text-[11px] text-muted-foreground">
+            Payment & printing happen on the order screen.
+          </p>
         </div>
       </aside>
     </div>
