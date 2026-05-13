@@ -105,7 +105,6 @@ function POSPage() {
   async function placeOrder() {
     if (!branch || !user) return;
     if (cart.length === 0) { toast.error("Cart is empty"); return; }
-    if (diningType === "dine_in" && !tableLabel.trim()) { toast.error("Enter a table label"); return; }
     if (submitting) return;
     setSubmitting(true);
     try {
