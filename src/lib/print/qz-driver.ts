@@ -1,26 +1,87 @@
 import type { PrintJob, PrinterDriver } from "./types";
+import { loadSettings } from "./settings";
 
 /**
- * QZ Tray driver — websocket bridge to USB / network ESC/POS thermal printers.
+ * QZ Tray driver — bridges the browser to USB / Bluetooth / network ESC-POS
+ * thermal printers via the QZ Tray desktop app (https://qz.io).
  *
- * Stub for future activation. To enable:
- *   1. Have the cashier install QZ Tray (https://qz.io)
- *   2. `bun add qz-tray`
- *   3. Replace `print()` body with qz.print(config, [{type:'pixel', format:'html', flavor:'plain', data: html}])
+ * Setup the cashier needs:
+ *   1. Install QZ Tray on the POS machine.
+ *   2. Load https://demo.qz.io/js/qz-tray.js (or self-host) before the app runs,
+ *      OR add the script tag at runtime — we attempt that below.
+ *   3. In Settings → Printer, choose "QZ Tray" as the driver and pick the
+ *      receipt printer name.
  *
- * Until then this driver reports unavailable so the service falls back to the
- * browser driver. The `PrinterDriver` interface keeps UI/queue code unchanged.
+ * In dev / when QZ is unreachable, `isAvailable()` returns false and the
+ * PrintService falls back to the BrowserPrintDriver automatically.
  */
+declare global {
+  interface Window { qz?: any }
+}
+
+const QZ_SCRIPT = "https://cdn.jsdelivr.net/npm/qz-tray@2.2.4/qz-tray.js";
+
+let scriptLoading: Promise<void> | null = null;
+
+function loadQzScript(): Promise<void> {
+  if (typeof window === "undefined") return Promise.reject(new Error("no window"));
+  if ((window as any).qz) return Promise.resolve();
+  if (scriptLoading) return scriptLoading;
+  scriptLoading = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = QZ_SCRIPT;
+    s.async = true;
+    s.onload = () => res();
+    s.onerror = () => { scriptLoading = null; rej(new Error("Failed to load qz-tray script")); };
+    document.head.appendChild(s);
+  });
+  return scriptLoading;
+}
+
 export class QZTrayDriver implements PrinterDriver {
   id = "qz";
   label = "QZ Tray (Thermal / ESC-POS)";
 
   async isAvailable(): Promise<boolean> {
     if (typeof window === "undefined") return false;
-    return Boolean((window as any).qz);
+    try {
+      await loadQzScript();
+      const qz = (window as any).qz;
+      if (!qz) return false;
+      if (!qz.websocket.isActive()) {
+        await qz.websocket.connect().catch(() => {});
+      }
+      return Boolean(qz.websocket.isActive());
+    } catch {
+      return false;
+    }
   }
 
-  async print(_job: PrintJob): Promise<void> {
-    throw new Error("QZ Tray driver is not configured. Install QZ Tray and enable it in Settings → Printer.");
+  async print(job: PrintJob): Promise<void> {
+    const qz = (window as any).qz;
+    if (!qz?.websocket?.isActive()) {
+      throw new Error("QZ Tray not connected. Open QZ Tray on this machine and reload.");
+    }
+    const settings = loadSettings();
+    const printerName = job.kind === "kot" ? settings.kitchenPrinter : settings.receiptPrinter;
+    if (!printerName) {
+      throw new Error("No printer selected. Pick one in Settings → Printer.");
+    }
+    const config = qz.configs.create(printerName, {
+      scaleContent: true,
+      rasterize: true,
+      size: { width: job.paperSize === "58mm" ? 2.28 : 3.15 },
+      units: "in",
+      margins: 0,
+    });
+    const wrapped = `<!doctype html><meta charset="utf-8"><body style="margin:0;padding:0;font-family:'JetBrains Mono',monospace;font-size:${job.paperSize==="58mm"?"11px":"12px"};">${job.html}</body>`;
+    await qz.print(config, [{ type: "pixel", format: "html", flavor: "plain", data: wrapped }]);
+  }
+
+  /** Helper for the settings page to list available printers. */
+  static async listPrinters(): Promise<string[]> {
+    const qz = (window as any).qz;
+    if (!qz?.websocket?.isActive()) return [];
+    try { return await qz.printers.find(); } catch { return []; }
   }
 }
