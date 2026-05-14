@@ -77,7 +77,11 @@ function DashboardPage() {
                 </thead>
                 <tbody>
                   {orders.slice(0, 12).map((o) => (
-                    <tr key={o.id} className="border-t border-border">
+                    <tr
+                      key={o.id}
+                      onClick={() => nav({ to: "/pos/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
+                      className="cursor-pointer border-t border-border transition hover:bg-muted/30"
+                    >
                       <td className="py-2 pr-4 font-mono text-xs">{o.order_no}</td>
                       <td className="pr-4 capitalize">{o.dining_type.replace("_"," ")}</td>
                       <td className="pr-4">{o.customer_name ?? "—"}</td>
