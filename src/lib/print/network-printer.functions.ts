@@ -99,7 +99,7 @@ export const printToNetworkPrinter = createServerFn({ method: "POST" })
         reject(new Error(`Printer error: ${err.message}`));
       });
 
-      socket.connect(data.port, data.host, () => {
+      socket.connect(data.port, targetIp, () => {
         socket.write(payload, (err) => {
           if (err) {
             clearTimeout(timer);
