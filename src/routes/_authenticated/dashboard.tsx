@@ -79,7 +79,7 @@ function DashboardPage() {
                   {orders.slice(0, 12).map((o) => (
                     <tr
                       key={o.id}
-                      onClick={() => nav({ to: "/pos/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
+                      onClick={() => nav({ to: "/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
                       className="cursor-pointer border-t border-border transition hover:bg-muted/30"
                     >
                       <td className="py-2 pr-4 font-mono text-xs">{o.order_no}</td>

@@ -29,7 +29,7 @@ import type { ReceiptData } from "@/lib/print/types";
 
 const SearchSchema = z.object({ placed: z.coerce.boolean().optional() });
 
-export const Route = createFileRoute("/_authenticated/pos/receipt/$orderId")({
+export const Route = createFileRoute("/_authenticated/receipt/$orderId")({
   validateSearch: (s) => SearchSchema.parse(s),
   component: OrderTicketPage,
 });

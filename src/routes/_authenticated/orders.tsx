@@ -102,7 +102,7 @@ function OrdersPage() {
           {filtered.map((o) => (
             <button
               key={o.id}
-              onClick={() => nav({ to: "/pos/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
+              onClick={() => nav({ to: "/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
               className="group flex flex-col rounded-xl border border-border bg-card/60 p-4 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember"
             >
               <div className="flex items-start justify-between gap-2">

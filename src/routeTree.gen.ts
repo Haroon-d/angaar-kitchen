@@ -21,7 +21,7 @@ import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authentic
 import { Route as AuthenticatedMenuRouteImport } from './routes/_authenticated/menu'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedBranchesRouteImport } from './routes/_authenticated/branches'
-import { Route as AuthenticatedPosReceiptOrderIdRouteImport } from './routes/_authenticated/pos.receipt.$orderId'
+import { Route as AuthenticatedReceiptOrderIdRouteImport } from './routes/_authenticated/receipt.$orderId'
 
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
@@ -82,11 +82,11 @@ const AuthenticatedBranchesRoute = AuthenticatedBranchesRouteImport.update({
   path: '/branches',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedPosReceiptOrderIdRoute =
-  AuthenticatedPosReceiptOrderIdRouteImport.update({
+const AuthenticatedReceiptOrderIdRoute =
+  AuthenticatedReceiptOrderIdRouteImport.update({
     id: '/receipt/$orderId',
     path: '/receipt/$orderId',
-    getParentRoute: () => AuthenticatedPosRoute,
+    getParentRoute: () => AuthenticatedRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -98,10 +98,10 @@ export interface FileRoutesByFullPath {
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/orders': typeof AuthenticatedOrdersRoute
-  '/pos': typeof AuthenticatedPosRouteWithChildren
+  '/pos': typeof AuthenticatedPosRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/staff': typeof AuthenticatedStaffRoute
-  '/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
+  '/receipt/$orderId': typeof AuthenticatedReceiptOrderIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -112,10 +112,10 @@ export interface FileRoutesByTo {
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/orders': typeof AuthenticatedOrdersRoute
-  '/pos': typeof AuthenticatedPosRouteWithChildren
+  '/pos': typeof AuthenticatedPosRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/staff': typeof AuthenticatedStaffRoute
-  '/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
+  '/receipt/$orderId': typeof AuthenticatedReceiptOrderIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -128,10 +128,10 @@ export interface FileRoutesById {
   '/_authenticated/menu': typeof AuthenticatedMenuRoute
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
   '/_authenticated/orders': typeof AuthenticatedOrdersRoute
-  '/_authenticated/pos': typeof AuthenticatedPosRouteWithChildren
+  '/_authenticated/pos': typeof AuthenticatedPosRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/staff': typeof AuthenticatedStaffRoute
-  '/_authenticated/pos/receipt/$orderId': typeof AuthenticatedPosReceiptOrderIdRoute
+  '/_authenticated/receipt/$orderId': typeof AuthenticatedReceiptOrderIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -147,7 +147,7 @@ export interface FileRouteTypes {
     | '/pos'
     | '/settings'
     | '/staff'
-    | '/pos/receipt/$orderId'
+    | '/receipt/$orderId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -161,7 +161,7 @@ export interface FileRouteTypes {
     | '/pos'
     | '/settings'
     | '/staff'
-    | '/pos/receipt/$orderId'
+    | '/receipt/$orderId'
   id:
     | '__root__'
     | '/'
@@ -176,7 +176,7 @@ export interface FileRouteTypes {
     | '/_authenticated/pos'
     | '/_authenticated/settings'
     | '/_authenticated/staff'
-    | '/_authenticated/pos/receipt/$orderId'
+    | '/_authenticated/receipt/$orderId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -272,26 +272,15 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedBranchesRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/pos/receipt/$orderId': {
-      id: '/_authenticated/pos/receipt/$orderId'
+    '/_authenticated/receipt/$orderId': {
+      id: '/_authenticated/receipt/$orderId'
       path: '/receipt/$orderId'
-      fullPath: '/pos/receipt/$orderId'
-      preLoaderRoute: typeof AuthenticatedPosReceiptOrderIdRouteImport
-      parentRoute: typeof AuthenticatedPosRoute
+      fullPath: '/receipt/$orderId'
+      preLoaderRoute: typeof AuthenticatedReceiptOrderIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
     }
   }
 }
-
-interface AuthenticatedPosRouteChildren {
-  AuthenticatedPosReceiptOrderIdRoute: typeof AuthenticatedPosReceiptOrderIdRoute
-}
-
-const AuthenticatedPosRouteChildren: AuthenticatedPosRouteChildren = {
-  AuthenticatedPosReceiptOrderIdRoute: AuthenticatedPosReceiptOrderIdRoute,
-}
-
-const AuthenticatedPosRouteWithChildren =
-  AuthenticatedPosRoute._addFileChildren(AuthenticatedPosRouteChildren)
 
 interface AuthenticatedRouteChildren {
   AuthenticatedBranchesRoute: typeof AuthenticatedBranchesRoute
@@ -299,9 +288,10 @@ interface AuthenticatedRouteChildren {
   AuthenticatedMenuRoute: typeof AuthenticatedMenuRoute
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
   AuthenticatedOrdersRoute: typeof AuthenticatedOrdersRoute
-  AuthenticatedPosRoute: typeof AuthenticatedPosRouteWithChildren
+  AuthenticatedPosRoute: typeof AuthenticatedPosRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedStaffRoute: typeof AuthenticatedStaffRoute
+  AuthenticatedReceiptOrderIdRoute: typeof AuthenticatedReceiptOrderIdRoute
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
@@ -310,9 +300,10 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedMenuRoute: AuthenticatedMenuRoute,
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
   AuthenticatedOrdersRoute: AuthenticatedOrdersRoute,
-  AuthenticatedPosRoute: AuthenticatedPosRouteWithChildren,
+  AuthenticatedPosRoute: AuthenticatedPosRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedStaffRoute: AuthenticatedStaffRoute,
+  AuthenticatedReceiptOrderIdRoute: AuthenticatedReceiptOrderIdRoute,
 }
 
 const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
@@ -328,3 +319,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
