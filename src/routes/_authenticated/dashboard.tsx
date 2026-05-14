@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Banknote, Receipt, ScrollText, TrendingUp, ChefHat, Plus } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -12,6 +12,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({ component: D
 function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
   const symbol = restaurant?.currency_symbol ?? "₨";
+  const nav = useNavigate();
 
   const todayQ = useQuery({
     queryKey: ["dashboard-today", branch?.id],
@@ -55,8 +56,8 @@ function DashboardPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat icon={Banknote} label="Revenue today" value={formatMoney(revenue, symbol)} />
-        <Stat icon={Receipt} label="Orders completed" value={String(completed.length)} />
-        <Stat icon={ChefHat} label="Open tickets" value={String(open.length)} />
+        <Stat icon={Receipt} label="Orders completed" value={String(completed.length)} to="/orders" />
+        <Stat icon={ChefHat} label="Open tickets" value={String(open.length)} to="/orders" highlight={open.length > 0} />
         <Stat icon={TrendingUp} label="Avg ticket" value={formatMoney(avg, symbol)} />
       </div>
 
@@ -76,7 +77,11 @@ function DashboardPage() {
                 </thead>
                 <tbody>
                   {orders.slice(0, 12).map((o) => (
-                    <tr key={o.id} className="border-t border-border">
+                    <tr
+                      key={o.id}
+                      onClick={() => nav({ to: "/pos/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
+                      className="cursor-pointer border-t border-border transition hover:bg-muted/30"
+                    >
                       <td className="py-2 pr-4 font-mono text-xs">{o.order_no}</td>
                       <td className="pr-4 capitalize">{o.dining_type.replace("_"," ")}</td>
                       <td className="pr-4">{o.customer_name ?? "—"}</td>
@@ -95,22 +100,23 @@ function DashboardPage() {
   );
 }
 
-function Stat({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
-  return (
-    <Card className="relative overflow-hidden">
+function Stat({ icon: Icon, label, value, to, highlight }: { icon: any; label: string; value: string; to?: string; highlight?: boolean }) {
+  const inner = (
+    <Card className={`relative overflow-hidden transition ${to ? "cursor-pointer hover:border-primary/50 hover:shadow-ember" : ""} ${highlight ? "border-primary/40" : ""}`}>
       <CardContent className="p-5">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
             <p className="mt-2 font-display text-3xl">{value}</p>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${highlight ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary"}`}>
             <Icon className="h-5 w-5" />
           </div>
         </div>
       </CardContent>
     </Card>
   );
+  return to ? <Link to={to as any}>{inner}</Link> : inner;
 }
 
 function StatusPill({ status }: { status: string }) {
