@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Loader2, Trash2, Pencil, ChefHat, FolderPlus } from "lucide-react";
 import { z } from "zod";
@@ -8,6 +8,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -44,6 +45,16 @@ function MenuPage() {
       return data ?? [];
     },
   });
+  const costsQ = useQuery({
+    queryKey: ["inventory-food-costs", branch?.id],
+    enabled: !!branch,
+    queryFn: async () => {
+      const { data, error } = await (supabase as any).from("inventory_food_cost_by_menu_item").select("*").eq("branch_id", branch!.id);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+  const costByItem = new Map((costsQ.data ?? []).map((row: any) => [row.menu_item_id, row]));
 
   if (!branch) return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
 
@@ -85,7 +96,11 @@ function MenuPage() {
                 <div className="py-12 text-center text-muted-foreground"><ChefHat className="mx-auto mb-3 h-8 w-8" />No items yet.</div>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {itemsQ.data?.map((it) => (
+                  {itemsQ.data?.map((it) => {
+                    const cost = costByItem.get(it.id) as any;
+                    const recipeCost = Number(cost?.recipe_cost ?? 0);
+                    const foodPct = Number(cost?.food_cost_percent ?? 0);
+                    return (
                     <div key={it.id} className="rounded-lg border border-border bg-card p-4">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
@@ -94,9 +109,16 @@ function MenuPage() {
                         </div>
                         <div className="font-mono text-sm">{formatMoney(it.base_price, symbol)}</div>
                       </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline" className={recipeCost > 0 ? "border-success/30 bg-success/10 text-success" : "border-muted bg-muted/40 text-muted-foreground"}>
+                          Food cost {formatMoney(recipeCost, symbol)}
+                        </Badge>
+                        {recipeCost > 0 && <span className="font-mono text-muted-foreground">{foodPct.toFixed(1)}%</span>}
+                      </div>
                       <div className="mt-3 flex items-center justify-between">
                         <span className={`rounded-full px-2 py-0.5 text-xs ${it.is_available ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"}`}>{it.is_available ? "Available" : "Unavailable"}</span>
                         <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" asChild><Link to="/inventory">Recipe</Link></Button>
                           <ItemDialog branchId={branch.id} categories={catsQ.data ?? []} item={it} onSaved={() => qc.invalidateQueries({ queryKey: ["items"] })} />
                           <Button variant="ghost" size="sm" onClick={async () => {
                             const { error } = await supabase.from("menu_items").delete().eq("id", it.id);
@@ -105,7 +127,7 @@ function MenuPage() {
                         </div>
                       </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )
             }

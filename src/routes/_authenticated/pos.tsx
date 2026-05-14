@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -62,8 +63,19 @@ function POSPage() {
       return data ?? [];
     },
   });
+  const stockQ = useQuery({
+    queryKey: ["menu-stock-status", branch?.id],
+    enabled: !!branch,
+    refetchInterval: 15000,
+    queryFn: async () => {
+      const { data, error } = await (supabase.rpc as any)("get_menu_item_stock_status", { _branch: branch!.id });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
   const [activeCat, setActiveCat] = useState<string>("all");
+  const stockByItem = useMemo(() => new Map((stockQ.data ?? []).map((s: any) => [s.item_id, s])), [stockQ.data]);
   const filteredItems = useMemo(() => {
     let items = itemsQ.data ?? [];
     if (activeCat !== "all") items = items.filter((i) => i.category_id === activeCat);
@@ -156,12 +168,17 @@ function POSPage() {
           {filteredItems.length === 0 && !itemsQ.isLoading && (
             <div className="col-span-full py-12 text-center text-sm text-muted-foreground">No items. <Link to="/menu" className="text-primary">Add some</Link>.</div>
           )}
-          {filteredItems.map((it) => (
-            <button key={it.id} onClick={() => addToCart(it)} className="group flex flex-col items-start rounded-lg border border-border bg-card p-3 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember">
-              <div className="line-clamp-2 text-sm font-medium">{it.name}</div>
-              <div className="mt-auto pt-3 font-mono text-sm text-primary">{formatMoney(it.base_price, symbol)}</div>
-            </button>
-          ))}
+          {filteredItems.map((it) => {
+            const stock = stockByItem.get(it.id) as any;
+            const warning = getStockWarning(stock);
+            return (
+              <button key={it.id} onClick={() => addToCart(it)} className="group flex min-h-[108px] flex-col items-start rounded-lg border border-border bg-card p-3 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember">
+                <div className="line-clamp-2 text-sm font-medium">{it.name}</div>
+                {warning && <Badge variant="outline" className={`mt-2 text-[10px] ${warning.cls}`}>{warning.label}</Badge>}
+                <div className="mt-auto pt-3 font-mono text-sm text-primary">{formatMoney(it.base_price, symbol)}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -244,4 +261,13 @@ function POSPage() {
 
 function Row({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return <div className={`flex items-center justify-between ${muted ? "text-muted-foreground" : ""}`}><span>{label}</span><span className="font-mono">{value}</span></div>;
+}
+
+function getStockWarning(stock: any) {
+  if (!stock) return null;
+  if (stock.missing_recipe) return { label: "No recipe", cls: "border-muted bg-muted/40 text-muted-foreground" };
+  if (stock.is_negative) return { label: "Negative stock", cls: "border-destructive/30 bg-destructive/15 text-destructive" };
+  if (stock.max_possible_qty !== null && Number(stock.max_possible_qty) <= 0) return { label: "Out by recipe", cls: "border-amber-500/30 bg-amber-500/15 text-amber-300" };
+  if (stock.is_low) return { label: "Low stock", cls: "border-amber-500/30 bg-amber-500/15 text-amber-300" };
+  return null;
 }

@@ -19,6 +19,7 @@ import { Route as AuthenticatedPosRouteImport } from './routes/_authenticated/po
 import { Route as AuthenticatedOrdersRouteImport } from './routes/_authenticated/orders'
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
 import { Route as AuthenticatedMenuRouteImport } from './routes/_authenticated/menu'
+import { Route as AuthenticatedInventoryRouteImport } from './routes/_authenticated/inventory'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedBranchesRouteImport } from './routes/_authenticated/branches'
 import { Route as AuthenticatedReceiptOrderIdRouteImport } from './routes/_authenticated/receipt.$orderId'
@@ -72,6 +73,11 @@ const AuthenticatedMenuRoute = AuthenticatedMenuRouteImport.update({
   path: '/menu',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedInventoryRoute = AuthenticatedInventoryRouteImport.update({
+  id: '/inventory',
+  path: '/inventory',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/inventory': typeof AuthenticatedInventoryRoute
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/orders': typeof AuthenticatedOrdersRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
+  '/inventory': typeof AuthenticatedInventoryRoute
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/orders': typeof AuthenticatedOrdersRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/_authenticated/branches': typeof AuthenticatedBranchesRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
+  '/_authenticated/inventory': typeof AuthenticatedInventoryRoute
   '/_authenticated/menu': typeof AuthenticatedMenuRoute
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
   '/_authenticated/orders': typeof AuthenticatedOrdersRoute
@@ -141,6 +150,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/branches'
     | '/dashboard'
+    | '/inventory'
     | '/menu'
     | '/onboarding'
     | '/orders'
@@ -155,6 +165,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/branches'
     | '/dashboard'
+    | '/inventory'
     | '/menu'
     | '/onboarding'
     | '/orders'
@@ -170,6 +181,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/_authenticated/branches'
     | '/_authenticated/dashboard'
+    | '/_authenticated/inventory'
     | '/_authenticated/menu'
     | '/_authenticated/onboarding'
     | '/_authenticated/orders'
@@ -258,6 +270,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedMenuRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/inventory': {
+      id: '/_authenticated/inventory'
+      path: '/inventory'
+      fullPath: '/inventory'
+      preLoaderRoute: typeof AuthenticatedInventoryRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/dashboard': {
       id: '/_authenticated/dashboard'
       path: '/dashboard'
@@ -285,6 +304,7 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedRouteChildren {
   AuthenticatedBranchesRoute: typeof AuthenticatedBranchesRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
+  AuthenticatedInventoryRoute: typeof AuthenticatedInventoryRoute
   AuthenticatedMenuRoute: typeof AuthenticatedMenuRoute
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
   AuthenticatedOrdersRoute: typeof AuthenticatedOrdersRoute
@@ -297,6 +317,7 @@ interface AuthenticatedRouteChildren {
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedBranchesRoute: AuthenticatedBranchesRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedInventoryRoute: AuthenticatedInventoryRoute,
   AuthenticatedMenuRoute: AuthenticatedMenuRoute,
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
   AuthenticatedOrdersRoute: AuthenticatedOrdersRoute,

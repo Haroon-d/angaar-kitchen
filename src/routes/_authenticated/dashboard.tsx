@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Banknote, Receipt, ScrollText, TrendingUp, ChefHat, Plus } from "lucide-react";
+import { Banknote, Receipt, TrendingUp, ChefHat, Plus, Package } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,6 +29,18 @@ function DashboardPage() {
       return data ?? [];
     },
   });
+  const lowStockQ = useQuery({
+    queryKey: ["dashboard-low-stock", branch?.id],
+    enabled: !!branch,
+    queryFn: async () => {
+      const { count, error } = await (supabase as any)
+        .from("inventory_low_stock")
+        .select("id", { count: "exact", head: true })
+        .eq("branch_id", branch!.id);
+      if (error) throw error;
+      return count ?? 0;
+    },
+  });
 
   const orders = todayQ.data ?? [];
   const completed = orders.filter((o) => o.status === "completed");
@@ -54,11 +66,12 @@ function DashboardPage() {
         <Button asChild><Link to="/pos"><Plus className="mr-2 h-4 w-4" />New order</Link></Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Stat icon={Banknote} label="Revenue today" value={formatMoney(revenue, symbol)} />
         <Stat icon={Receipt} label="Orders completed" value={String(completed.length)} to="/orders" />
         <Stat icon={ChefHat} label="Open tickets" value={String(open.length)} to="/orders" highlight={open.length > 0} />
         <Stat icon={TrendingUp} label="Avg ticket" value={formatMoney(avg, symbol)} />
+        <Stat icon={Package} label="Low stock" value={String(lowStockQ.data ?? 0)} to="/inventory" highlight={(lowStockQ.data ?? 0) > 0} />
       </div>
 
       <Card>
