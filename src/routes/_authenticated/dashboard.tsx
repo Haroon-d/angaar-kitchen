@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Banknote, Receipt, ScrollText, TrendingUp, ChefHat, Plus } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
