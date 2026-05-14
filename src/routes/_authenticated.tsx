@@ -1,6 +1,6 @@
 import { createFileRoute, Outlet, redirect, Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { Flame, LayoutDashboard, ChefHat, ScrollText, Users, Settings, LogOut, Loader2, Store } from "lucide-react";
+import { Flame, LayoutDashboard, ChefHat, ScrollText, Users, Settings, LogOut, Loader2, Store, Receipt } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, useMyRoles, isAdmin } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
