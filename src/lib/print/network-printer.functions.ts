@@ -62,6 +62,23 @@ export const printToNetworkPrinter = createServerFn({ method: "POST" })
   .inputValidator((input) => Schema.parse(input))
   .handler(async ({ data }) => {
     const net = await import("node:net");
+    const dns = await import("node:dns/promises");
+
+    // Resolve and SSRF-check every address the host points to.
+    let addrs: { address: string; family: number }[] = [];
+    try {
+      addrs = await dns.lookup(data.host, { all: true });
+    } catch {
+      throw new Error(`Cannot resolve printer host: ${data.host}`);
+    }
+    if (addrs.length === 0) throw new Error(`Cannot resolve printer host: ${data.host}`);
+    for (const a of addrs) {
+      if (isBlockedIp(a.address)) {
+        throw new Error("Printer host is not allowed (private/loopback/metadata address blocked).");
+      }
+    }
+    const targetIp = addrs[0].address;
+
     const chunks: Buffer[] = [INIT];
     if (data.title) {
       chunks.push(ALIGN_CENTER, DBL_ON, Buffer.from(data.title + "\n", "utf8"), DBL_OFF, ALIGN_LEFT);
