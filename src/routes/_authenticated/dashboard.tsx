@@ -56,8 +56,8 @@ function DashboardPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat icon={Banknote} label="Revenue today" value={formatMoney(revenue, symbol)} />
-        <Stat icon={Receipt} label="Orders completed" value={String(completed.length)} />
-        <Stat icon={ChefHat} label="Open tickets" value={String(open.length)} />
+        <Stat icon={Receipt} label="Orders completed" value={String(completed.length)} to="/orders" />
+        <Stat icon={ChefHat} label="Open tickets" value={String(open.length)} to="/orders" highlight={open.length > 0} />
         <Stat icon={TrendingUp} label="Avg ticket" value={formatMoney(avg, symbol)} />
       </div>
 
