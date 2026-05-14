@@ -11,15 +11,40 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
  * cut commands so any standard 80mm/58mm thermal printer can render it.
  */
 
+// Only allow well-known thermal/line printer ports. Prevents using this
+// server function as a generic outbound TCP connector.
+const ALLOWED_PORTS = new Set([9100, 9101, 9102, 515, 631]);
+
 const Schema = z.object({
-  host: z.string().min(1).max(255),
-  port: z.number().int().min(1).max(65535).default(9100),
+  host: z.string().min(1).max(255).regex(/^[a-zA-Z0-9.\-]+$/, "invalid host"),
+  port: z.number().int().refine((p) => ALLOWED_PORTS.has(p), "port not allowed").default(9100),
   paperSize: z.enum(["80mm", "58mm"]).default("80mm"),
   /** Plain UTF-8 text. We add ESC/POS init, encoding, line feeds, and cut. */
   text: z.string().min(1).max(20000),
   /** Optional double-height title to print first. */
   title: z.string().max(120).optional(),
 });
+
+/**
+ * Block SSRF targets: loopback, link-local (incl. cloud metadata 169.254.169.254),
+ * RFC1918 private ranges, IPv6 loopback/link-local/ULA, and unspecified addresses.
+ * The host is resolved to an IP first; if any resolved address is blocked, we refuse.
+ */
+function isBlockedIp(ip: string): boolean {
+  const v = ip.toLowerCase();
+  if (v === "::" || v === "::1" || v.startsWith("fe80:") || v.startsWith("fc") || v.startsWith("fd")) return true;
+  if (v.startsWith("::ffff:")) return isBlockedIp(v.slice(7));
+  const m = v.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;       // link-local + cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true;                       // multicast/reserved
+  return false;
+}
 
 // Minimal ESC/POS command bytes
 const ESC = 0x1b;
