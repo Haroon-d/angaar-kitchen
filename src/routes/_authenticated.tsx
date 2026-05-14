@@ -63,6 +63,7 @@ function AuthedLayout() {
 const NAV = [
   { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
   { label: "POS", to: "/pos", icon: ScrollText },
+  { label: "Orders", to: "/orders", icon: Receipt },
   { label: "Menu", to: "/menu", icon: ChefHat },
   { label: "Staff", to: "/staff", icon: Users, adminOnly: true },
   { label: "Settings", to: "/settings", icon: Settings, adminOnly: true },
