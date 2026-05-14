@@ -100,22 +100,23 @@ function DashboardPage() {
   );
 }
 
-function Stat({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
-  return (
-    <Card className="relative overflow-hidden">
+function Stat({ icon: Icon, label, value, to, highlight }: { icon: any; label: string; value: string; to?: string; highlight?: boolean }) {
+  const inner = (
+    <Card className={`relative overflow-hidden transition ${to ? "cursor-pointer hover:border-primary/50 hover:shadow-ember" : ""} ${highlight ? "border-primary/40" : ""}`}>
       <CardContent className="p-5">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
             <p className="mt-2 font-display text-3xl">{value}</p>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${highlight ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary"}`}>
             <Icon className="h-5 w-5" />
           </div>
         </div>
       </CardContent>
     </Card>
   );
+  return to ? <Link to={to as any}>{inner}</Link> : inner;
 }
 
 function StatusPill({ status }: { status: string }) {
