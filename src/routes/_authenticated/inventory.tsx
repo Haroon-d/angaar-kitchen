@@ -151,10 +151,10 @@ function StockTab({ branchId, manager, symbol }: { branchId: string; manager: bo
   const [search, setSearch] = useState("");
   const items = useMemo(() => {
     const s = search.toLowerCase().trim();
-    return (q.data ?? []).filter((i: any) => !s || i.name.toLowerCase().includes(s) || (i.category ?? "").toLowerCase().includes(s));
+    return (q.data ?? []).filter((i: any) => i.is_active && (!s || i.name.toLowerCase().includes(s) || (i.category ?? "").toLowerCase().includes(s)));
   }, [q.data, search]);
 
-  const totalValue = (q.data ?? []).reduce((sum: number, i: any) => sum + Number(i.current_qty) * Number(i.average_cost), 0);
+  const totalValue = (q.data ?? []).filter((i: any) => i.is_active).reduce((sum: number, i: any) => sum + Number(i.current_qty) * Number(i.average_cost), 0);
   const lowCount = (q.data ?? []).filter((i: any) => i.is_active && Number(i.current_qty) <= Number(i.reorder_level)).length;
 
   async function deleteIngredient(item: any) {
@@ -179,7 +179,7 @@ function StockTab({ branchId, manager, symbol }: { branchId: string; manager: bo
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat label="Stock value" value={formatMoney(totalValue, symbol)} icon={Package} />
         <Stat label="Low stock" value={String(lowCount)} icon={AlertTriangle} highlight={lowCount > 0} />
-        <Stat label="Ingredients" value={String(q.data?.length ?? 0)} icon={Scale} />
+        <Stat label="Ingredients" value={String((q.data ?? []).filter((i: any) => i.is_active).length)} icon={Scale} />
       </div>
 
       <Card>
@@ -216,7 +216,7 @@ function StockTab({ branchId, manager, symbol }: { branchId: string; manager: bo
                       <tr key={item.id} className="border-t border-border">
                         <td className="py-2 pr-4">
                           <div className="font-medium">{item.name}</div>
-                          <div className="text-xs text-muted-foreground">{item.category || item.base_unit}{!item.is_active ? " · inactive" : ""}</div>
+                          <div className="text-xs text-muted-foreground">{item.category || item.base_unit}</div>
                         </td>
                         <td className="pr-4 font-mono">{qtyLabel(item.current_qty, item.base_unit)}</td>
                         <td className="pr-4 font-mono">{qtyLabel(item.reorder_level, item.base_unit)}</td>
@@ -394,16 +394,73 @@ function PurchasesTab({ branchId, restaurantId, manager, symbol }: { branchId: s
 
   async function deletePurchase(id: string) {
     if (!window.confirm("Delete this purchase? Stock will be reversed and the ledger will keep a correction entry.")) return;
-    const { error } = await db.rpc("delete_inventory_purchase", { _purchase: id });
-    if (error) toast.error(error.message);
-    else {
-      toast.success("Purchase deleted");
+    
+    try {
+      // Fetch the purchase and its lines
+      const { data: purchase, error: purchaseError } = await db
+        .from("inventory_purchases")
+        .select("*")
+        .eq("id", id)
+        .single();
+      
+      if (purchaseError || !purchase) {
+        toast.error("Purchase not found");
+        return;
+      }
+
+      const { data: lines, error: linesError } = await db
+        .from("inventory_purchase_lines")
+        .select("*")
+        .eq("purchase_id", id);
+      
+      if (linesError) throw linesError;
+
+      // Reverse stock for each line
+      for (const line of lines || []) {
+        const { data: item } = await db
+          .from("inventory_items")
+          .select("current_qty")
+          .eq("id", line.inventory_item_id)
+          .single();
+
+        if (item) {
+          const newQty = Number(item.current_qty) - Number(line.base_quantity);
+          
+          // Update inventory
+          await db
+            .from("inventory_items")
+            .update({ current_qty: newQty })
+            .eq("id", line.inventory_item_id);
+
+          // Create correction movement
+          await db.from("inventory_movements").insert({
+            branch_id: purchase.branch_id,
+            inventory_item_id: line.inventory_item_id,
+            movement_type: "correction",
+            reason: "correction",
+            quantity_delta: -line.base_quantity,
+            before_qty: item.current_qty,
+            after_qty: newQty,
+            unit_cost: line.unit_cost,
+            related_purchase_id: id,
+            note: `Purchase deleted: ${purchase.invoice_no || ""}`,
+          });
+        }
+      }
+
+      // Delete the purchase lines and purchase
+      await db.from("inventory_purchase_lines").delete().eq("purchase_id", id);
+      await db.from("inventory_purchases").delete().eq("id", id);
+
+      toast.success("Purchase deleted and stock reversed");
       refreshPurchases();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete purchase");
     }
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,380px)_1fr]">
       <Card>
         <CardHeader>
           <CardTitle>Purchase history</CardTitle>
@@ -624,30 +681,135 @@ function PurchaseForm(props: {
     if (clean.length === 0) { toast.error("Add at least one purchase line"); return; }
     setLoading(true);
     try {
-      const payload = {
-        _supplier: supplier === "none" ? null : supplier,
-        _invoice_no: invoice,
-        _purchase_date: date,
-        _notes: notes,
-        _lines: clean.map((l) => ({
-          inventory_item_id: l.inventory_item_id,
-          quantity: Number(l.quantity),
-          unit: l.unit,
-          pack_size: l.pack_size ? Number(l.pack_size) : null,
-          unit_cost: Number(l.unit_cost) || 0,
-        })),
-      };
-      const { error } = props.purchase
-        ? await db.rpc("update_inventory_purchase", { _purchase: props.purchase.id, ...payload })
-        : await db.rpc("record_inventory_purchase", { _branch: props.branchId, ...payload });
-      if (error) throw error;
-      toast.success(props.purchase ? "Purchase updated" : "Purchase recorded");
-      if (!props.purchase) {
+      if (props.purchase) {
+        // For edits: reverse old stock, then record new purchase with same ID
+        const oldLines = props.purchase.inventory_purchase_lines ?? [];
+        for (const line of oldLines) {
+          const { data: item } = await db
+            .from("inventory_items")
+            .select("current_qty")
+            .eq("id", line.inventory_item_id)
+            .single();
+
+          if (item) {
+            const newQty = Number(item.current_qty) - Number(line.base_quantity);
+            await db
+              .from("inventory_items")
+              .update({ current_qty: newQty })
+              .eq("id", line.inventory_item_id);
+
+            await db.from("inventory_movements").insert({
+              branch_id: props.purchase.branch_id,
+              inventory_item_id: line.inventory_item_id,
+              movement_type: "correction",
+              reason: "correction",
+              quantity_delta: -line.base_quantity,
+              before_qty: item.current_qty,
+              after_qty: newQty,
+              unit_cost: line.unit_cost,
+              related_purchase_id: props.purchase.id,
+              note: `Purchase edited reversal: ${props.purchase.invoice_no || ""}`,
+            });
+          }
+        }
+
+        // Delete old lines
+        await db.from("inventory_purchase_lines").delete().eq("purchase_id", props.purchase.id);
+        
+        // Update purchase header
+        const payload = {
+          supplier_id: supplier === "none" ? null : supplier,
+          invoice_no: invoice || null,
+          purchase_date: date,
+          notes: notes || null,
+          total: clean.reduce((sum, l) => sum + (Number(l.quantity) * Number(l.unit_cost)), 0),
+        };
+        await db.from("inventory_purchases").update(payload).eq("id", props.purchase.id);
+
+        // Insert new lines
+        let runningTotal = 0;
+        for (const line of clean) {
+          const item = props.items.find((i: any) => i.id === line.inventory_item_id);
+          if (!item) continue;
+
+          const baseQty = (() => {
+            const qty = Number(line.quantity);
+            if (line.unit === "kg" && item.base_unit === "g") return qty * 1000;
+            if (line.unit === "l" && item.base_unit === "ml") return qty * 1000;
+            if (line.unit === "pack") return qty * (Number(line.pack_size) || 1);
+            return qty;
+          })();
+
+          const lineTotal = Number(line.quantity) * Number(line.unit_cost);
+          runningTotal += lineTotal;
+
+          await db.from("inventory_purchase_lines").insert({
+            purchase_id: props.purchase.id,
+            inventory_item_id: line.inventory_item_id,
+            quantity: Number(line.quantity),
+            unit: line.unit,
+            pack_size: line.pack_size ? Number(line.pack_size) : null,
+            base_quantity: baseQty,
+            unit_cost: Number(line.unit_cost),
+            line_total: lineTotal,
+          });
+
+          // Update inventory with new quantities
+          const { data: currentItem } = await db
+            .from("inventory_items")
+            .select("current_qty, average_cost")
+            .eq("id", line.inventory_item_id)
+            .single();
+
+          if (currentItem) {
+            const newQty = Number(currentItem.current_qty) + baseQty;
+            const newAvg = newQty > 0 ? ((Number(currentItem.current_qty) * Number(currentItem.average_cost)) + lineTotal) / newQty : Number(currentItem.average_cost);
+            
+            await db
+              .from("inventory_items")
+              .update({ current_qty: newQty, average_cost: newAvg })
+              .eq("id", line.inventory_item_id);
+
+            await db.from("inventory_movements").insert({
+              branch_id: props.purchase.branch_id,
+              inventory_item_id: line.inventory_item_id,
+              movement_type: "purchase",
+              reason: "purchase",
+              quantity_delta: baseQty,
+              before_qty: currentItem.current_qty,
+              after_qty: newQty,
+              unit_cost: Number(line.unit_cost),
+              related_purchase_id: props.purchase.id,
+              note: notes || null,
+            });
+          }
+        }
+
+        // Update total
+        await db.from("inventory_purchases").update({ total: runningTotal }).eq("id", props.purchase.id);
+        toast.success("Purchase updated");
+      } else {
+        const payload = {
+          _supplier: supplier === "none" ? null : supplier,
+          _invoice_no: invoice,
+          _purchase_date: date,
+          _notes: notes,
+          _lines: clean.map((l) => ({
+            inventory_item_id: l.inventory_item_id,
+            quantity: Number(l.quantity),
+            unit: l.unit,
+            pack_size: l.pack_size ? Number(l.pack_size) : null,
+            unit_cost: Number(l.unit_cost) || 0,
+          })),
+        };
+        const { error } = await db.rpc("record_inventory_purchase", { _branch: props.branchId, ...payload });
+        if (error) throw error;
+        toast.success("Purchase recorded");
         setInvoice(""); setNotes(""); setLines([{ inventory_item_id: "", quantity: "1", unit: "kg", pack_size: "", unit_cost: "0" }]);
       }
       props.onSaved();
     } catch (err: any) {
-      toast.error(err.message ?? "Failed to record purchase");
+      toast.error(err.message ?? "Failed to save purchase");
     } finally {
       setLoading(false);
     }
@@ -677,26 +839,38 @@ function PurchaseForm(props: {
       </div>
       <div className="space-y-2">
         <Label>Lines</Label>
+        <div className="overflow-x-auto">
+          <div className="min-w-[680px] grid gap-2 rounded-lg border border-border bg-surface p-3 text-xs uppercase tracking-wide text-muted-foreground grid-cols-[minmax(0,2.6fr)_80px_90px_90px_90px_36px]">
+            <div>Ingredient</div>
+            <div>Qty</div>
+            <div>Unit</div>
+            <div>Pack size</div>
+            <div>Unit cost</div>
+            <div className="text-right">Action</div>
+          </div>
+        </div>
         {lines.map((line, idx) => {
           const item = itemMap.get(line.inventory_item_id);
           return (
-            <div key={idx} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[1fr_80px_90px_90px_90px_36px]">
-              <Select value={line.inventory_item_id} onValueChange={(v) => patchLine(idx, { inventory_item_id: v, unit: itemMap.get(v)?.base_unit === "ml" ? "l" : itemMap.get(v)?.base_unit === "piece" ? "piece" : "kg" })}>
-                <SelectTrigger><SelectValue placeholder="Ingredient" /></SelectTrigger>
-                <SelectContent>{props.items.map((i) => <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>)}</SelectContent>
-              </Select>
-              <Input type="number" step="0.001" value={line.quantity} onChange={(e) => patchLine(idx, { quantity: e.target.value })} />
-              <Select value={line.unit} onValueChange={(v: PurchaseUnit) => patchLine(idx, { unit: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(item?.base_unit === "g" ? ["kg", "g", "pack"] : item?.base_unit === "ml" ? ["l", "ml", "pack"] : ["piece", "pack"]).map((u) => (
-                    <SelectItem key={u} value={u}>{u}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input type="number" step="0.001" disabled={line.unit !== "pack"} placeholder="Pack size" value={line.pack_size} onChange={(e) => patchLine(idx, { pack_size: e.target.value })} />
-              <Input type="number" step="0.01" placeholder="Unit cost" value={line.unit_cost} onChange={(e) => patchLine(idx, { unit_cost: e.target.value })} />
-              <Button type="button" variant="ghost" size="icon" onClick={() => setLines((ls) => ls.filter((_, i) => i !== idx))} disabled={lines.length === 1}><Trash2 className="h-4 w-4" /></Button>
+            <div key={idx} className="overflow-x-auto rounded-lg border border-border p-0">
+              <div className="min-w-[680px] grid gap-2 p-3 min-w-0 grid-cols-[minmax(0,2.6fr)_80px_90px_90px_90px_36px]">
+                <Select value={line.inventory_item_id} onValueChange={(v) => patchLine(idx, { inventory_item_id: v, unit: itemMap.get(v)?.base_unit === "ml" ? "l" : itemMap.get(v)?.base_unit === "piece" ? "piece" : "kg" })}>
+                  <SelectTrigger className="min-w-0 w-full"><SelectValue placeholder="Ingredient" /></SelectTrigger>
+                  <SelectContent>{props.items.map((i) => <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>)}</SelectContent>
+                </Select>
+                <Input className="min-w-0 w-full" type="number" step="0.001" placeholder="Qty" value={line.quantity} onChange={(e) => patchLine(idx, { quantity: e.target.value })} />
+                <Select value={line.unit} onValueChange={(v: PurchaseUnit) => patchLine(idx, { unit: v })}>
+                  <SelectTrigger className="min-w-0 w-full"><SelectValue placeholder="Unit" /></SelectTrigger>
+                  <SelectContent>
+                    {(item?.base_unit === "g" ? ["kg", "g", "pack"] : item?.base_unit === "ml" ? ["l", "ml", "pack"] : ["piece", "pack"]).map((u) => (
+                      <SelectItem key={u} value={u}>{u}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input className="min-w-0 w-full" type="number" step="0.001" disabled={line.unit !== "pack"} placeholder="Pack size" value={line.pack_size} onChange={(e) => patchLine(idx, { pack_size: e.target.value })} />
+                <Input className="min-w-0 w-full" type="number" step="0.01" placeholder="Unit cost" value={line.unit_cost} onChange={(e) => patchLine(idx, { unit_cost: e.target.value })} />
+                <Button type="button" variant="ghost" size="icon" onClick={() => setLines((ls) => ls.filter((_, i) => i !== idx))} disabled={lines.length === 1}><Trash2 className="h-4 w-4" /></Button>
+              </div>
             </div>
           );
         })}

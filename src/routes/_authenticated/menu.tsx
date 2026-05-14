@@ -102,6 +102,9 @@ function MenuPage() {
                     const foodPct = Number(cost?.food_cost_percent ?? 0);
                     return (
                     <div key={it.id} className="rounded-lg border border-border bg-card p-4">
+                      {it.image_url ? (
+                        <img src={it.image_url} alt={it.name} className="mb-3 h-32 w-full rounded-md object-cover" />
+                      ) : null}
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-medium truncate">{it.name}</div>
@@ -178,6 +181,7 @@ function CategoryDialog({ branchId, category, onSaved }: { branchId: string; cat
 
 const ItemSchema = z.object({
   category_id: z.string().uuid(), name: z.string().min(1).max(80), description: z.string().max(500).optional().nullable(),
+  image_url: z.string().url().optional().nullable(),
   base_price: z.number().min(0), is_available: z.boolean(), is_veg: z.boolean().nullable(), prep_time_min: z.number().int().min(0).max(240),
 });
 
@@ -187,6 +191,7 @@ function ItemDialog({ branchId, categories, item, onSaved }: { branchId: string;
     category_id: item?.category_id ?? categories[0]?.id ?? "",
     name: item?.name ?? "",
     description: item?.description ?? "",
+    image_url: item?.image_url ?? "",
     base_price: String(item?.base_price ?? "0"),
     is_available: item?.is_available ?? true,
     is_veg: item?.is_veg ?? null,
@@ -197,7 +202,7 @@ function ItemDialog({ branchId, categories, item, onSaved }: { branchId: string;
     e.preventDefault();
     const p = ItemSchema.safeParse({
       ...f, base_price: Number(f.base_price), prep_time_min: Number(f.prep_time_min),
-      description: f.description || null, is_veg: f.is_veg,
+      description: f.description || null, image_url: f.image_url || null, is_veg: f.is_veg,
     });
     if (!p.success) { toast.error(p.error.issues[0].message); return; }
     setLoading(true);
@@ -224,6 +229,7 @@ function ItemDialog({ branchId, categories, item, onSaved }: { branchId: string;
           </div>
           <div className="space-y-1.5"><Label>Name</Label><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required /></div>
           <div className="space-y-1.5"><Label>Description</Label><Textarea value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} rows={2} /></div>
+          <div className="space-y-1.5"><Label>Image URL</Label><Input value={f.image_url} onChange={(e) => setF({ ...f, image_url: e.target.value })} placeholder="https://..." /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5"><Label>Base price</Label><Input type="number" step="0.01" value={f.base_price} onChange={(e) => setF({ ...f, base_price: e.target.value })} required /></div>
             <div className="space-y-1.5"><Label>Prep time (min)</Label><Input type="number" value={f.prep_time_min} onChange={(e) => setF({ ...f, prep_time_min: e.target.value })} /></div>

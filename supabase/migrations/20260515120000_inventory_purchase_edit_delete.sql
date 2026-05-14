@@ -66,12 +66,12 @@ BEGIN
 END $function$;
 
 CREATE OR REPLACE FUNCTION public.update_inventory_purchase(
-  _purchase uuid,
-  _supplier uuid,
   _invoice_no text,
-  _purchase_date date,
+  _lines jsonb,
   _notes text,
-  _lines jsonb
+  _purchase uuid,
+  _purchase_date date,
+  _supplier uuid
 ) RETURNS TABLE(purchase_id uuid, total numeric)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
 AS $function$
@@ -203,6 +203,6 @@ BEGIN
 END $function$;
 
 GRANT EXECUTE ON FUNCTION public.delete_inventory_purchase(uuid) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.update_inventory_purchase(uuid, uuid, text, date, text, jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_inventory_purchase(text, jsonb, text, uuid, date, uuid) TO authenticated;
 REVOKE EXECUTE ON FUNCTION public.delete_inventory_purchase(uuid) FROM PUBLIC, anon;
-REVOKE EXECUTE ON FUNCTION public.update_inventory_purchase(uuid, uuid, text, date, text, jsonb) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.update_inventory_purchase(text, jsonb, text, uuid, date, uuid) FROM PUBLIC, anon;

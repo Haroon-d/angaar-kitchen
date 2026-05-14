@@ -160,11 +160,11 @@ END $function$;
 
 CREATE OR REPLACE FUNCTION public.record_inventory_purchase(
   _branch uuid,
-  _supplier uuid,
   _invoice_no text,
-  _purchase_date date,
+  _lines jsonb,
   _notes text,
-  _lines jsonb
+  _purchase_date date,
+  _supplier uuid
 ) RETURNS TABLE(purchase_id uuid, total numeric)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
 AS $function$
@@ -635,10 +635,10 @@ BEGIN
   RETURN NEXT;
 END $function$;
 
-GRANT EXECUTE ON FUNCTION public.record_inventory_purchase(uuid, uuid, text, date, text, jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.record_inventory_purchase(uuid, text, jsonb, text, date, uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.record_inventory_adjustment(uuid, public.inventory_movement_type, public.inventory_adjustment_reason, numeric, text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_menu_item_stock_status(uuid) TO authenticated;
-REVOKE EXECUTE ON FUNCTION public.record_inventory_purchase(uuid, uuid, text, date, text, jsonb) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.record_inventory_purchase(uuid, text, jsonb, text, date, uuid) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.record_inventory_adjustment(uuid, public.inventory_movement_type, public.inventory_adjustment_reason, numeric, text) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.get_menu_item_stock_status(uuid) FROM PUBLIC, anon;
 

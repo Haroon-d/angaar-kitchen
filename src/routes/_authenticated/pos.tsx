@@ -40,7 +40,7 @@ function POSPage() {
     queryKey: ["pos-items", branch?.id],
     enabled: !!branch,
     queryFn: async () => {
-      const { data, error } = await supabase.from("menu_items").select("id, name, base_price, is_available, category_id").eq("branch_id", branch!.id).eq("is_available", true).order("name");
+      const { data, error } = await supabase.from("menu_items").select("id, name, base_price, is_available, category_id, image_url").eq("branch_id", branch!.id).eq("is_available", true).order("name");
       if (error) throw error;
       return data ?? [];
     },
@@ -173,6 +173,9 @@ function POSPage() {
             const warning = getStockWarning(stock);
             return (
               <button key={it.id} onClick={() => addToCart(it)} className="group flex min-h-[108px] flex-col items-start rounded-lg border border-border bg-card p-3 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember">
+                {it.image_url ? (
+                  <img src={it.image_url} alt={it.name} className="mb-2 h-24 w-full rounded-md object-cover" />
+                ) : null}
                 <div className="line-clamp-2 text-sm font-medium">{it.name}</div>
                 {warning && <Badge variant="outline" className={`mt-2 text-[10px] ${warning.cls}`}>{warning.label}</Badge>}
                 <div className="mt-auto pt-3 font-mono text-sm text-primary">{formatMoney(it.base_price, symbol)}</div>
