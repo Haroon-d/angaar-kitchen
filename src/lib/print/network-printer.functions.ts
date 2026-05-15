@@ -61,6 +61,12 @@ export const printToNetworkPrinter = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => Schema.parse(input))
   .handler(async ({ data }) => {
+    if (process.env.VERCEL) {
+      throw new Error(
+        "Network TCP printing is not supported on Vercel-hosted deployments. Use QZ Tray for one-click local printing.",
+      );
+    }
+
     const net = await import("node:net");
     const dns = await import("node:dns/promises");
 

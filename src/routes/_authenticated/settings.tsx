@@ -209,7 +209,7 @@ function HoursTab({ branchId }: { branchId: string }) {
 
 function PrinterTab() {
   const { restaurant, branch } = useActiveBranch();
-  const { settings, update } = usePrinterSettings();
+  const { settings, update } = usePrinterSettings(branch?.id);
   const symbol = restaurant?.currency_symbol ?? "₨";
 
   const sample: ReceiptData = {
@@ -280,7 +280,7 @@ function PrinterTab() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Browser uses the OS print dialog. QZ Tray prints silently to USB / Bluetooth thermal printers (requires the QZ Tray app). Network mode streams ESC/POS bytes directly to a printer over TCP — no client install.
+                Browser uses the OS print dialog. QZ Tray prints silently to USB / Bluetooth thermal printers (requires the QZ Tray app). Network mode streams ESC/POS bytes over TCP and is only suitable when your app server runs inside the same local network as the printer.
               </p>
             </div>
           </div>
@@ -320,6 +320,17 @@ function PrinterTab() {
           <div className="space-y-1.5">
             <Label>Tax / GST registration ID (optional)</Label>
             <Input value={settings.taxId} onChange={(e) => update({ taxId: e.target.value })} placeholder="e.g. NTN 1234567-8" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>KOT copies per print</Label>
+            <Input
+              type="number"
+              min={1}
+              max={5}
+              value={settings.printKotCopies}
+              onChange={(e) => update({ printKotCopies: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })}
+            />
           </div>
 
           <div className="space-y-1.5">

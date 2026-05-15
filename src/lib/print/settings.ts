@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PaperSize } from "./types";
+import { supabase } from "@/integrations/supabase/client";
 
 export type DriverId = "browser" | "qz" | "network";
 
@@ -47,17 +48,64 @@ export function saveSettings(s: PrinterSettings) {
   window.dispatchEvent(new CustomEvent("ak:printer-settings", { detail: s }));
 }
 
-export function usePrinterSettings() {
+async function fetchBranchPrinterSettings(branchId: string): Promise<PrinterSettings | null> {
+  const { data, error } = await (supabase.from("branch_printer_settings" as any) as any)
+    .select("settings")
+    .eq("branch_id", branchId)
+    .maybeSingle();
+  if (error || !data?.settings) return null;
+  return { ...defaultSettings, ...(data.settings as Partial<PrinterSettings>) };
+}
+
+async function persistBranchPrinterSettings(branchId: string, settings: PrinterSettings) {
+  await (supabase.from("branch_printer_settings" as any) as any)
+    .upsert(
+      {
+        branch_id: branchId,
+        settings,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "branch_id" },
+    );
+}
+
+export function usePrinterSettings(branchId?: string) {
   const [settings, setSettings] = useState<PrinterSettings>(() => loadSettings());
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!branchId) {
+      setHydrated(true);
+      return;
+    }
+    (async () => {
+      const remote = await fetchBranchPrinterSettings(branchId);
+      if (cancelled) return;
+      if (remote) {
+        setSettings(remote);
+        saveSettings(remote);
+      }
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [branchId]);
+
   useEffect(() => {
     const handler = (e: Event) => setSettings((e as CustomEvent<PrinterSettings>).detail);
     window.addEventListener("ak:printer-settings", handler);
     return () => window.removeEventListener("ak:printer-settings", handler);
   }, []);
+
   const update = (patch: Partial<PrinterSettings>) => {
     const next = { ...settings, ...patch };
     setSettings(next);
     saveSettings(next);
+    if (branchId) {
+      void persistBranchPrinterSettings(branchId, next);
+    }
   };
-  return { settings, update };
+  return { settings, update, hydrated };
 }

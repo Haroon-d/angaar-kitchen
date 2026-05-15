@@ -63,13 +63,28 @@ export const PrintService = {
   print(opts: { html: string; kind: "receipt" | "kot" | "bill"; paperSize?: PaperSize; copies?: number }): Promise<void> {
     const s = loadSettings();
     return new Promise((resolve, reject) => {
+      const copies = Math.max(1, Math.floor(opts.copies ?? 1));
       const job: PrintJob = {
         kind: opts.kind === "bill" ? "receipt" : opts.kind,
         paperSize: opts.paperSize ?? s.paperSize,
         html: opts.html,
-        copies: opts.copies ?? 1,
+        copies,
       };
-      queue.enqueue(job, (err) => (err ? reject(err) : resolve()));
+      let pending = copies;
+      let failed = false;
+
+      for (let i = 0; i < copies; i += 1) {
+        queue.enqueue({ ...job, copies: 1 }, (err) => {
+          if (failed) return;
+          if (err) {
+            failed = true;
+            reject(err);
+            return;
+          }
+          pending -= 1;
+          if (pending === 0) resolve();
+        });
+      }
     });
   },
 

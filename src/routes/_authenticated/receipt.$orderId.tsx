@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
@@ -41,9 +41,10 @@ function OrderTicketPage() {
   const search = useSearch({ from: Route.id });
   const justPlaced = !!search.placed;
   const { restaurant, branch } = useActiveBranch();
-  const { settings } = usePrinterSettings();
+  const { settings } = usePrinterSettings(branch?.id);
   const nav = useNavigate();
   const qc = useQueryClient();
+  const [printingKind, setPrintingKind] = useState<null | "kot" | "bill" | "receipt">(null);
 
   const q = useQuery({
     queryKey: ["order", orderId],
@@ -114,6 +115,12 @@ function OrderTicketPage() {
 
   async function doPrint(kind: "kot" | "bill" | "receipt") {
     if (!data) return;
+    if (printingKind) return;
+    if (settings.driver === "network") {
+      toast.error("Network TCP printing is not supported on Vercel deployments. Switch to QZ Tray in Settings.");
+      return;
+    }
+    setPrintingKind(kind);
     try {
       const driverId = await PrintService.activeDriverId();
       let body: string;
@@ -125,12 +132,19 @@ function OrderTicketPage() {
         // bill = same template, sentinel below the header tells customer it's unpaid
         body = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={settings.paperSize} />);
       }
-      await PrintService.print({ html: body, kind, paperSize: settings.paperSize });
+      await PrintService.print({
+        html: body,
+        kind,
+        paperSize: settings.paperSize,
+        copies: kind === "kot" ? settings.printKotCopies : 1,
+      });
       await (supabase.rpc as any)("record_print", { _order_id: orderId, _kind: kind });
       qc.invalidateQueries({ queryKey: ["order", orderId] });
       toast.success(`${labelForKind(kind)} sent to printer`);
     } catch (err: any) {
       toast.error(err?.message ?? "Print failed");
+    } finally {
+      setPrintingKind(null);
     }
   }
 
@@ -172,33 +186,49 @@ function OrderTicketPage() {
             <SectionLabel>Print</SectionLabel>
             <div className="grid grid-cols-2 gap-2">
               <Button variant="outline" className="justify-start" onClick={() => doPrint("kot")}>
-                <ChefHat className="mr-2 h-4 w-4" /> KOT
+                {printingKind === "kot" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ChefHat className="mr-2 h-4 w-4" />
+                )}{" "}
+                KOT
                 <PrintCount n={order.kot_print_count} />
               </Button>
               <Button
                 variant="outline"
                 className="justify-start"
                 onClick={() => doPrint("bill")}
-                disabled={paymentStatus === "paid"}
+                disabled={paymentStatus === "paid" || printingKind !== null}
                 title={paymentStatus === "paid" ? "Order already paid" : "Print unpaid bill"}
               >
-                <ReceiptText className="mr-2 h-4 w-4" /> Bill
+                {printingKind === "bill" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ReceiptText className="mr-2 h-4 w-4" />
+                )}{" "}
+                Bill
                 <PrintCount n={order.bill_print_count} />
               </Button>
               <Button
                 variant="outline"
                 className="justify-start"
                 onClick={() => doPrint("receipt")}
-                disabled={paymentStatus !== "paid"}
+                disabled={paymentStatus !== "paid" || printingKind !== null}
                 title={paymentStatus !== "paid" ? "Take payment first" : "Print final receipt"}
               >
-                <Printer className="mr-2 h-4 w-4" /> Receipt
+                {printingKind === "receipt" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Printer className="mr-2 h-4 w-4" />
+                )}{" "}
+                Receipt
                 <PrintCount n={order.receipt_print_count} />
               </Button>
               <Button
                 variant="ghost"
                 className="justify-start"
                 onClick={() => doPrint(paymentStatus === "paid" ? "receipt" : "bill")}
+                disabled={printingKind !== null}
               >
                 <RotateCcw className="mr-2 h-4 w-4" /> Reprint
               </Button>
@@ -357,7 +387,10 @@ function TakePaymentDialog(props: {
 
 function SuccessRibbon({ orderNo, total, symbol }: { orderNo: string; total: number; symbol: string }) {
   const [show, setShow] = useState(true);
-  useMemo(() => { setTimeout(() => setShow(false), 3500); }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => setShow(false), 3500);
+    return () => clearTimeout(timer);
+  }, []);
   return (
     <div className={`pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center transition-all duration-500 ${show ? "translate-y-4 opacity-100" : "-translate-y-6 opacity-0"}`}>
       <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-success/30 bg-success/15 px-5 py-2.5 text-success-foreground shadow-ember backdrop-blur">

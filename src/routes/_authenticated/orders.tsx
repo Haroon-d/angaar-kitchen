@@ -9,7 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { formatMoney, formatDate } from "@/lib/format";
+import {
+  formatMoney,
+  formatDate,
+  formatPakistanDateLabel,
+  pakistanDateInputValue,
+  pakistanDayUtcRange,
+} from "@/lib/format";
 
 export const Route = createFileRoute("/_authenticated/orders")({ component: OrdersPage });
 
@@ -27,12 +33,15 @@ function OrdersPage() {
     enabled: !!branch,
     refetchInterval: 8000,
     queryFn: async () => {
-      const start = new Date(); start.setHours(0, 0, 0, 0);
+      const today = pakistanDayUtcRange(pakistanDateInputValue());
       const { data, error } = await supabase
         .from("orders")
-        .select("id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, customer_name, table_label, kot_print_count, bill_print_count, receipt_print_count")
+        .select(
+          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, customer_name, table_label, kot_print_count, bill_print_count, receipt_print_count",
+        )
         .eq("branch_id", branch!.id)
-        .gte("created_at", start.toISOString())
+        .gte("created_at", today.start)
+        .lt("created_at", today.end)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data ?? [];
@@ -42,94 +51,152 @@ function OrdersPage() {
   const orders = q.data ?? [];
   const filtered = useMemo(() => {
     let list = orders;
-    if (filter === "open") list = list.filter((o) => !["completed", "cancelled"].includes(o.status));
-    else if (filter === "unpaid") list = list.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled");
+    if (filter === "open")
+      list = list.filter((o) => !["completed", "cancelled"].includes(o.status));
+    else if (filter === "unpaid")
+      list = list.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled");
     else if (filter === "paid") list = list.filter((o) => o.payment_status === "paid");
     if (search.trim()) {
       const s = search.toLowerCase();
-      list = list.filter((o) =>
-        o.order_no.toLowerCase().includes(s) ||
-        (o.customer_name ?? "").toLowerCase().includes(s) ||
-        (o.table_label ?? "").toLowerCase().includes(s)
+      list = list.filter(
+        (o) =>
+          o.order_no.toLowerCase().includes(s) ||
+          (o.customer_name ?? "").toLowerCase().includes(s) ||
+          (o.table_label ?? "").toLowerCase().includes(s),
       );
     }
     return list;
   }, [orders, filter, search]);
 
-  const counts = useMemo(() => ({
-    open: orders.filter((o) => !["completed", "cancelled"].includes(o.status)).length,
-    unpaid: orders.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled").length,
-    paid: orders.filter((o) => o.payment_status === "paid").length,
-    all: orders.length,
-  }), [orders]);
+  const counts = useMemo(
+    () => ({
+      open: orders.filter((o) => !["completed", "cancelled"].includes(o.status)).length,
+      unpaid: orders.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled").length,
+      paid: orders.filter((o) => o.payment_status === "paid").length,
+      all: orders.length,
+    }),
+    [orders],
+  );
 
-  if (!branch) return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
+  if (!branch)
+    return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-3xl">Orders</h1>
-          <p className="text-sm text-muted-foreground">{branch.name} · live tickets · {new Date().toLocaleDateString(undefined, { day: "numeric", month: "long" })}</p>
+          <p className="text-sm text-muted-foreground">
+            {branch.name} · live tickets ·{" "}
+            {formatPakistanDateLabel(pakistanDateInputValue(), { day: "numeric", month: "long" })}
+          </p>
         </div>
-        <Button asChild><Link to="/pos"><Plus className="mr-2 h-4 w-4" />New order</Link></Button>
+        <Button asChild>
+          <Link to="/pos">
+            <Plus className="mr-2 h-4 w-4" />
+            New order
+          </Link>
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
           <TabsList>
-            <TabsTrigger value="open">Open <CountChip n={counts.open} /></TabsTrigger>
-            <TabsTrigger value="unpaid">Unpaid <CountChip n={counts.unpaid} /></TabsTrigger>
-            <TabsTrigger value="paid">Paid <CountChip n={counts.paid} /></TabsTrigger>
-            <TabsTrigger value="all">All <CountChip n={counts.all} /></TabsTrigger>
+            <TabsTrigger value="open">
+              Open <CountChip n={counts.open} />
+            </TabsTrigger>
+            <TabsTrigger value="unpaid">
+              Unpaid <CountChip n={counts.unpaid} />
+            </TabsTrigger>
+            <TabsTrigger value="paid">
+              Paid <CountChip n={counts.paid} />
+            </TabsTrigger>
+            <TabsTrigger value="all">
+              All <CountChip n={counts.all} />
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="relative ml-auto">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-9 w-64" placeholder="Search order # / customer / table" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input
+            className="pl-9 w-64"
+            placeholder="Search order # / customer / table"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
       </div>
 
       {q.isLoading ? (
-        <div className="flex h-40 items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>
+        <div className="flex h-40 items-center justify-center">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+        </div>
       ) : filtered.length === 0 ? (
-        <Card><CardContent className="py-16 text-center text-sm text-muted-foreground">
-          <Receipt className="mx-auto mb-3 h-8 w-8 opacity-50" />
-          No {filter === "all" ? "" : filter} orders.
-        </CardContent></Card>
+        <Card>
+          <CardContent className="py-16 text-center text-sm text-muted-foreground">
+            <Receipt className="mx-auto mb-3 h-8 w-8 opacity-50" />
+            No {filter === "all" ? "" : filter} orders.
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((o) => (
             <button
               key={o.id}
-              onClick={() => nav({ to: "/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
+              onClick={() =>
+                nav({
+                  to: "/receipt/$orderId",
+                  params: { orderId: o.id },
+                  search: { placed: false },
+                })
+              }
               className="group flex flex-col rounded-xl border border-border bg-card/60 p-4 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember"
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="font-mono text-sm text-muted-foreground">{o.order_no}</div>
-                  <div className="font-display text-lg">{o.customer_name || (o.table_label ? `Table ${o.table_label}` : "Walk-in")}</div>
+                  <div className="font-display text-lg">
+                    {o.customer_name || (o.table_label ? `Table ${o.table_label}` : "Walk-in")}
+                  </div>
                 </div>
                 <PayBadge status={o.payment_status as any} />
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1 rounded-md bg-muted/40 px-2 py-0.5 capitalize">
-                  {o.dining_type === "dine_in" && o.table_label ? `T-${o.table_label}` : o.dining_type.replace("_", " ")}
+                  {o.dining_type === "dine_in" && o.table_label
+                    ? `T-${o.table_label}`
+                    : o.dining_type.replace("_", " ")}
                 </span>
-                <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{formatDate(o.created_at)}</span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {formatDate(o.created_at)}
+                </span>
                 {o.kot_print_count > 0 && (
-                  <span className="inline-flex items-center gap-1 text-success"><ChefHat className="h-3 w-3" />KOT ×{o.kot_print_count}</span>
+                  <span className="inline-flex items-center gap-1 text-success">
+                    <ChefHat className="h-3 w-3" />
+                    KOT ×{o.kot_print_count}
+                  </span>
                 )}
               </div>
 
               <div className="mt-4 flex items-end justify-between">
                 <div className="text-xs text-muted-foreground">
                   {o.payment_status !== "paid" && (
-                    <span>Outstanding <span className="font-mono text-primary">{formatMoney(Math.max(0, Number(o.grand_total) - Number(o.amount_paid)), symbol)}</span></span>
+                    <span>
+                      Outstanding{" "}
+                      <span className="font-mono text-primary">
+                        {formatMoney(
+                          Math.max(0, Number(o.grand_total) - Number(o.amount_paid)),
+                          symbol,
+                        )}
+                      </span>
+                    </span>
                   )}
                 </div>
-                <div className="font-mono text-xl text-primary">{formatMoney(o.grand_total, symbol)}</div>
+                <div className="font-mono text-xl text-primary">
+                  {formatMoney(o.grand_total, symbol)}
+                </div>
               </div>
             </button>
           ))}
@@ -141,7 +208,11 @@ function OrdersPage() {
 
 function CountChip({ n }: { n: number }) {
   if (!n) return null;
-  return <span className="ml-1.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-mono text-primary">{n}</span>;
+  return (
+    <span className="ml-1.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-mono text-primary">
+      {n}
+    </span>
+  );
 }
 
 function PayBadge({ status }: { status: "pending" | "partial" | "paid" | "refunded" }) {
@@ -152,5 +223,9 @@ function PayBadge({ status }: { status: "pending" | "partial" | "paid" | "refund
     refunded: { cls: "bg-muted text-muted-foreground border-border", label: "Refunded" },
   };
   const m = map[status] ?? map.pending;
-  return <Badge variant="outline" className={`${m.cls} text-[10px] font-medium`}>{m.label}</Badge>;
+  return (
+    <Badge variant="outline" className={`${m.cls} text-[10px] font-medium`}>
+      {m.label}
+    </Badge>
+  );
 }
