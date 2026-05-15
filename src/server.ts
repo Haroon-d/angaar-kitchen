@@ -16,8 +16,8 @@ async function getServerEntry(): Promise<ServerEntry> {
     );
   }
   return serverEntryPromise;
-}
 
+}
 function brandedErrorResponse(): Response {
   return new Response(renderErrorPage(), {
     status: 500,
