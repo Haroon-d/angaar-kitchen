@@ -49,7 +49,7 @@ function AuthedLayout() {
     <SidebarProvider>
       <div className="min-h-screen flex w-full bg-background">
         <AppSidebar />
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex min-w-0 flex-col bg-[linear-gradient(180deg,oklch(0.17_0.014_250),oklch(0.145_0.012_250)_220px)]">
           <Topbar />
           <main className="flex-1 min-w-0">
             <Outlet />
@@ -78,13 +78,18 @@ function AppSidebar() {
   const admin = isAdmin(roles);
 
   return (
-    <Sidebar collapsible="icon" className="border-sidebar-border">
-      <SidebarHeader>
-        <Link to="/dashboard" className="flex items-center gap-2 px-2 py-1.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ember-gradient shadow-ember">
+    <Sidebar collapsible="icon" className="border-sidebar-border/80">
+      <SidebarHeader className="p-3">
+        <Link to="/dashboard" className="flex items-center gap-2 rounded-md px-2 py-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ember-gradient shadow-ember">
             <Flame className="h-4 w-4 text-primary-foreground" />
           </div>
-          {!collapsed && <span className="font-display text-base">Angaar Kitchen</span>}
+          {!collapsed && (
+            <div className="min-w-0">
+              <span className="block truncate font-display text-base leading-none">Angaar Kitchen</span>
+              <span className="mt-1 block truncate text-[11px] text-sidebar-foreground/50">Operations</span>
+            </div>
+          )}
         </Link>
       </SidebarHeader>
       <SidebarContent>
@@ -123,8 +128,8 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-sidebar-accent">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">{initials}</div>
+        <button className="flex w-full items-center gap-2 rounded-md border border-sidebar-border/70 bg-sidebar-accent/35 px-2 py-2 text-left hover:bg-sidebar-accent">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">{initials}</div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm">{user?.email}</div>
@@ -148,9 +153,12 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
 function Topbar() {
   const { branch, restaurant } = useActiveBranch();
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-3 backdrop-blur sm:px-6">
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border/70 bg-background/88 px-3 backdrop-blur sm:px-6">
       <SidebarTrigger />
-      <div className="hidden text-sm text-muted-foreground sm:block">{restaurant?.name}</div>
+      <div className="hidden min-w-0 sm:block">
+        <div className="truncate text-sm font-medium">{restaurant?.name ?? "Angaar Kitchen"}</div>
+        <div className="text-xs text-muted-foreground">Restaurant workspace</div>
+      </div>
       <div className="ml-auto flex items-center gap-2">
         <Button variant="outline" size="sm" className="gap-2" disabled>
           <Store className="h-4 w-4" />

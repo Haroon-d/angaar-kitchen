@@ -17,7 +17,7 @@ function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
   const admin = isAdmin(roles);
-  const symbol = restaurant?.currency_symbol ?? "₨";
+  const symbol = restaurant?.currency_symbol ?? "Rs";
   const nav = useNavigate();
 
   // Date range state
@@ -132,21 +132,26 @@ function DashboardPage() {
   }
 
   return (
-    <div className="p-4 sm:p-8 space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border/60 pb-5">
         <div>
-          <h1 className="font-display text-3xl">{isToday ? "Today" : "Period"}</h1>
-          <p className="text-sm text-muted-foreground">{branch.name} · {startDate === endDate ? new Date(startDate).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }) : `${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()}`}</p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-primary">{branch.name}</p>
+          <h1 className="font-display text-3xl leading-tight">{isToday ? "Today" : "Selected period"}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {startDate === endDate
+              ? new Date(startDate).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })
+              : `${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()}`}
+          </p>
         </div>
         <Button asChild><Link to="/pos"><Plus className="mr-2 h-4 w-4" />New order</Link></Button>
       </div>
 
       {/* Date Range Filter */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex flex-wrap items-end gap-4">
+      <Card className="bg-card/64">
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1 min-w-[200px]">
-              <Label htmlFor="start-date" className="text-sm font-medium mb-2 block">From Date</Label>
+              <Label htmlFor="start-date" className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</Label>
               <div className="flex items-center gap-2">
                 <Calendar className="h-4 w-4 text-muted-foreground" />
                 <Input
@@ -160,7 +165,7 @@ function DashboardPage() {
               </div>
             </div>
             <div className="flex-1 min-w-[200px]">
-              <Label htmlFor="end-date" className="text-sm font-medium mb-2 block">To Date</Label>
+              <Label htmlFor="end-date" className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">To</Label>
               <div className="flex items-center gap-2">
                 <Calendar className="h-4 w-4 text-muted-foreground" />
                 <Input
@@ -206,9 +211,9 @@ function DashboardPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-left text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="py-2 pr-4">Order</th>
+                <thead className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <tr className="border-b border-border/70">
+                    <th className="py-3 pr-4">Order</th>
                     <th className="pr-4">Type</th>
                     <th className="pr-4">Customer</th>
                     <th className="pr-4">Status</th>
@@ -224,11 +229,11 @@ function DashboardPage() {
                       <tr
                         key={o.id}
                         onClick={() => nav({ to: "/receipt/$orderId", params: { orderId: o.id }, search: { placed: false } })}
-                        className="cursor-pointer border-t border-border transition hover:bg-muted/30"
+                        className="cursor-pointer border-b border-border/45 hover:bg-muted/35"
                       >
-                        <td className="py-2 pr-4 font-mono text-xs">{o.order_no}</td>
+                        <td className="py-3 pr-4 font-mono text-xs text-foreground">{o.order_no}</td>
                         <td className="pr-4 capitalize">{o.dining_type.replace("_"," ")}</td>
-                        <td className="pr-4">{o.customer_name ?? "—"}</td>
+                        <td className="pr-4">{o.customer_name ?? "-"}</td>
                         <td className="pr-4"><StatusPill status={o.status} /></td>
                         <td className="pr-4 text-muted-foreground">{formatDate(o.created_at)}</td>
                         <td className="text-right font-mono">{formatMoney(o.grand_total, symbol)}</td>
@@ -248,14 +253,14 @@ function DashboardPage() {
 
 function Stat({ icon: Icon, label, value, to, highlight }: { icon: any; label: string; value: string; to?: string; highlight?: boolean }) {
   const inner = (
-    <Card className={`relative overflow-hidden transition ${to ? "cursor-pointer hover:border-primary/50 hover:shadow-ember" : ""} ${highlight ? "border-primary/40" : ""}`}>
-      <CardContent className="p-5">
+    <Card className={`relative overflow-hidden ${to ? "cursor-pointer hover:border-primary/50" : ""} ${highlight ? "border-primary/45 bg-primary/5" : ""}`}>
+      <CardContent className="p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-            <p className="mt-2 font-display text-3xl">{value}</p>
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
+            <p className="mt-2 font-display text-2xl leading-none sm:text-3xl">{value}</p>
           </div>
-          <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${highlight ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary"}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-md ${highlight ? "bg-primary/20 text-primary" : "bg-secondary text-primary"}`}>
             <Icon className="h-5 w-5" />
           </div>
         </div>
@@ -275,5 +280,5 @@ function StatusPill({ status }: { status: string }) {
     ready: "bg-accent/15 text-accent",
     served: "bg-success/15 text-success",
   };
-  return <span className={`rounded-full px-2 py-0.5 text-xs ${map[status] ?? "bg-muted"}`}>{status}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-1 text-[11px] font-semibold capitalize ${map[status] ?? "bg-muted"}`}>{status}</span>;
 }

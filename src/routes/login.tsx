@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Flame, Loader2 } from "lucide-react";
+import { Flame, Loader2, LockKeyhole, Mail } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -31,46 +31,76 @@ function LoginPage() {
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
-    if (error) { toast.error(error.message); return; }
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
     toast.success("Welcome back");
     nav({ to: "/dashboard" });
   }
 
   return (
-    <div className="relative min-h-screen grid lg:grid-cols-2 bg-background">
-      <div className="relative hidden lg:flex flex-col justify-between p-12 ember-glow grain overflow-hidden bg-coal-gradient">
-        <div className="flex items-center gap-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-ember-gradient shadow-ember">
+    <div className="relative grid min-h-screen bg-background lg:grid-cols-[1.05fr_0.95fr]">
+      <div className="relative hidden overflow-hidden border-r border-border/70 bg-coal-gradient p-12 lg:flex lg:flex-col lg:justify-between">
+        <div className="absolute inset-0 ember-glow grain" />
+        <div className="relative z-10 flex items-center gap-2">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-ember-gradient shadow-ember">
             <Flame className="h-5 w-5 text-primary-foreground" />
           </div>
           <span className="font-display text-xl">Angaar Kitchen</span>
         </div>
         <div className="relative z-10 max-w-md">
-          <h1 className="font-display text-5xl leading-tight">Run the kitchen.<br/><span className="text-primary">Own the fire.</span></h1>
-          <p className="mt-4 text-muted-foreground">A complete Angaar Kitchen operating system for Pakistan — menus, billing, POS, and reporting in one premium dashboard.</p>
+          <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary">Restaurant command center</p>
+          <h1 className="font-display text-5xl leading-tight">Run service with a calmer screen.</h1>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
+            Menus, billing, POS, inventory, staff, and reporting for Angaar Kitchen in one focused workspace.
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} Angaar Kitchen</p>
+        <p className="relative z-10 text-xs text-muted-foreground">Copyright {new Date().getFullYear()} Angaar Kitchen</p>
       </div>
 
-      <div className="flex items-center justify-center p-6 sm:p-12">
-        <div className="w-full max-w-sm">
-          <div className="mb-8 lg:hidden flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-ember-gradient">
+      <div className="flex items-center justify-center p-5 sm:p-10">
+        <div className="w-full max-w-[420px] rounded-lg border border-border/70 bg-card/76 p-6 shadow-card sm:p-8">
+          <div className="mb-8 flex items-center gap-2 lg:hidden">
+            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-ember-gradient">
               <Flame className="h-4 w-4 text-primary-foreground" />
             </div>
             <span className="font-display text-lg">Angaar Kitchen</span>
           </div>
           <h2 className="font-display text-3xl">Sign in</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Welcome back. Enter your credentials.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Welcome back. Enter your credentials to continue.</p>
 
-          <form onSubmit={onSubmit} className="mt-8 space-y-4">
-            <div className="space-y-1.5">
+          <form onSubmit={onSubmit} className="mt-8 space-y-5">
+            <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@restaurant.com" required />
+              <div className="relative">
+                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@restaurant.com"
+                  className="pl-9"
+                  required
+                />
+              </div>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <div className="relative">
+                <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="pl-9"
+                  required
+                />
+              </div>
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Sign in
@@ -78,7 +108,7 @@ function LoginPage() {
           </form>
 
           <p className="mt-6 text-sm text-muted-foreground">
-            New to Angaar? <Link to="/signup" className="text-primary hover:underline">Create an account</Link>
+            New to Angaar? <Link to="/signup" className="font-medium text-primary hover:underline">Create an account</Link>
           </p>
         </div>
       </div>
