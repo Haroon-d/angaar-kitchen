@@ -11,6 +11,7 @@ import {
   RotateCcw,
   DollarSign,
   HandCoins,
+  WalletCards,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
@@ -50,19 +51,7 @@ function DashboardPage() {
         .from("orders")
         .select(
           `
-          id, order_no, dining_type, status, grand_total, created_at, customer_name,
-          order_items (
-            id, qty, unit_price, item_id,
-            menu_items (
-              inventory_recipes (
-                quantity,
-                inventory_items (
-                  average_cost,
-                  base_unit
-                )
-              )
-            )
-          )
+          id, order_no, dining_type, status, grand_total, created_at, customer_name
         `,
         )
         .eq("branch_id", branch!.id)
@@ -70,7 +59,48 @@ function DashboardPage() {
         .lt("created_at", bounds.end)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data ?? [];
+
+      const orders = data ?? [];
+      const completedOrderIds = orders
+        .filter((o) => o.status === "completed")
+        .map((o) => o.id);
+
+      let inventoryCost = 0;
+      const costByOrder: Record<string, number> = {};
+      if (completedOrderIds.length > 0) {
+        const { data: movements, error: movementError } = await (supabase as any)
+          .from("inventory_movements")
+          .select("related_order_id, quantity_delta, unit_cost")
+          .eq("branch_id", branch!.id)
+          .eq("movement_type", "sale")
+          .in("related_order_id", completedOrderIds);
+        if (movementError) throw movementError;
+        for (const movement of movements ?? []) {
+          const lineCost =
+            Math.abs(Number(movement.quantity_delta || 0)) * Number(movement.unit_cost || 0);
+          inventoryCost += lineCost;
+          if (movement.related_order_id) {
+            costByOrder[movement.related_order_id] =
+              (costByOrder[movement.related_order_id] ?? 0) + lineCost;
+          }
+        }
+      }
+
+      const { data: expenses, error: expensesError } = await (supabase as any)
+        .from("operational_expenses")
+        .select("amount")
+        .eq("branch_id", branch!.id)
+        .gte("expense_date", startDate)
+        .lte("expense_date", endDate)
+        .neq("status", "void");
+      if (expensesError) throw expensesError;
+
+      const otherCosts = (expenses ?? []).reduce(
+        (sum: number, expense: any) => sum + Number(expense.amount || 0),
+        0,
+      );
+
+      return { orders, inventoryCost, costByOrder, otherCosts };
     },
   });
   const lowStockQ = useQuery({
@@ -86,38 +116,19 @@ function DashboardPage() {
     },
   });
 
-  const orders = todayQ.data ?? [];
+  const orders = todayQ.data?.orders ?? [];
   const completed = orders.filter((o) => o.status === "completed");
   const revenue = completed.reduce((s, o) => s + Number(o.grand_total || 0), 0);
   const open = orders.filter((o) => !["completed", "cancelled"].includes(o.status));
   const avg = completed.length ? revenue / completed.length : 0;
 
-  // Calculate profit for each order (admin only)
-  const calculateOrderProfit = (order: any) => {
-    if (!admin || !order.order_items) return 0;
-
-    let totalCost = 0;
-    for (const item of order.order_items) {
-      const menuItem = item.menu_items;
-      if (!menuItem || !menuItem.inventory_recipes) continue;
-
-      for (const recipe of menuItem.inventory_recipes) {
-        const inventoryItem = recipe.inventory_items;
-        if (!inventoryItem) continue;
-
-        const cost = Number(inventoryItem.average_cost || 0);
-        const quantity = Number(recipe.quantity || 0);
-        totalCost += cost * quantity * Number(item.qty || 0);
-      }
-    }
-
-    return Number(order.grand_total || 0) - totalCost;
-  };
-
-  // Calculate total profit for completed orders
-  const totalProfit = completed.reduce((sum, order) => sum + calculateOrderProfit(order), 0);
+  const inventoryCost = todayQ.data?.inventoryCost ?? 0;
+  const otherCosts = todayQ.data?.otherCosts ?? 0;
+  const grossProfit = revenue - inventoryCost;
+  const totalProfit = grossProfit - otherCosts;
   const zakaat = Math.max(totalProfit, 0) * 0.05;
   const profitAfterZakaat = totalProfit - zakaat;
+  const costByOrder = todayQ.data?.costByOrder ?? {};
 
   const handleResetDates = () => {
     const dateStr = pakistanDateInputValue();
@@ -247,7 +258,24 @@ function DashboardPage() {
           highlight={(lowStockQ.data ?? 0) > 0}
         />
         {admin && (
-          <Stat icon={DollarSign} label="Overall profit" value={formatMoney(totalProfit, symbol)} />
+          <Stat
+            icon={Package}
+            label="Inventory cost"
+            value={formatMoney(inventoryCost, symbol)}
+            to="/inventory"
+          />
+        )}
+        {admin && (
+          <Stat
+            icon={WalletCards}
+            label="Other costs"
+            value={formatMoney(otherCosts, symbol)}
+            to="/expenses"
+            highlight={otherCosts > 0}
+          />
+        )}
+        {admin && (
+          <Stat icon={DollarSign} label="Net profit" value={formatMoney(totalProfit, symbol)} />
         )}
         {admin && <Stat icon={HandCoins} label="Zakaat" value={formatMoney(zakaat, symbol)} />}
         {admin && (
@@ -282,12 +310,15 @@ function DashboardPage() {
                     <th className="pr-4">Status</th>
                     <th className="pr-4">Time</th>
                     <th className="text-right">Total</th>
-                    {admin && <th className="text-right">Profit</th>}
+                    {admin && <th className="text-right">Gross profit</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {orders.slice(0, 12).map((o) => {
-                    const profit = calculateOrderProfit(o);
+                    const profit =
+                      o.status === "completed"
+                        ? Number(o.grand_total || 0) - Number(costByOrder[o.id] || 0)
+                        : 0;
                     return (
                       <tr
                         key={o.id}
