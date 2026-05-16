@@ -44,8 +44,8 @@ function SignupPage() {
       toast.error(error.message);
       return;
     }
-    toast.success("Account created. Signing you in");
-    nav({ to: "/onboarding" });
+    toast.success("Account created. You can now order as a customer.");
+    nav({ to: "/" });
   }
 
   return (
@@ -59,13 +59,20 @@ function SignupPage() {
           <span className="font-display text-xl">Angaar Kitchen</span>
         </div>
         <div className="relative z-10 max-w-md">
-          <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary">New workspace</p>
-          <h1 className="font-display text-5xl leading-tight">Set up a restaurant system that stays composed.</h1>
+          <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary">
+            New workspace
+          </p>
+          <h1 className="font-display text-5xl leading-tight">
+            Set up a restaurant system that stays composed.
+          </h1>
           <p className="mt-5 text-sm leading-6 text-muted-foreground">
-            Start with account access, then configure branches, staff, menus, and billing from onboarding.
+            Start with account access, then configure branches, staff, menus, and billing from
+            onboarding.
           </p>
         </div>
-        <p className="relative z-10 text-xs text-muted-foreground">Copyright {new Date().getFullYear()} Angaar Kitchen</p>
+        <p className="relative z-10 text-xs text-muted-foreground">
+          Copyright {new Date().getFullYear()} Angaar Kitchen
+        </p>
       </div>
 
       <div className="flex items-center justify-center p-5 sm:p-10">
@@ -77,28 +84,50 @@ function SignupPage() {
             <span className="font-display text-lg">Angaar Kitchen</span>
           </div>
           <h2 className="font-display text-3xl">Create account</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Create your access and continue to setup.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Create a customer account for ordering.
+          </p>
 
           <form onSubmit={onSubmit} className="mt-8 space-y-5">
             <div className="space-y-2">
               <Label htmlFor="name">Full name</Label>
               <div className="relative">
                 <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input id="name" value={full_name} onChange={(e) => setName(e.target.value)} className="pl-9" required />
+                <Input
+                  id="name"
+                  value={full_name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="pl-9"
+                  required
+                />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <div className="relative">
                 <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="pl-9" required />
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="pl-9"
+                  required
+                />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
               <div className="relative">
                 <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="pl-9" required />
+                <Input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="pl-9"
+                  required
+                />
               </div>
               <p className="text-xs text-muted-foreground">Use at least 8 characters.</p>
             </div>
@@ -108,7 +137,10 @@ function SignupPage() {
           </form>
 
           <p className="mt-6 text-sm text-muted-foreground">
-            Already have an account? <Link to="/login" className="font-medium text-primary hover:underline">Sign in</Link>
+            Already have an account?{" "}
+            <Link to="/login" className="font-medium text-primary hover:underline">
+              Sign in
+            </Link>
           </p>
         </div>
       </div>

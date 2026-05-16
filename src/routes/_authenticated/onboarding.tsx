@@ -27,6 +27,7 @@ const Schema = z.object({
 
 function OnboardingPage() {
   const { session, user } = useAuth();
+  const { data: roles, isLoading: rolesLoading } = useMyRoles();
   const { refetch } = useActiveBranch();
   const { refetch: refetchRoles } = useMyRoles();
   const nav = useNavigate();
@@ -37,10 +38,33 @@ function OnboardingPage() {
   });
   const set = (k: keyof typeof f) => (v: string) => setF((p) => ({ ...p, [k]: v }));
 
+  if (!rolesLoading && roles && roles.length === 0) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-6">
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle>Operational access required</CardTitle>
+            <CardDescription>
+              Customer accounts cannot set up or enter the Angaar Kitchen operational system.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button className="w-full" onClick={() => nav({ to: "/" })}>
+              Go to customer ordering
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const parsed = Schema.safeParse(f);
-    if (!parsed.success) { toast.error(parsed.error.issues[0].message); return; }
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0].message);
+      return;
+    }
     if (!user || !session?.access_token) return;
 
     setLoading(true);
@@ -54,8 +78,8 @@ function OnboardingPage() {
       await refetchRoles();
       await refetch();
       nav({ to: "/dashboard" });
-    } catch (err: any) {
-      toast.error(err.message ?? "Setup failed");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Setup failed");
     } finally {
       setLoading(false);
     }
@@ -74,26 +98,48 @@ function OnboardingPage() {
         <Card className="shadow-card">
           <CardHeader>
             <CardTitle className="font-display text-3xl">Set up Angaar Kitchen</CardTitle>
-            <CardDescription>Configured for Pakistan with PKR currency, Karachi timezone, and GST defaults.</CardDescription>
+            <CardDescription>
+              Configured for Pakistan with PKR currency, Karachi timezone, and GST defaults.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="space-y-6">
               <div className="grid gap-3 rounded-lg border border-border bg-secondary/35 p-4 sm:grid-cols-3">
-                <div><div className="text-xs text-muted-foreground">Restaurant</div><div className="font-medium">Angaar Kitchen</div></div>
-                <div><div className="text-xs text-muted-foreground">Currency</div><div className="font-medium">Pakistani Rupee · ₨</div></div>
-                <div><div className="text-xs text-muted-foreground">Tax</div><div className="font-medium">GST 15%</div></div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Restaurant</div>
+                  <div className="font-medium">Angaar Kitchen</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Currency</div>
+                  <div className="font-medium">Pakistani Rupee · ₨</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Tax</div>
+                  <div className="font-medium">GST 15%</div>
+                </div>
               </div>
 
               <div className="border-t border-border pt-6">
-                <h3 className="flex items-center gap-2 font-display text-lg"><MapPin className="h-4 w-4 text-primary" />Restaurant details</h3>
+                <h3 className="flex items-center gap-2 font-display text-lg">
+                  <MapPin className="h-4 w-4 text-primary" />
+                  Restaurant details
+                </h3>
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5 sm:col-span-2">
                     <Label>Address</Label>
-                    <Input value={f.address} onChange={(e) => set("address")(e.target.value)} placeholder="City, Pakistan" />
+                    <Input
+                      value={f.address}
+                      onChange={(e) => set("address")(e.target.value)}
+                      placeholder="City, Pakistan"
+                    />
                   </div>
                   <div className="space-y-1.5 sm:col-span-2">
                     <Label>Phone</Label>
-                    <Input value={f.phone} onChange={(e) => set("phone")(e.target.value)} placeholder="03XX XXXXXXX" />
+                    <Input
+                      value={f.phone}
+                      onChange={(e) => set("phone")(e.target.value)}
+                      placeholder="03XX XXXXXXX"
+                    />
                   </div>
                 </div>
               </div>

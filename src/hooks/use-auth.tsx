@@ -19,7 +19,12 @@ type AuthValue = {
   signOut: () => Promise<void>;
 };
 
-const AuthCtx = createContext<AuthValue>({ session: null, user: null, loading: true, signOut: async () => {} });
+const AuthCtx = createContext<AuthValue>({
+  session: null,
+  user: null,
+  loading: true,
+  signOut: async () => {},
+});
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -42,7 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     session,
     user: session?.user ?? null,
     loading,
-    signOut: async () => { await supabase.auth.signOut(); },
+    signOut: async () => {
+      await supabase.auth.signOut();
+    },
   };
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
@@ -78,4 +85,8 @@ export function isAdmin(roles: UserRoleRow[] | undefined) {
 }
 export function isManager(roles: UserRoleRow[] | undefined) {
   return rolesInclude(roles, MANAGER_ROLES);
+}
+
+export function hasOperationalAccess(roles: UserRoleRow[] | undefined) {
+  return !!roles?.length;
 }

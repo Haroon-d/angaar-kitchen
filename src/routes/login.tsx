@@ -29,14 +29,28 @@ function LoginPage() {
       return;
     }
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
       toast.error(error.message);
       return;
     }
-    toast.success("Welcome back");
-    nav({ to: "/dashboard" });
+    const { data: roles, error: roleError } = await supabase
+      .from("user_roles")
+      .select("id")
+      .eq("user_id", data.user.id)
+      .limit(1);
+    if (roleError) {
+      toast.error(roleError.message);
+      return;
+    }
+    if (roles?.length) {
+      toast.success("Welcome back");
+      nav({ to: "/dashboard" });
+    } else {
+      toast.success("Welcome back");
+      nav({ to: "/" });
+    }
   }
 
   return (
@@ -50,13 +64,18 @@ function LoginPage() {
           <span className="font-display text-xl">Angaar Kitchen</span>
         </div>
         <div className="relative z-10 max-w-md">
-          <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary">Restaurant command center</p>
+          <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-primary">
+            Restaurant command center
+          </p>
           <h1 className="font-display text-5xl leading-tight">Run service with a calmer screen.</h1>
           <p className="mt-5 text-sm leading-6 text-muted-foreground">
-            Menus, billing, POS, inventory, staff, and reporting for Angaar Kitchen in one focused workspace.
+            Menus, billing, POS, inventory, staff, and reporting for Angaar Kitchen in one focused
+            workspace.
           </p>
         </div>
-        <p className="relative z-10 text-xs text-muted-foreground">Copyright {new Date().getFullYear()} Angaar Kitchen</p>
+        <p className="relative z-10 text-xs text-muted-foreground">
+          Copyright {new Date().getFullYear()} Angaar Kitchen
+        </p>
       </div>
 
       <div className="flex items-center justify-center p-5 sm:p-10">
@@ -68,7 +87,9 @@ function LoginPage() {
             <span className="font-display text-lg">Angaar Kitchen</span>
           </div>
           <h2 className="font-display text-3xl">Sign in</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Welcome back. Enter your credentials to continue.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Welcome back. Enter your credentials to continue.
+          </p>
 
           <form onSubmit={onSubmit} className="mt-8 space-y-5">
             <div className="space-y-2">
@@ -108,7 +129,10 @@ function LoginPage() {
           </form>
 
           <p className="mt-6 text-sm text-muted-foreground">
-            New to Angaar? <Link to="/signup" className="font-medium text-primary hover:underline">Create an account</Link>
+            New to Angaar?{" "}
+            <Link to="/signup" className="font-medium text-primary hover:underline">
+              Create an account
+            </Link>
           </p>
         </div>
       </div>

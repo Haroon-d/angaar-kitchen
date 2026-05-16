@@ -1,15 +1,52 @@
-import { createFileRoute, Outlet, redirect, Link, useRouterState, useNavigate } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Outlet,
+  redirect,
+  Link,
+  useRouterState,
+  useNavigate,
+} from "@tanstack/react-router";
 import { useEffect } from "react";
-import { Flame, LayoutDashboard, ChefHat, ScrollText, Users, Settings, LogOut, Loader2, Store, Receipt, Package, Banknote } from "lucide-react";
+import {
+  Flame,
+  LayoutDashboard,
+  ChefHat,
+  ScrollText,
+  Users,
+  Settings,
+  LogOut,
+  Loader2,
+  Store,
+  Receipt,
+  Package,
+  Banknote,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth, useMyRoles, isAdmin } from "@/hooks/use-auth";
+import { useAuth, useMyRoles, isAdmin, hasOperationalAccess } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import {
-  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
-  SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger,
-  SidebarHeader, SidebarFooter, useSidebar,
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  SidebarHeader,
+  SidebarFooter,
+  useSidebar,
 } from "@/components/ui/sidebar";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/_authenticated")({
@@ -31,18 +68,25 @@ function AuthedLayout() {
   }, [user, loading, nav]);
 
   useEffect(() => {
-    if (!rolesLoading && roles && roles.length === 0 && router !== "/onboarding") {
-      nav({ to: "/onboarding" });
+    if (!rolesLoading && roles && !hasOperationalAccess(roles)) {
+      nav({ to: "/" });
     }
-  }, [roles, rolesLoading, nav, router]);
+  }, [roles, rolesLoading, nav]);
 
   if (loading || rolesLoading) {
-    return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>;
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
   }
 
-  // While onboarding, render outlet without shell
-  if (router === "/onboarding" || (roles && roles.length === 0)) {
+  if (router === "/onboarding") {
     return <Outlet />;
+  }
+
+  if (roles && !hasOperationalAccess(roles)) {
+    return null;
   }
 
   return (
@@ -87,8 +131,12 @@ function AppSidebar() {
           </div>
           {!collapsed && (
             <div className="min-w-0">
-              <span className="block truncate font-display text-base leading-none">Angaar Kitchen</span>
-              <span className="mt-1 block truncate text-[11px] text-sidebar-foreground/50">Operations</span>
+              <span className="block truncate font-display text-base leading-none">
+                Angaar Kitchen
+              </span>
+              <span className="mt-1 block truncate text-[11px] text-sidebar-foreground/50">
+                Operations
+              </span>
             </div>
           )}
         </Link>
@@ -130,7 +178,9 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="flex w-full items-center gap-2 rounded-md border border-sidebar-border/70 bg-sidebar-accent/35 px-2 py-2 text-left hover:bg-sidebar-accent">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">{initials}</div>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
+            {initials}
+          </div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm">{user?.email}</div>
@@ -142,9 +192,18 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => nav({ to: "/settings" })}><Settings className="mr-2 h-4 w-4" />Settings</DropdownMenuItem>
-        <DropdownMenuItem onClick={async () => { await signOut(); nav({ to: "/login" }); }}>
-          <LogOut className="mr-2 h-4 w-4" />Sign out
+        <DropdownMenuItem onClick={() => nav({ to: "/settings" })}>
+          <Settings className="mr-2 h-4 w-4" />
+          Settings
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={async () => {
+            await signOut();
+            nav({ to: "/login" });
+          }}
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          Sign out
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
