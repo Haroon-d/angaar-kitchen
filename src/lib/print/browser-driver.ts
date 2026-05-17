@@ -40,8 +40,23 @@ export class BrowserPrintDriver implements PrinterDriver {
         doc.write(html);
         doc.close();
 
-        const trigger = () => {
+        const waitForAssets = async () => {
+          const printDoc = iframe.contentDocument;
+          await printDoc?.fonts?.ready;
+          const images = Array.from(printDoc?.images ?? []);
+          await Promise.all(images.map((img) => {
+            if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+            if ("decode" in img) return img.decode().catch(() => undefined);
+            return new Promise<void>((res) => {
+              img.onload = () => res();
+              img.onerror = () => res();
+            });
+          }));
+        };
+
+        const trigger = async () => {
           try {
+            await waitForAssets();
             iframe.contentWindow?.focus();
             iframe.contentWindow?.print();
             resolve();
@@ -54,9 +69,9 @@ export class BrowserPrintDriver implements PrinterDriver {
 
         // Wait for images/fonts to settle.
         if (iframe.contentDocument?.readyState === "complete") {
-          setTimeout(trigger, 80);
+          setTimeout(() => void trigger(), 150);
         } else {
-          iframe.onload = () => setTimeout(trigger, 80);
+          iframe.onload = () => setTimeout(() => void trigger(), 150);
         }
       } catch (err) {
         cleanup();

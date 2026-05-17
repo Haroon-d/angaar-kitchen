@@ -272,6 +272,7 @@ function OrderTicketPage() {
 
 async function renderReceiptImageHtml(element: HTMLDivElement | null, paperSize: "58mm" | "80mm") {
   if (!element) throw new Error("Receipt image source is not ready yet.");
+  await document.fonts?.ready;
   const widthMm = paperSize === "58mm" ? 58 : 80;
   const png = await toPng(element, {
     backgroundColor: "#ffffff",
@@ -290,7 +291,7 @@ const ReceiptImageSource = forwardRef<HTMLDivElement, { data: ReceiptData; paper
         aria-hidden="true"
         style={{
           position: "fixed",
-          left: -10000,
+          left: 0,
           top: 0,
           width: `${widthMm}mm`,
           boxSizing: "border-box",
@@ -300,7 +301,9 @@ const ReceiptImageSource = forwardRef<HTMLDivElement, { data: ReceiptData; paper
           fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
           fontSize: paperSize === "58mm" ? 11 : 12,
           lineHeight: 1.4,
-          zIndex: -1,
+          pointerEvents: "none",
+          transform: "translateX(-200vw)",
+          zIndex: 0,
         }}
       >
         <ReceiptTemplate data={data} paperSize={paperSize} />
