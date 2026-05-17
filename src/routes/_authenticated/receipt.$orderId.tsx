@@ -269,7 +269,8 @@ function OrderTicketPage() {
 
 async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80mm") {
   const widthMm = paperSize === "58mm" ? 58 : 80;
-  const cutterSafeBottomFeedMm = 16;
+  const printableHeightMm = 262;
+  const cutterSafeBottomFeedMm = 35;
   const source = document.createElement("div");
 
   source.setAttribute("aria-hidden", "true");
@@ -301,7 +302,7 @@ async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80
       pixelRatio: 3,
       skipFonts: true,
     });
-    return `<img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;max-height:296mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" />`;
+    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${cutterSafeBottomFeedMm}mm;margin:0;"><img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;max-height:${printableHeightMm}mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" /></div>`;
   } finally {
     source.remove();
   }
