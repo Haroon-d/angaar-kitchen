@@ -301,7 +301,7 @@ async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80
       pixelRatio: 3,
       skipFonts: true,
     });
-    return `<img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;height:auto;margin:0;padding:0;" />`;
+    return `<img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;max-height:296mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" />`;
   } finally {
     source.remove();
   }
