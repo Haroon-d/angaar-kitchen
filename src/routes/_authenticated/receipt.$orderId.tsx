@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toPng } from "html-to-image";
@@ -46,7 +46,6 @@ function OrderTicketPage() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const [printingKind, setPrintingKind] = useState<null | "kot" | "bill" | "receipt">(null);
-  const receiptImageRef = useRef<HTMLDivElement>(null);
 
   const q = useQuery({
     queryKey: ["order", orderId],
@@ -131,7 +130,7 @@ function OrderTicketPage() {
       } else if (kind === "kot") {
         body = PrintService.renderHtml(<KotTemplate data={data} paperSize={settings.paperSize} />);
       } else {
-        body = await renderReceiptImageHtml(receiptImageRef.current, settings.paperSize);
+        body = await renderReceiptImageHtml(data, settings.paperSize);
       }
       await PrintService.print({
         html: body,
@@ -156,8 +155,6 @@ function OrderTicketPage() {
       )}
 
       <div className="mx-auto grid max-w-6xl gap-6 p-4 sm:p-8 lg:grid-cols-[1fr_380px]">
-        <ReceiptImageSource ref={receiptImageRef} data={data} paperSize={settings.paperSize} />
-
         {/* Receipt preview */}
         <div className="flex justify-center">
           <div className="w-full max-w-[420px]">
@@ -270,47 +267,55 @@ function OrderTicketPage() {
   );
 }
 
-async function renderReceiptImageHtml(element: HTMLDivElement | null, paperSize: "58mm" | "80mm") {
-  if (!element) throw new Error("Receipt image source is not ready yet.");
-  await document.fonts?.ready;
+async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80mm") {
   const widthMm = paperSize === "58mm" ? 58 : 80;
-  const png = await toPng(element, {
-    backgroundColor: "#ffffff",
-    cacheBust: true,
-    pixelRatio: 3,
-  });
-  return `<img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;height:auto;margin:0;padding:0;" />`;
+  const source = document.createElement("div");
+
+  source.setAttribute("aria-hidden", "true");
+  Object.assign(source.style, {
+    position: "fixed",
+    left: "0",
+    top: "0",
+    width: `${widthMm}mm`,
+    boxSizing: "border-box",
+    background: "#fff",
+    color: "#000",
+    padding: "4mm 3mm",
+    fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+    fontSize: paperSize === "58mm" ? "11px" : "12px",
+    lineHeight: "1.4",
+    pointerEvents: "none",
+    zIndex: "2147483647",
+  } satisfies Partial<CSSStyleDeclaration>);
+
+  source.innerHTML = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={paperSize} />);
+  document.body.appendChild(source);
+
+  try {
+    await document.fonts?.ready;
+    await waitForElementImages(source);
+    const png = await toPng(source, {
+      backgroundColor: "#ffffff",
+      cacheBust: true,
+      pixelRatio: 3,
+      skipFonts: true,
+    });
+    return `<img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;height:auto;margin:0;padding:0;" />`;
+  } finally {
+    source.remove();
+  }
 }
 
-const ReceiptImageSource = forwardRef<HTMLDivElement, { data: ReceiptData; paperSize: "58mm" | "80mm" }>(
-  function ReceiptImageSource({ data, paperSize }, ref) {
-    const widthMm = paperSize === "58mm" ? 58 : 80;
-    return (
-      <div
-        ref={ref}
-        aria-hidden="true"
-        style={{
-          position: "fixed",
-          left: 0,
-          top: 0,
-          width: `${widthMm}mm`,
-          boxSizing: "border-box",
-          background: "#fff",
-          color: "#000",
-          padding: "4mm 3mm",
-          fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
-          fontSize: paperSize === "58mm" ? 11 : 12,
-          lineHeight: 1.4,
-          pointerEvents: "none",
-          transform: "translateX(-200vw)",
-          zIndex: 0,
-        }}
-      >
-        <ReceiptTemplate data={data} paperSize={paperSize} />
-      </div>
-    );
-  },
-);
+async function waitForElementImages(element: HTMLElement) {
+  const images = Array.from(element.querySelectorAll("img"));
+  await Promise.all(images.map((img) => {
+    if (img.complete) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+    });
+  }));
+}
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
