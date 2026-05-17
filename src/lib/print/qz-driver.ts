@@ -92,6 +92,6 @@ function toEscPos(text: string) {
     .replace(/[·×»]/g, (ch) => ({ "·": "-", "×": "x", "»": ">" }[ch] ?? ch))
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
 
-  // ESC @ initialize, then text, feed enough paper past the cutter, then partial cut.
-  return "\x1B@" + normalized.replace(/\n/g, "\r\n") + "\r\n\r\n\r\n\r\n\r\n\r\n" + "\x1D\x56\x42\x00";
+  // ESC @ initialize, then text, feed paper past the cutter, then partial cut.
+  return "\x1B@" + normalized.replace(/\n/g, "\r\n") + "\r\n" + "\x1B\x64\x0C" + "\x1D\x56\x42\x00";
 }
