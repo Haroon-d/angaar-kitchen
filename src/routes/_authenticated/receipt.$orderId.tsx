@@ -126,7 +126,7 @@ function OrderTicketPage() {
     try {
       const driverId = await PrintService.activeDriverId();
       let body: string;
-      if (driverId === "network") {
+      if (driverId === "network" || driverId === "qz") {
         body = kind === "kot" ? renderKotText(data) : renderReceiptText(data);
       } else if (kind === "kot") {
         body = await renderTicketImageHtml({

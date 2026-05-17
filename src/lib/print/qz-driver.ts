@@ -68,14 +68,14 @@ export class QZTrayDriver implements PrinterDriver {
       throw new Error("No printer selected. Pick one in Settings → Printer.");
     }
     const config = qz.configs.create(printerName, {
-      scaleContent: true,
-      rasterize: true,
-      size: { width: job.paperSize === "58mm" ? 2.28 : 3.15 },
-      units: "in",
-      margins: 0,
+      encoding: "CP437",
+      spool: { end: "\n" },
     });
-    const wrapped = `<!doctype html><meta charset="utf-8"><body style="margin:0;padding:0;font-family:'JetBrains Mono',monospace;font-size:${job.paperSize==="58mm"?"11px":"12px"};">${job.html}</body>`;
-    await qz.print(config, [{ type: "pixel", format: "html", flavor: "plain", data: wrapped }]);
+    await qz.print(config, [{
+      type: "raw",
+      format: "plain",
+      data: toEscPos(job.html),
+    }]);
   }
 
   /** Helper for the settings page to list available printers. */
@@ -84,4 +84,14 @@ export class QZTrayDriver implements PrinterDriver {
     if (!qz?.websocket?.isActive()) return [];
     try { return await qz.printers.find(); } catch { return []; }
   }
+}
+
+function toEscPos(text: string) {
+  const normalized = text
+    .replace(/â‚¨|₨|₹/g, "Rs.")
+    .replace(/[·×»]/g, (ch) => ({ "·": "-", "×": "x", "»": ">" }[ch] ?? ch))
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
+
+  // ESC @ initialize, then text, feed enough paper past the cutter, then partial cut.
+  return "\x1B@" + normalized.replace(/\n/g, "\r\n") + "\r\n\r\n\r\n\r\n\r\n\r\n" + "\x1D\x56\x42\x00";
 }
