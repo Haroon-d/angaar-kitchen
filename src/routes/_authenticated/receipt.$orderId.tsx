@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactElement } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toPng } from "html-to-image";
@@ -128,9 +129,19 @@ function OrderTicketPage() {
       if (driverId === "network") {
         body = kind === "kot" ? renderKotText(data) : renderReceiptText(data);
       } else if (kind === "kot") {
-        body = PrintService.renderHtml(<KotTemplate data={data} paperSize={settings.paperSize} />);
+        body = await renderTicketImageHtml({
+          node: <KotTemplate data={data} paperSize={settings.paperSize} />,
+          paperSize: settings.paperSize,
+          alt: "Kitchen ticket",
+          sourceFontSizePx: settings.paperSize === "58mm" ? 13 : 14,
+        });
       } else {
-        body = await renderReceiptImageHtml(data, settings.paperSize);
+        body = await renderTicketImageHtml({
+          node: <ReceiptTemplate data={data} paperSize={settings.paperSize} />,
+          paperSize: settings.paperSize,
+          alt: "Receipt",
+          sourceFontSizePx: settings.paperSize === "58mm" ? 11 : 12,
+        });
       }
       await PrintService.print({
         html: body,
@@ -267,7 +278,17 @@ function OrderTicketPage() {
   );
 }
 
-async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80mm") {
+async function renderTicketImageHtml({
+  node,
+  paperSize,
+  alt,
+  sourceFontSizePx,
+}: {
+  node: ReactElement;
+  paperSize: "58mm" | "80mm";
+  alt: string;
+  sourceFontSizePx: number;
+}) {
   const widthMm = paperSize === "58mm" ? 58 : 80;
   const printableHeightMm = 262;
   const cutterSafeBottomFeedMm = 35;
@@ -284,13 +305,13 @@ async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80
     color: "#000",
     padding: `4mm 3mm ${cutterSafeBottomFeedMm}mm`,
     fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
-    fontSize: paperSize === "58mm" ? "11px" : "12px",
+    fontSize: `${sourceFontSizePx}px`,
     lineHeight: "1.4",
     pointerEvents: "none",
     zIndex: "2147483647",
   } satisfies Partial<CSSStyleDeclaration>);
 
-  source.innerHTML = PrintService.renderHtml(<ReceiptTemplate data={data} paperSize={paperSize} />);
+  source.innerHTML = PrintService.renderHtml(node);
   document.body.appendChild(source);
 
   try {
@@ -302,7 +323,7 @@ async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80
       pixelRatio: 3,
       skipFonts: true,
     });
-    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${cutterSafeBottomFeedMm}mm;margin:0;"><img class="ak-print-image" src="${png}" alt="Receipt" style="display:block;width:${widthMm}mm;max-height:${printableHeightMm}mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" /></div>`;
+    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${cutterSafeBottomFeedMm}mm;margin:0;"><img class="ak-print-image" src="${png}" alt="${alt}" style="display:block;width:${widthMm}mm;max-height:${printableHeightMm}mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" /></div>`;
   } finally {
     source.remove();
   }
