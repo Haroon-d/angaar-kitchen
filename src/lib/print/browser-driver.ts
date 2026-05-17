@@ -68,6 +68,7 @@ export class BrowserPrintDriver implements PrinterDriver {
 
 function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
   const widthMm = size === "58mm" ? 58 : 80;
+  const imagePrint = bodyHtml.includes("ak-print-image");
   return `<!doctype html>
 <html>
 <head>
@@ -82,8 +83,9 @@ function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
     font-size: ${size === "58mm" ? "11px" : "12px"};
     line-height: 1.4;
     width: ${widthMm}mm;
-    padding: 4mm 3mm;
+    padding: ${imagePrint ? "0" : "4mm 3mm"};
   }
+  img { display: block; max-width: 100%; height: auto; break-inside: avoid; page-break-inside: avoid; }
   .ak-r-h1 { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; font-size: ${size === "58mm" ? "16px" : "18px"}; margin: 0; text-align: center; letter-spacing: .5px; }
   .ak-r-meta { text-align: center; font-size: ${size === "58mm" ? "10px" : "11px"}; line-height: 1.35; }
   .ak-r-rule { border: none; border-top: 1px dashed #555; margin: 6px 0; }
