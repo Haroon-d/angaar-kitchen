@@ -290,8 +290,9 @@ async function renderTicketImageHtml({
   sourceFontSizePx: number;
 }) {
   const widthMm = paperSize === "58mm" ? 58 : 80;
-  const printableHeightMm = 262;
-  const cutterSafeBottomFeedMm = 35;
+  const printableHeightMm = 145;
+  const cutterSafeBottomFeedMm = 8;
+  const sheetTailFeedMm = 297 - printableHeightMm;
   const source = document.createElement("div");
 
   source.setAttribute("aria-hidden", "true");
@@ -320,10 +321,10 @@ async function renderTicketImageHtml({
     const png = await toPng(source, {
       backgroundColor: "#ffffff",
       cacheBust: true,
-      pixelRatio: 3,
+      pixelRatio: 1.5,
       skipFonts: true,
     });
-    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${cutterSafeBottomFeedMm}mm;margin:0;"><img class="ak-print-image" src="${png}" alt="${alt}" style="display:block;width:${widthMm}mm;max-height:${printableHeightMm}mm;height:auto;margin:0;padding:0;object-fit:contain;object-position:top center;" /></div>`;
+    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${sheetTailFeedMm}mm;margin:0;text-align:center;"><img class="ak-print-image" src="${png}" alt="${alt}" style="display:block;max-width:${widthMm}mm;max-height:${printableHeightMm}mm;width:auto;height:auto;margin:0 auto;padding:0;object-fit:contain;object-position:top center;" /></div>`;
   } finally {
     source.remove();
   }
