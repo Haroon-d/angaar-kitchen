@@ -269,6 +269,7 @@ function OrderTicketPage() {
 
 async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80mm") {
   const widthMm = paperSize === "58mm" ? 58 : 80;
+  const cutterSafeBottomFeedMm = 16;
   const source = document.createElement("div");
 
   source.setAttribute("aria-hidden", "true");
@@ -280,7 +281,7 @@ async function renderReceiptImageHtml(data: ReceiptData, paperSize: "58mm" | "80
     boxSizing: "border-box",
     background: "#fff",
     color: "#000",
-    padding: "4mm 3mm",
+    padding: `4mm 3mm ${cutterSafeBottomFeedMm}mm`,
     fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
     fontSize: paperSize === "58mm" ? "11px" : "12px",
     lineHeight: "1.4",
