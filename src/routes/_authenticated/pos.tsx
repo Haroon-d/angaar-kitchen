@@ -145,9 +145,9 @@ function POSPage() {
   if (!branch) return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
 
   return (
-    <div className="grid h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[1fr_400px]">
+    <div className="grid h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_360px]">
       {/* Left: items */}
-      <div className="flex min-h-0 flex-col p-4 sm:p-6">
+      <div className="flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="font-display text-2xl">Point of Sale</h1>
           <div className="ml-auto relative">
@@ -157,9 +157,9 @@ function POSPage() {
         </div>
 
         <Tabs value={activeCat} onValueChange={setActiveCat} className="mt-4">
-          <TabsList className="overflow-x-auto">
-            <TabsTrigger value="all">All</TabsTrigger>
-            {catsQ.data?.map((c) => <TabsTrigger key={c.id} value={c.id}>{c.name}</TabsTrigger>)}
+          <TabsList className="flex h-auto max-h-[76px] w-full flex-wrap justify-start gap-1 overflow-y-auto overflow-x-hidden">
+            <TabsTrigger value="all" className="h-8 px-2.5">All</TabsTrigger>
+            {catsQ.data?.map((c) => <TabsTrigger key={c.id} value={c.id} className="h-8 whitespace-normal px-2.5 text-xs leading-tight">{c.name}</TabsTrigger>)}
           </TabsList>
         </Tabs>
 
