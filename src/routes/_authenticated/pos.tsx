@@ -163,7 +163,7 @@ function POSPage() {
           </TabsList>
         </Tabs>
 
-        <div className="mt-4 grid flex-1 auto-rows-min gap-3 overflow-y-auto pb-4 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4">
+        <div className="mt-4 grid flex-1 auto-rows-min gap-3 overflow-y-auto pb-4 grid-cols-2 sm:grid-cols-3">
           {itemsQ.isLoading && <Loader2 className="h-5 w-5 animate-spin" />}
           {filteredItems.length === 0 && !itemsQ.isLoading && (
             <div className="col-span-full py-12 text-center text-sm text-muted-foreground">No items. <Link to="/menu" className="text-primary">Add some</Link>.</div>
