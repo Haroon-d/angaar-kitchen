@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Search, Receipt, ChefHat, Clock, Plus } from "lucide-react";
+import { Loader2, Search, Receipt, ChefHat, Clock, Plus, Calendar, RotateCcw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -20,35 +21,38 @@ import {
 export const Route = createFileRoute("/_authenticated/orders")({ component: OrdersPage });
 
 type Filter = "open" | "unpaid" | "paid" | "all";
+type PaymentStatus = "pending" | "partial" | "paid" | "refunded";
 
 function OrdersPage() {
   const { branch, restaurant } = useActiveBranch();
   const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
+  const todayValue = pakistanDateInputValue();
+  const [selectedDate, setSelectedDate] = useState(todayValue);
   const [filter, setFilter] = useState<Filter>("open");
   const [search, setSearch] = useState("");
 
   const q = useQuery({
-    queryKey: ["orders-list", branch?.id],
+    queryKey: ["orders-list", branch?.id, selectedDate],
     enabled: !!branch,
     refetchInterval: 8000,
     queryFn: async () => {
-      const today = pakistanDayUtcRange(pakistanDateInputValue());
+      const selectedDay = pakistanDayUtcRange(selectedDate);
       const { data, error } = await supabase
         .from("orders")
         .select(
           "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, customer_name, table_label, kot_print_count, bill_print_count, receipt_print_count",
         )
         .eq("branch_id", branch!.id)
-        .gte("created_at", today.start)
-        .lt("created_at", today.end)
+        .gte("created_at", selectedDay.start)
+        .lt("created_at", selectedDay.end)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data ?? [];
     },
   });
 
-  const orders = q.data ?? [];
+  const orders = useMemo(() => q.data ?? [], [q.data]);
   const filtered = useMemo(() => {
     let list = orders;
     if (filter === "open")
@@ -77,6 +81,7 @@ function OrdersPage() {
     }),
     [orders],
   );
+  const isToday = selectedDate === todayValue;
 
   if (!branch)
     return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
@@ -88,7 +93,7 @@ function OrdersPage() {
           <h1 className="font-display text-3xl">Orders</h1>
           <p className="text-sm text-muted-foreground">
             {branch.name} · live tickets ·{" "}
-            {formatPakistanDateLabel(pakistanDateInputValue(), { day: "numeric", month: "long" })}
+            {formatPakistanDateLabel(selectedDate, { day: "numeric", month: "long" })}
           </p>
         </div>
         <Button asChild>
@@ -116,6 +121,40 @@ function OrdersPage() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
+        <div className="flex items-end gap-2">
+          <div className="min-w-[170px]">
+            <Label
+              htmlFor="orders-date"
+              className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              Date
+            </Label>
+            <div className="relative">
+              <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="orders-date"
+                type="date"
+                value={selectedDate}
+                onChange={(e) => {
+                  if (e.target.value) setSelectedDate(e.target.value);
+                }}
+                className="pl-9"
+              />
+            </div>
+          </div>
+          {!isToday && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => setSelectedDate(todayValue)}
+              aria-label="Show today's orders"
+              title="Show today's orders"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
         <div className="relative ml-auto">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -159,7 +198,7 @@ function OrdersPage() {
                     {o.customer_name || (o.table_label ? `Table ${o.table_label}` : "Walk-in")}
                   </div>
                 </div>
-                <PayBadge status={o.payment_status as any} />
+                <PayBadge status={o.payment_status as PaymentStatus} />
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -215,7 +254,7 @@ function CountChip({ n }: { n: number }) {
   );
 }
 
-function PayBadge({ status }: { status: "pending" | "partial" | "paid" | "refunded" }) {
+function PayBadge({ status }: { status: PaymentStatus }) {
   const map: Record<string, { cls: string; label: string }> = {
     pending: { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", label: "Unpaid" },
     partial: { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "Partial" },
