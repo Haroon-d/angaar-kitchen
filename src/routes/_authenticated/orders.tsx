@@ -22,6 +22,18 @@ export const Route = createFileRoute("/_authenticated/orders")({ component: Orde
 
 type Filter = "open" | "unpaid" | "paid" | "all";
 type PaymentStatus = "pending" | "partial" | "paid" | "refunded";
+type OrderStatus =
+  | "open"
+  | "placed"
+  | "preparing"
+  | "ready"
+  | "served"
+  | "completed"
+  | "cancelled"
+  | "voided"
+  | "refunded";
+
+const TERMINAL_ORDER_STATUSES = ["completed", "cancelled", "voided", "refunded"];
 
 function OrdersPage() {
   const { branch, restaurant } = useActiveBranch();
@@ -55,10 +67,11 @@ function OrdersPage() {
   const orders = useMemo(() => q.data ?? [], [q.data]);
   const filtered = useMemo(() => {
     let list = orders;
-    if (filter === "open")
-      list = list.filter((o) => !["completed", "cancelled"].includes(o.status));
+    if (filter === "open") list = list.filter((o) => !TERMINAL_ORDER_STATUSES.includes(o.status));
     else if (filter === "unpaid")
-      list = list.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled");
+      list = list.filter(
+        (o) => o.payment_status !== "paid" && !TERMINAL_ORDER_STATUSES.includes(o.status),
+      );
     else if (filter === "paid") list = list.filter((o) => o.payment_status === "paid");
     if (search.trim()) {
       const s = search.toLowerCase();
@@ -74,8 +87,10 @@ function OrdersPage() {
 
   const counts = useMemo(
     () => ({
-      open: orders.filter((o) => !["completed", "cancelled"].includes(o.status)).length,
-      unpaid: orders.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled").length,
+      open: orders.filter((o) => !TERMINAL_ORDER_STATUSES.includes(o.status)).length,
+      unpaid: orders.filter(
+        (o) => o.payment_status !== "paid" && !TERMINAL_ORDER_STATUSES.includes(o.status),
+      ).length,
       paid: orders.filter((o) => o.payment_status === "paid").length,
       all: orders.length,
     }),
@@ -198,7 +213,10 @@ function OrdersPage() {
                     {o.customer_name || (o.table_label ? `Table ${o.table_label}` : "Walk-in")}
                   </div>
                 </div>
-                <PayBadge status={o.payment_status as PaymentStatus} />
+                <div className="flex flex-col items-end gap-1.5">
+                  <PayBadge status={o.payment_status as PaymentStatus} />
+                  {o.status !== "open" && <StatusBadge status={o.status as OrderStatus} />}
+                </div>
               </div>
 
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -262,6 +280,29 @@ function PayBadge({ status }: { status: PaymentStatus }) {
     refunded: { cls: "bg-muted text-muted-foreground border-border", label: "Refunded" },
   };
   const m = map[status] ?? map.pending;
+  return (
+    <Badge variant="outline" className={`${m.cls} text-[10px] font-medium`}>
+      {m.label}
+    </Badge>
+  );
+}
+
+function StatusBadge({ status }: { status: OrderStatus }) {
+  const map: Record<OrderStatus, { cls: string; label: string }> = {
+    open: { cls: "bg-muted text-muted-foreground border-border", label: "Open" },
+    placed: { cls: "bg-primary/15 text-primary border-primary/30", label: "Placed" },
+    preparing: { cls: "bg-amber-500/15 text-amber-300 border-amber-500/30", label: "Preparing" },
+    ready: { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "Ready" },
+    served: { cls: "bg-success/15 text-success border-success/30", label: "Served" },
+    completed: { cls: "bg-success/15 text-success border-success/30", label: "Completed" },
+    cancelled: {
+      cls: "bg-destructive/15 text-destructive border-destructive/30",
+      label: "Cancelled",
+    },
+    voided: { cls: "bg-destructive/15 text-destructive border-destructive/30", label: "Voided" },
+    refunded: { cls: "bg-muted text-muted-foreground border-border", label: "Refunded" },
+  };
+  const m = map[status] ?? map.open;
   return (
     <Badge variant="outline" className={`${m.cls} text-[10px] font-medium`}>
       {m.label}

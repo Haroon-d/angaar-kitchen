@@ -31,6 +31,8 @@ import { useState } from "react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({ component: DashboardPage });
 
+const TERMINAL_ORDER_STATUSES = ["completed", "cancelled", "voided", "refunded"];
+
 function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
@@ -61,9 +63,7 @@ function DashboardPage() {
       if (error) throw error;
 
       const orders = data ?? [];
-      const completedOrderIds = orders
-        .filter((o) => o.status === "completed")
-        .map((o) => o.id);
+      const completedOrderIds = orders.filter((o) => o.status === "completed").map((o) => o.id);
 
       let inventoryCost = 0;
       const costByOrder: Record<string, number> = {};
@@ -119,7 +119,7 @@ function DashboardPage() {
   const orders = todayQ.data?.orders ?? [];
   const completed = orders.filter((o) => o.status === "completed");
   const revenue = completed.reduce((s, o) => s + Number(o.grand_total || 0), 0);
-  const open = orders.filter((o) => !["completed", "cancelled"].includes(o.status));
+  const open = orders.filter((o) => !TERMINAL_ORDER_STATUSES.includes(o.status));
   const avg = completed.length ? revenue / completed.length : 0;
 
   const inventoryCost = todayQ.data?.inventoryCost ?? 0;
@@ -228,9 +228,7 @@ function DashboardPage() {
         </CardContent>
       </Card>
 
-      <div
-        className={`grid gap-4 sm:grid-cols-2 ${admin ? "lg:grid-cols-4" : "lg:grid-cols-5"}`}
-      >
+      <div className={`grid gap-4 sm:grid-cols-2 ${admin ? "lg:grid-cols-4" : "lg:grid-cols-5"}`}>
         <Stat
           icon={Banknote}
           label={`Revenue ${isToday ? "today" : "in period"}`}
@@ -409,6 +407,8 @@ function StatusPill({ status }: { status: string }) {
     preparing: "bg-warning/15 text-warning",
     ready: "bg-accent/15 text-accent",
     served: "bg-success/15 text-success",
+    voided: "bg-destructive/15 text-destructive",
+    refunded: "bg-muted text-muted-foreground",
   };
   return (
     <span

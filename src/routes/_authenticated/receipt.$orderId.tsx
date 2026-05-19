@@ -1,25 +1,57 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toPng } from "html-to-image";
 import { z } from "zod";
 import {
-  Printer, ArrowLeft, Loader2, CheckCircle2, RotateCcw, Flame, ChefHat,
-  ReceiptText, CreditCard, AlertCircle,
+  Printer,
+  ArrowLeft,
+  Loader2,
+  CheckCircle2,
+  RotateCcw,
+  Flame,
+  ChefHat,
+  ReceiptText,
+  CreditCard,
+  AlertCircle,
+  Ban,
+  Pencil,
+  Percent,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
+import { useMyRoles, isManager } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
 import { KotTemplate } from "@/components/receipt/KotTemplate";
@@ -37,12 +69,23 @@ export const Route = createFileRoute("/_authenticated/receipt/$orderId")({
 });
 
 type PaymentMethod = "cash" | "card" | "upi" | "wallet" | "other";
+type OrderStatus =
+  | "open"
+  | "placed"
+  | "preparing"
+  | "ready"
+  | "served"
+  | "completed"
+  | "cancelled"
+  | "voided"
+  | "refunded";
 
 function OrderTicketPage() {
   const { orderId } = Route.useParams();
   const search = useSearch({ from: Route.id });
   const justPlaced = !!search.placed;
   const { restaurant, branch } = useActiveBranch();
+  const { data: roles } = useMyRoles();
   const { settings } = usePrinterSettings(branch?.id);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -52,17 +95,50 @@ function OrderTicketPage() {
     queryKey: ["order", orderId],
     queryFn: async () => {
       const { data: order, error } = await supabase
-        .from("orders").select("*").eq("id", orderId).single();
+        .from("orders")
+        .select("*")
+        .eq("id", orderId)
+        .single();
       if (error) throw error;
-      const [{ data: items }, { data: taxes }, { data: payments }, { data: profile }] = await Promise.all([
-        supabase.from("order_items").select("*").eq("order_id", orderId),
-        supabase.from("order_taxes").select("*").eq("order_id", orderId),
-        supabase.from("payments").select("*").eq("order_id", orderId).order("paid_at"),
-        order.created_by
-          ? supabase.from("profiles").select("full_name").eq("id", order.created_by).maybeSingle()
-          : Promise.resolve({ data: null }),
+      const [{ data: items }, { data: taxes }, { data: payments }, { data: profile }] =
+        await Promise.all([
+          supabase.from("order_items").select("*").eq("order_id", orderId),
+          supabase.from("order_taxes").select("*").eq("order_id", orderId),
+          supabase.from("payments").select("*").eq("order_id", orderId).order("paid_at"),
+          order.created_by
+            ? supabase.from("profiles").select("full_name").eq("id", order.created_by).maybeSingle()
+            : Promise.resolve({ data: null }),
+        ]);
+      return {
+        order,
+        items: items ?? [],
+        taxes: taxes ?? [],
+        payments: payments ?? [],
+        cashier: profile?.full_name ?? null,
+      };
+    },
+  });
+
+  const cancelOrder = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.rpc("cancel_order", { _order_id: orderId });
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      const orderNo = q.data?.order.order_no;
+      toast.success(
+        orderNo
+          ? `Order ${orderNo} cancelled and inventory restored`
+          : "Order cancelled and inventory restored",
+      );
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["order", orderId] }),
+        qc.invalidateQueries({ queryKey: ["orders-list"] }),
+        qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
       ]);
-      return { order, items: items ?? [], taxes: taxes ?? [], payments: payments ?? [], cashier: profile?.full_name ?? null };
+    },
+    onError: (err: any) => {
+      toast.error(err?.message ?? "Failed to cancel order");
     },
   });
 
@@ -87,20 +163,33 @@ function OrderTicketPage() {
       createdAt: order.created_at,
       currencySymbol: restaurant.currency_symbol ?? "₨",
       items: items.map((i: any) => ({
-        id: i.id, name: i.name_snapshot, qty: i.qty,
-        unit_price: Number(i.unit_price), line_total: Number(i.line_subtotal),
+        id: i.id,
+        name: i.name_snapshot,
+        qty: i.qty,
+        unit_price: Number(i.unit_price),
+        line_total: Number(i.line_subtotal),
         notes: i.notes,
       })),
       subtotal: Number(order.subtotal),
       discount: Number(order.discount_total),
-      taxes: taxes.map((t: any) => ({ name: t.name_snapshot, rate: Number(t.rate_snapshot), amount: Number(t.amount) })),
+      taxes: taxes.map((t: any) => ({
+        name: t.name_snapshot,
+        rate: Number(t.rate_snapshot),
+        amount: Number(t.amount),
+      })),
       grandTotal: Number(order.grand_total),
-      payments: payments.map((p: any) => ({ method: p.method, amount: Number(p.amount), reference: p.reference })),
+      payments: payments.map((p: any) => ({
+        method: p.method,
+        amount: Number(p.amount),
+        reference: p.reference,
+      })),
       amountReceived: Number(order.amount_paid),
       changeReturned: Math.max(0, Number(order.amount_paid) - Number(order.grand_total)),
       footerNote: settings.footerNote,
     };
   }, [q.data, restaurant, branch, settings.footerNote, settings.taxId]);
+
+  if (q.error) return <div className="p-8 text-center text-destructive">Order not found.</div>;
 
   if (q.isLoading || !data) {
     return (
@@ -109,17 +198,32 @@ function OrderTicketPage() {
       </div>
     );
   }
-  if (q.error) return <div className="p-8 text-center text-destructive">Order not found.</div>;
-
   const order = q.data!.order as any;
-  const paymentStatus = (order.payment_status ?? "pending") as "pending" | "partial" | "paid" | "refunded";
+  const paymentStatus = (order.payment_status ?? "pending") as
+    | "pending"
+    | "partial"
+    | "paid"
+    | "refunded";
+  const orderStatus = (order.status ?? "open") as OrderStatus;
   const remaining = Math.max(0, Number(order.grand_total) - Number(order.amount_paid));
+  const cancelled = ["cancelled", "voided", "refunded"].includes(orderStatus);
+  const manager = isManager(roles);
+  const canCancel =
+    manager &&
+    !cancelled &&
+    orderStatus !== "completed" &&
+    paymentStatus === "pending" &&
+    Number(order.amount_paid) <= 0 &&
+    !q.data!.payments.length;
+  const canEdit = canCancel;
 
   async function doPrint(kind: "kot" | "bill" | "receipt") {
     if (!data) return;
     if (printingKind) return;
     if (settings.driver === "network") {
-      toast.error("Network TCP printing is not supported on Vercel deployments. Switch to QZ Tray in Settings.");
+      toast.error(
+        "Network TCP printing is not supported on Vercel deployments. Switch to QZ Tray in Settings.",
+      );
       return;
     }
     setPrintingKind(kind);
@@ -162,7 +266,11 @@ function OrderTicketPage() {
   return (
     <div className="min-h-screen bg-coal-gradient">
       {justPlaced && (
-        <SuccessRibbon orderNo={data.orderNo} total={data.grandTotal} symbol={data.currencySymbol} />
+        <SuccessRibbon
+          orderNo={data.orderNo}
+          total={data.grandTotal}
+          symbol={data.currencySymbol}
+        />
       )}
 
       <div className="mx-auto grid max-w-6xl gap-6 p-4 sm:p-8 lg:grid-cols-[1fr_380px]">
@@ -180,14 +288,25 @@ function OrderTicketPage() {
               <div className="text-xs uppercase tracking-widest text-muted-foreground">Order</div>
               <div className="font-display text-2xl">{data.orderNo}</div>
             </div>
-            <PaymentBadge status={paymentStatus} />
+            <div className="flex flex-col items-end gap-2">
+              <StatusBadge status={orderStatus} />
+              <PaymentBadge status={paymentStatus} />
+            </div>
           </header>
 
-          {paymentStatus !== "paid" && paymentStatus !== "refunded" && (
+          {cancelled && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              This order is {orderStatus}. New payments and prints are blocked.
+            </div>
+          )}
+
+          {!cancelled && paymentStatus !== "paid" && paymentStatus !== "refunded" && (
             <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Outstanding</span>
-                <span className="font-mono text-base text-primary">{formatMoney(remaining, data.currencySymbol)}</span>
+                <span className="font-mono text-base text-primary">
+                  {formatMoney(remaining, data.currencySymbol)}
+                </span>
               </div>
             </div>
           )}
@@ -196,7 +315,12 @@ function OrderTicketPage() {
           <div className="space-y-2">
             <SectionLabel>Print</SectionLabel>
             <div className="grid grid-cols-2 gap-2">
-              <Button variant="outline" className="justify-start" onClick={() => doPrint("kot")}>
+              <Button
+                variant="outline"
+                className="justify-start"
+                onClick={() => doPrint("kot")}
+                disabled={cancelled || printingKind !== null}
+              >
                 {printingKind === "kot" ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
@@ -209,8 +333,14 @@ function OrderTicketPage() {
                 variant="outline"
                 className="justify-start"
                 onClick={() => doPrint("bill")}
-                disabled={paymentStatus === "paid" || printingKind !== null}
-                title={paymentStatus === "paid" ? "Order already paid" : "Print unpaid bill"}
+                disabled={cancelled || paymentStatus === "paid" || printingKind !== null}
+                title={
+                  cancelled
+                    ? "Order cancelled"
+                    : paymentStatus === "paid"
+                      ? "Order already paid"
+                      : "Print unpaid bill"
+                }
               >
                 {printingKind === "bill" ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -224,8 +354,14 @@ function OrderTicketPage() {
                 variant="outline"
                 className="justify-start"
                 onClick={() => doPrint("receipt")}
-                disabled={paymentStatus !== "paid" || printingKind !== null}
-                title={paymentStatus !== "paid" ? "Take payment first" : "Print final receipt"}
+                disabled={cancelled || paymentStatus !== "paid" || printingKind !== null}
+                title={
+                  cancelled
+                    ? "Order cancelled"
+                    : paymentStatus !== "paid"
+                      ? "Take payment first"
+                      : "Print final receipt"
+                }
               >
                 {printingKind === "receipt" ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -239,7 +375,7 @@ function OrderTicketPage() {
                 variant="ghost"
                 className="justify-start"
                 onClick={() => doPrint(paymentStatus === "paid" ? "receipt" : "bill")}
-                disabled={printingKind !== null}
+                disabled={cancelled || printingKind !== null}
               >
                 <RotateCcw className="mr-2 h-4 w-4" /> Reprint
               </Button>
@@ -249,7 +385,12 @@ function OrderTicketPage() {
           {/* Payment */}
           <div className="space-y-2">
             <SectionLabel>Payment</SectionLabel>
-            {paymentStatus === "paid" ? (
+            {cancelled ? (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                <Ban className="h-4 w-4" />
+                Payment disabled for cancelled orders
+              </div>
+            ) : paymentStatus === "paid" ? (
               <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success-foreground">
                 <CheckCircle2 className="h-4 w-4 text-success" />
                 Fully paid · {data.payments.length} payment{data.payments.length === 1 ? "" : "s"}
@@ -265,11 +406,79 @@ function OrderTicketPage() {
             )}
           </div>
 
+          {manager && (
+            <div className="space-y-2">
+              <SectionLabel>Order control</SectionLabel>
+              {!cancelled && paymentStatus !== "refunded" && (
+                <AdjustDiscountDialog
+                  orderId={orderId}
+                  subtotal={Number(order.subtotal)}
+                  currentDiscount={Number(order.discount_total)}
+                  currentTotal={Number(order.grand_total)}
+                  amountPaid={Number(order.amount_paid)}
+                  currencySymbol={data.currencySymbol}
+                  onAdjusted={() => {
+                    qc.invalidateQueries({ queryKey: ["order", orderId] });
+                    qc.invalidateQueries({ queryKey: ["orders-list"] });
+                    qc.invalidateQueries({ queryKey: ["dashboard-today"] });
+                  }}
+                />
+              )}
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => nav({ to: "/pos", search: { editOrderId: orderId } })}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit Order
+                </Button>
+              )}
+              {canCancel ? (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" className="w-full">
+                      <Ban className="mr-2 h-4 w-4" />
+                      Cancel Order
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel {data.orderNo}?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This keeps the order in history, marks it cancelled, and restores inventory
+                        deducted when the order was placed.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep order</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={() => cancelOrder.mutate()}
+                        disabled={cancelOrder.isPending}
+                      >
+                        {cancelOrder.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Cancel order
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : (
+                <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-xs text-muted-foreground">
+                  Orders can be cancelled only before payment is recorded.
+                </div>
+              )}
+            </div>
+          )}
+
           <Button variant="ghost" onClick={() => nav({ to: "/pos" })} className="w-full">
             <ArrowLeft className="mr-2 h-4 w-4" /> New Order
           </Button>
 
-          <Link to="/pos" className="block text-center text-xs text-muted-foreground hover:text-primary">
+          <Link
+            to="/pos"
+            className="block text-center text-xs text-muted-foreground hover:text-primary"
+          >
             ← Back to POS
           </Link>
         </aside>
@@ -332,13 +541,15 @@ async function renderTicketImageHtml({
 
 async function waitForElementImages(element: HTMLElement) {
   const images = Array.from(element.querySelectorAll("img"));
-  await Promise.all(images.map((img) => {
-    if (img.complete) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      img.onload = () => resolve();
-      img.onerror = () => resolve();
-    });
-  }));
+  await Promise.all(
+    images.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+      });
+    }),
+  );
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -354,15 +565,159 @@ function labelForKind(k: "kot" | "bill" | "receipt") {
   return k === "kot" ? "Kitchen ticket" : k === "bill" ? "Bill" : "Receipt";
 }
 
+function StatusBadge({ status }: { status: OrderStatus }) {
+  const map: Record<OrderStatus, { cls: string; label: string }> = {
+    open: { cls: "bg-muted text-muted-foreground border-border", label: "Open" },
+    placed: { cls: "bg-primary/15 text-primary border-primary/30", label: "Placed" },
+    preparing: { cls: "bg-amber-500/15 text-amber-300 border-amber-500/30", label: "Preparing" },
+    ready: { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "Ready" },
+    served: { cls: "bg-success/15 text-success border-success/30", label: "Served" },
+    completed: { cls: "bg-success/15 text-success border-success/30", label: "Completed" },
+    cancelled: {
+      cls: "bg-destructive/15 text-destructive border-destructive/30",
+      label: "Cancelled",
+    },
+    voided: { cls: "bg-destructive/15 text-destructive border-destructive/30", label: "Voided" },
+    refunded: { cls: "bg-muted text-muted-foreground border-border", label: "Refunded" },
+  };
+  const m = map[status] ?? map.open;
+  return (
+    <Badge variant="outline" className={`${m.cls} font-medium`}>
+      {m.label}
+    </Badge>
+  );
+}
+
 function PaymentBadge({ status }: { status: "pending" | "partial" | "paid" | "refunded" }) {
   const map: Record<typeof status, { cls: string; label: string }> = {
-    pending:  { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", label: "Unpaid" },
-    partial:  { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30",   label: "Partial" },
-    paid:     { cls: "bg-success/15 text-success border-success/30",       label: "Paid" },
-    refunded: { cls: "bg-muted text-muted-foreground border-border",       label: "Refunded" },
+    pending: { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", label: "Unpaid" },
+    partial: { cls: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "Partial" },
+    paid: { cls: "bg-success/15 text-success border-success/30", label: "Paid" },
+    refunded: { cls: "bg-muted text-muted-foreground border-border", label: "Refunded" },
   };
   const m = map[status];
-  return <Badge variant="outline" className={`${m.cls} font-medium`}>{m.label}</Badge>;
+  return (
+    <Badge variant="outline" className={`${m.cls} font-medium`}>
+      {m.label}
+    </Badge>
+  );
+}
+
+function AdjustDiscountDialog(props: {
+  orderId: string;
+  subtotal: number;
+  currentDiscount: number;
+  currentTotal: number;
+  amountPaid: number;
+  currencySymbol: string;
+  onAdjusted: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [discount, setDiscount] = useState(props.currentDiscount.toFixed(2));
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const nextDiscount = Math.max(0, Math.min(props.subtotal, Number(discount) || 0));
+  const estimatedTotal = Math.max(0, props.currentTotal - (nextDiscount - props.currentDiscount));
+
+  async function submit() {
+    if (!reason.trim()) {
+      toast.error("Enter a reason for the discount correction");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { error } = await (supabase.rpc as any)("adjust_order_discount", {
+        _order_id: props.orderId,
+        _discount: nextDiscount,
+        _reason: reason.trim(),
+      });
+      if (error) throw error;
+      toast.success("Discount adjusted");
+      setOpen(false);
+      props.onAdjusted();
+    } catch (err: any) {
+      toast.error(err?.message ?? "Failed to adjust discount");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) {
+          setDiscount(props.currentDiscount.toFixed(2));
+          setReason("");
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" className="w-full justify-start">
+          <Percent className="mr-2 h-4 w-4" />
+          Adjust Discount
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Adjust discount</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/40 p-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Subtotal</span>
+              <span className="font-mono">{formatMoney(props.subtotal, props.currencySymbol)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Current total</span>
+              <span className="font-mono">{formatMoney(props.currentTotal, props.currencySymbol)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Amount paid</span>
+              <span className="font-mono">{formatMoney(props.amountPaid, props.currencySymbol)}</span>
+            </div>
+            <div className="mt-2 flex justify-between border-t border-border pt-2">
+              <span className="text-muted-foreground">Estimated total</span>
+              <span className="font-mono text-primary">
+                {formatMoney(estimatedTotal, props.currencySymbol)}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              Final tax and payment status are recalculated by the database.
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>New discount</Label>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={discount}
+              onChange={(e) => setDiscount(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Reason</Label>
+            <Input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. discount missed before payment"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Save discount
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function TakePaymentDialog(props: {
@@ -404,7 +759,13 @@ function TakePaymentDialog(props: {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) setAmount(props.remaining.toFixed(2)); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) setAmount(props.remaining.toFixed(2));
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="lg" className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
           <CreditCard className="mr-2 h-4 w-4" /> Take Payment
@@ -416,13 +777,27 @@ function TakePaymentDialog(props: {
         </DialogHeader>
         <div className="space-y-4">
           <div className="rounded-lg border border-border bg-background/40 p-3 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">Grand total</span><span className="font-mono">{props.currencySymbol}{props.grandTotal.toFixed(2)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Outstanding</span><span className="font-mono text-primary">{props.currencySymbol}{props.remaining.toFixed(2)}</span></div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Grand total</span>
+              <span className="font-mono">
+                {props.currencySymbol}
+                {props.grandTotal.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Outstanding</span>
+              <span className="font-mono text-primary">
+                {props.currencySymbol}
+                {props.remaining.toFixed(2)}
+              </span>
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>Method</Label>
             <Select value={method} onValueChange={(v: PaymentMethod) => setMethod(v)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="cash">Cash</SelectItem>
                 <SelectItem value="card">Card</SelectItem>
@@ -434,22 +809,35 @@ function TakePaymentDialog(props: {
           </div>
           <div className="space-y-1.5">
             <Label>Amount</Label>
-            <Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="font-mono text-lg" />
+            <Input
+              type="number"
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="font-mono text-lg"
+            />
             {Number(amount) > props.remaining && (
               <p className="flex items-center gap-1 text-xs text-amber-400">
-                <AlertCircle className="h-3 w-3" /> Change due: {props.currencySymbol}{(Number(amount) - props.remaining).toFixed(2)}
+                <AlertCircle className="h-3 w-3" /> Change due: {props.currencySymbol}
+                {(Number(amount) - props.remaining).toFixed(2)}
               </p>
             )}
           </div>
           {(method === "card" || method === "upi" || method === "wallet" || method === "other") && (
             <div className="space-y-1.5">
               <Label>Reference (optional)</Label>
-              <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Txn ID / approval code" />
+              <Input
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                placeholder="Txn ID / approval code"
+              />
             </div>
           )}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
           <Button onClick={submit} disabled={submitting}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Record payment
           </Button>
@@ -459,18 +847,33 @@ function TakePaymentDialog(props: {
   );
 }
 
-function SuccessRibbon({ orderNo, total, symbol }: { orderNo: string; total: number; symbol: string }) {
+function SuccessRibbon({
+  orderNo,
+  total,
+  symbol,
+}: {
+  orderNo: string;
+  total: number;
+  symbol: string;
+}) {
   const [show, setShow] = useState(true);
   useEffect(() => {
     const timer = setTimeout(() => setShow(false), 3500);
     return () => clearTimeout(timer);
   }, []);
   return (
-    <div className={`pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center transition-all duration-500 ${show ? "translate-y-4 opacity-100" : "-translate-y-6 opacity-0"}`}>
+    <div
+      className={`pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center transition-all duration-500 ${show ? "translate-y-4 opacity-100" : "-translate-y-6 opacity-0"}`}
+    >
       <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-success/30 bg-success/15 px-5 py-2.5 text-success-foreground shadow-ember backdrop-blur">
         <CheckCircle2 className="h-5 w-5 text-success" />
         <span className="text-sm">
-          Order <span className="font-mono font-semibold">{orderNo}</span> placed · sent to kitchen · <span className="font-mono">{symbol}{total.toFixed(2)}</span>
+          Order <span className="font-mono font-semibold">{orderNo}</span> placed · sent to kitchen
+          ·{" "}
+          <span className="font-mono">
+            {symbol}
+            {total.toFixed(2)}
+          </span>
         </span>
         <Flame className="h-4 w-4 text-primary" />
       </div>

@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from "react";
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createFileRoute, useNavigate, Link, useSearch } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Minus, Trash2, Loader2, Receipt, Search, X } from "lucide-react";
+import { z } from "zod";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -14,7 +15,10 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatMoney } from "@/lib/format";
 
-export const Route = createFileRoute("/_authenticated/pos")({ component: POSPage });
+export const Route = createFileRoute("/_authenticated/pos")({
+  validateSearch: z.object({ editOrderId: z.string().optional() }),
+  component: POSPage,
+});
 
 type CartItem = {
   uid: string; item_id: string; name: string; unit_price: number; qty: number; notes?: string;
@@ -25,6 +29,9 @@ function POSPage() {
   const { branch, restaurant } = useActiveBranch();
   const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
+  const searchParams = useSearch({ from: Route.id });
+  const qc = useQueryClient();
+  const editOrderId = searchParams.editOrderId;
 
   const [search, setSearch] = useState("");
   const [diningType, setDiningType] = useState<"dine_in" | "takeaway" | "delivery">("dine_in");
@@ -34,6 +41,7 @@ function POSPage() {
   const [discount, setDiscount] = useState("0");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [hydratedEditOrderId, setHydratedEditOrderId] = useState<string | null>(null);
   const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
 
   const itemsQ = useQuery({
@@ -73,6 +81,26 @@ function POSPage() {
       return data ?? [];
     },
   });
+  const editOrderQ = useQuery({
+    queryKey: ["pos-edit-order", editOrderId],
+    enabled: !!editOrderId,
+    queryFn: async () => {
+      const { data: order, error } = await supabase
+        .from("orders")
+        .select("*")
+        .eq("id", editOrderId!)
+        .single();
+      if (error) throw error;
+
+      const { data: items, error: itemsError } = await supabase
+        .from("order_items")
+        .select("*")
+        .eq("order_id", editOrderId!);
+      if (itemsError) throw itemsError;
+
+      return { order, items: items ?? [] };
+    },
+  });
 
   const [activeCat, setActiveCat] = useState<string>("all");
   const stockByItem = useMemo(() => new Map((stockQ.data ?? []).map((s: any) => [s.item_id, s])), [stockQ.data]);
@@ -85,6 +113,31 @@ function POSPage() {
     }
     return items;
   }, [itemsQ.data, activeCat, search]);
+  const editingOrder = editOrderQ.data?.order as any | undefined;
+  const isEditing = !!editOrderId;
+
+  useEffect(() => {
+    if (!editOrderId || !editOrderQ.data || hydratedEditOrderId === editOrderId) return;
+    const order = editOrderQ.data.order as any;
+    const items = editOrderQ.data.items as any[];
+
+    setDiningType(order.dining_type ?? "dine_in");
+    setCustomerName(order.customer_name ?? "");
+    setCustomerPhone(order.customer_phone ?? "");
+    setTableLabel(order.table_label ?? "");
+    setDiscount(String(Number(order.discount_total ?? 0)));
+    setCart(
+      items.map((item) => ({
+        uid: crypto.randomUUID(),
+        item_id: item.item_id,
+        name: item.name_snapshot,
+        unit_price: Number(item.unit_price),
+        qty: Number(item.qty),
+        notes: item.notes ?? undefined,
+      })),
+    );
+    setHydratedEditOrderId(editOrderId);
+  }, [editOrderId, editOrderQ.data, hydratedEditOrderId]);
 
   function addToCart(it: any) {
     setCart((c) => {
@@ -98,6 +151,11 @@ function POSPage() {
     else setCart((c) => c.map((x) => x.uid === uid ? { ...x, qty } : x));
   }
   function clearCart() { setCart([]); setCustomerName(""); setCustomerPhone(""); setTableLabel(""); setDiscount("0"); }
+  function exitEditMode() {
+    setHydratedEditOrderId(null);
+    clearCart();
+    nav({ to: "/pos" });
+  }
 
   const subtotal = cart.reduce((s, x) => s + x.unit_price * x.qty, 0);
   const discountNum = Math.max(0, Math.min(subtotal, Number(discount) || 0));
@@ -118,23 +176,40 @@ function POSPage() {
     if (submitting) return;
     setSubmitting(true);
     try {
-      const { data, error } = await (supabase.rpc as any)("create_pos_order", {
-        _branch: branch.id,
+      const payload = {
         _dining_type: diningType,
         _customer_name: customerName,
         _customer_phone: customerPhone,
         _table_label: tableLabel,
         _discount: discountNum,
         _items: cart.map((x) => ({ item_id: x.item_id, qty: x.qty, notes: x.notes ?? null })),
-        _idempotency_key: idempotencyKeyRef.current,
-      });
+      };
+      const { data, error } = isEditing
+        ? await (supabase.rpc as any)("update_pos_order", {
+            _order_id: editOrderId,
+            ...payload,
+          })
+        : await (supabase.rpc as any)("create_pos_order", {
+            _branch: branch.id,
+            ...payload,
+            _idempotency_key: idempotencyKeyRef.current,
+          });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
       if (!row?.order_id) throw new Error("No order returned");
       toast.success(`Order ${row.order_no} placed · sent to kitchen`);
       idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
-      nav({ to: "/receipt/$orderId", params: { orderId: row.order_id }, search: { placed: true } });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["orders-list"] }),
+        qc.invalidateQueries({ queryKey: ["order", row.order_id] }),
+        qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
+      ]);
+      nav({
+        to: "/receipt/$orderId",
+        params: { orderId: row.order_id },
+        search: isEditing ? {} : { placed: true },
+      });
     } catch (err: any) {
       toast.error(err.message ?? "Failed to place order");
     } finally {
@@ -143,13 +218,30 @@ function POSPage() {
   }
 
   if (!branch) return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
+  if (isEditing && editOrderQ.isLoading) {
+    return (
+      <div className="flex h-[60vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+  if (isEditing && editOrderQ.error) {
+    return <div className="p-8 text-center text-destructive">Could not load order for editing.</div>;
+  }
 
   return (
     <div className="grid h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_360px]">
       {/* Left: items */}
       <div className="flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-2xl">Point of Sale</h1>
+          <div>
+            <h1 className="font-display text-2xl">{isEditing ? "Edit Order" : "Point of Sale"}</h1>
+            {isEditing && editingOrder && (
+              <div className="text-xs text-muted-foreground">
+                {editingOrder.order_no} · unpaid order edit
+              </div>
+            )}
+          </div>
           <div className="ml-auto relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input className="pl-9 w-64" placeholder="Search items…" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -188,8 +280,14 @@ function POSPage() {
       {/* Right: cart */}
       <aside className="flex min-h-0 flex-col border-t lg:border-t-0 lg:border-l border-border bg-card">
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="font-display text-lg">Current Order</h2>
-          {cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart}><X className="mr-1 h-4 w-4" />Clear</Button>}
+          <h2 className="font-display text-lg">{isEditing ? "Edit Cart" : "Current Order"}</h2>
+          {isEditing ? (
+            <Button variant="ghost" size="sm" onClick={exitEditMode}>
+              <X className="mr-1 h-4 w-4" />Exit
+            </Button>
+          ) : (
+            cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart}><X className="mr-1 h-4 w-4" />Clear</Button>
+          )}
         </div>
 
         <div className="space-y-3 p-4 border-b border-border">
@@ -251,7 +349,11 @@ function POSPage() {
 
           <Button onClick={placeOrder} disabled={submitting || cart.length === 0} size="lg" className="w-full">
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isEditing ? "Save Changes" : "Place Order"}
+            {/*
             Place Order · Send to Kitchen
+            )}
+            */}
           </Button>
           <p className="text-center text-[11px] text-muted-foreground">
             Payment & printing happen on the order screen.

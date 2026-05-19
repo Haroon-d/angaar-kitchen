@@ -847,10 +847,20 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      adjust_order_discount: {
+        Args: { _discount: number; _order_id: string; _reason?: string }
+        Returns: {
+          new_grand_total: number
+          new_payment_status: Database["public"]["Enums"]["payment_status_t"]
+          order_id: string
+          order_no: string
+        }[]
+      }
       can_access_branch: {
         Args: { _branch: string; _user: string }
         Returns: boolean
       }
+      cancel_order: { Args: { _order_id: string }; Returns: undefined }
       can_manage_branch: {
         Args: { _branch: string; _user: string }
         Returns: boolean
@@ -864,6 +874,21 @@ export type Database = {
           _discount: number
           _idempotency_key: string
           _items: Json
+          _table_label: string
+        }
+        Returns: {
+          order_id: string
+          order_no: string
+        }[]
+      }
+      update_pos_order: {
+        Args: {
+          _customer_name: string
+          _customer_phone: string
+          _dining_type: Database["public"]["Enums"]["dining_type"]
+          _discount: number
+          _items: Json
+          _order_id: string
           _table_label: string
         }
         Returns: {
