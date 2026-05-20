@@ -24,15 +24,15 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
 
   lines.push(center(data.brandName.toUpperCase()));
   if (data.legalName) lines.push(center(data.legalName));
-  if (data.address)   lines.push(center(data.address));
-  if (data.phone)     lines.push(center(`Tel: ${data.phone}`));
-  if (data.taxId)     lines.push(center(`Tax ID: ${data.taxId}`));
+  if (data.address) lines.push(center(data.address));
+  if (data.phone) lines.push(center(`Tel: ${data.phone}`));
+  if (data.taxId) lines.push(center(`Tax ID: ${data.taxId}`));
   lines.push(rule);
   lines.push(center(data.diningType.replace("_", " ").toUpperCase()));
   lines.push(`Order #${data.orderNo}`);
   lines.push(`Date  ${new Date(data.createdAt).toLocaleString()}`);
-  if (data.tableLabel)   lines.push(`Table  ${data.tableLabel}`);
-  if (data.cashierName)  lines.push(`Cashier ${data.cashierName}`);
+  if (data.tableLabel) lines.push(`Table  ${data.tableLabel}`);
+  if (data.cashierName) lines.push(`Cashier ${data.cashierName}`);
   if (data.customerName) lines.push(`Cust  ${data.customerName}`);
   if (data.customerPhone) lines.push(`Phone ${data.customerPhone}`);
   lines.push(rule);
@@ -48,12 +48,17 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
   lines.push(row("Subtotal", fmt(data.subtotal)));
   if (data.discount > 0) lines.push(row("Discount", "-" + fmt(data.discount)));
   for (const t of data.taxes) lines.push(row(`${t.name} (${t.rate}%)`, fmt(t.amount)));
-  if (data.serviceCharge && data.serviceCharge > 0) lines.push(row("Service", fmt(data.serviceCharge)));
+  if (data.serviceCharge && data.serviceCharge > 0)
+    lines.push(row("Service", fmt(data.serviceCharge)));
   lines.push(dbl);
   lines.push(row("TOTAL", fmt(data.grandTotal)));
   lines.push(dbl);
 
-  for (const p of data.payments) lines.push(row(`Paid · ${p.method.toUpperCase()}`, fmt(p.amount)));
+  for (const p of data.payments) {
+    const label =
+      p.amount < 0 || p.kind === "refund" || p.kind === "void_adjustment" ? "Refund" : "Paid";
+    lines.push(row(`${label} · ${p.method.toUpperCase()}`, fmt(p.amount)));
+  }
   if (data.amountReceived !== undefined && data.amountReceived > 0)
     lines.push(row("Received", fmt(data.amountReceived)));
   if (data.changeReturned !== undefined && data.changeReturned > 0)
@@ -76,7 +81,9 @@ export function renderKotText(data: ReceiptData, width = 42): string {
 
   lines.push(center("** KITCHEN TICKET **"));
   lines.push(rule);
-  lines.push(`${data.diningType.replace("_", " ").toUpperCase()}   ${data.tableLabel ? "T:" + data.tableLabel : ""}`);
+  lines.push(
+    `${data.diningType.replace("_", " ").toUpperCase()}   ${data.tableLabel ? "T:" + data.tableLabel : ""}`,
+  );
   lines.push(`#${data.orderNo}   ${new Date(data.createdAt).toLocaleTimeString()}`);
   if (data.customerName) lines.push(`Cust: ${data.customerName}`);
   lines.push("-".repeat(width));

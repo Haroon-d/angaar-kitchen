@@ -19,6 +19,7 @@ export type ReceiptTaxLine = {
 export type ReceiptPayment = {
   method: string;
   amount: number;
+  kind?: string | null;
   reference?: string | null;
 };
 

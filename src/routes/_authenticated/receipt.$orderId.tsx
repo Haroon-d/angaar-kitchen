@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toPng } from "html-to-image";
 import { z } from "zod";
 import {
@@ -18,15 +18,18 @@ import {
   Ban,
   Pencil,
   Percent,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
-import { useMyRoles, isManager } from "@/hooks/use-auth";
+import { useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -35,17 +38,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -60,6 +52,7 @@ import { renderReceiptText, renderKotText } from "@/lib/print/text-render";
 import { usePrinterSettings } from "@/lib/print/settings";
 import { formatMoney } from "@/lib/format";
 import type { ReceiptData } from "@/lib/print/types";
+import type { Database } from "@/integrations/supabase/types";
 
 const SearchSchema = z.object({ placed: z.coerce.boolean().optional() });
 
@@ -69,16 +62,32 @@ export const Route = createFileRoute("/_authenticated/receipt/$orderId")({
 });
 
 type PaymentMethod = "cash" | "card" | "upi" | "wallet" | "other";
-type OrderStatus =
-  | "open"
-  | "placed"
-  | "preparing"
-  | "ready"
-  | "served"
-  | "completed"
-  | "cancelled"
-  | "voided"
-  | "refunded";
+type Tables = Database["public"]["Tables"];
+type Enums = Database["public"]["Enums"];
+type OrderRow = Tables["orders"]["Row"];
+type OrderItemRow = Tables["order_items"]["Row"];
+type OrderTaxRow = Tables["order_taxes"]["Row"];
+type PaymentRow = Tables["payments"]["Row"];
+type OrderStatus = Enums["order_status"];
+type PaymentStatus = Enums["payment_status_t"];
+type RpcError = { message?: string };
+type RpcResult = { error: RpcError | null };
+type DynamicRpc = (fn: string, args: Record<string, unknown>) => Promise<RpcResult>;
+
+async function runRpc(fn: string, args: Record<string, unknown>) {
+  const rpcCall = supabase.rpc.bind(supabase) as unknown as DynamicRpc;
+  const { error } = await rpcCall(fn, args);
+  if (error) throw error;
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err) {
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+}
 
 function OrderTicketPage() {
   const { orderId } = Route.useParams();
@@ -110,35 +119,12 @@ function OrderTicketPage() {
             : Promise.resolve({ data: null }),
         ]);
       return {
-        order,
-        items: items ?? [],
-        taxes: taxes ?? [],
-        payments: payments ?? [],
+        order: order as OrderRow,
+        items: (items ?? []) as OrderItemRow[],
+        taxes: (taxes ?? []) as OrderTaxRow[],
+        payments: (payments ?? []) as PaymentRow[],
         cashier: profile?.full_name ?? null,
       };
-    },
-  });
-
-  const cancelOrder = useMutation({
-    mutationFn: async () => {
-      const { error } = await supabase.rpc("cancel_order", { _order_id: orderId });
-      if (error) throw error;
-    },
-    onSuccess: async () => {
-      const orderNo = q.data?.order.order_no;
-      toast.success(
-        orderNo
-          ? `Order ${orderNo} cancelled and inventory restored`
-          : "Order cancelled and inventory restored",
-      );
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["order", orderId] }),
-        qc.invalidateQueries({ queryKey: ["orders-list"] }),
-        qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
-      ]);
-    },
-    onError: (err: any) => {
-      toast.error(err?.message ?? "Failed to cancel order");
     },
   });
 
@@ -162,7 +148,7 @@ function OrderTicketPage() {
       cashierName: cashier,
       createdAt: order.created_at,
       currencySymbol: restaurant.currency_symbol ?? "₨",
-      items: items.map((i: any) => ({
+      items: items.map((i) => ({
         id: i.id,
         name: i.name_snapshot,
         qty: i.qty,
@@ -172,15 +158,16 @@ function OrderTicketPage() {
       })),
       subtotal: Number(order.subtotal),
       discount: Number(order.discount_total),
-      taxes: taxes.map((t: any) => ({
+      taxes: taxes.map((t) => ({
         name: t.name_snapshot,
         rate: Number(t.rate_snapshot),
         amount: Number(t.amount),
       })),
       grandTotal: Number(order.grand_total),
-      payments: payments.map((p: any) => ({
+      payments: payments.map((p) => ({
         method: p.method,
         amount: Number(p.amount),
+        kind: p.kind ?? null,
         reference: p.reference,
       })),
       amountReceived: Number(order.amount_paid),
@@ -198,24 +185,33 @@ function OrderTicketPage() {
       </div>
     );
   }
-  const order = q.data!.order as any;
-  const paymentStatus = (order.payment_status ?? "pending") as
-    | "pending"
-    | "partial"
-    | "paid"
-    | "refunded";
+  const order = q.data!.order;
+  const paymentStatus = (order.payment_status ?? "pending") as PaymentStatus;
   const orderStatus = (order.status ?? "open") as OrderStatus;
   const remaining = Math.max(0, Number(order.grand_total) - Number(order.amount_paid));
   const cancelled = ["cancelled", "voided", "refunded"].includes(orderStatus);
   const manager = isManager(roles);
+  const admin = isAdmin(roles);
   const canCancel =
     manager &&
     !cancelled &&
     orderStatus !== "completed" &&
     paymentStatus === "pending" &&
-    Number(order.amount_paid) <= 0 &&
-    !q.data!.payments.length;
-  const canEdit = canCancel;
+    Number(order.amount_paid) <= 0;
+  const canEdit = canCancel && !q.data!.payments.length;
+  const canVoid = manager && !cancelled;
+  const canRefund = manager && !cancelled && Number(order.amount_paid) > 0;
+  const canReopen = manager && orderStatus === "completed";
+  const canDelete = admin && cancelled;
+
+  async function refreshOrderState() {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["order", orderId] }),
+      qc.invalidateQueries({ queryKey: ["orders-list"] }),
+      qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
+      qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
+    ]);
+  }
 
   async function doPrint(kind: "kot" | "bill" | "receipt") {
     if (!data) return;
@@ -253,11 +249,11 @@ function OrderTicketPage() {
         paperSize: settings.paperSize,
         copies: kind === "kot" ? settings.printKotCopies : 1,
       });
-      await (supabase.rpc as any)("record_print", { _order_id: orderId, _kind: kind });
+      await runRpc("record_print", { _order_id: orderId, _kind: kind });
       qc.invalidateQueries({ queryKey: ["order", orderId] });
       toast.success(`${labelForKind(kind)} sent to printer`);
-    } catch (err: any) {
-      toast.error(err?.message ?? "Print failed");
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Print failed"));
     } finally {
       setPrintingKind(null);
     }
@@ -417,11 +413,7 @@ function OrderTicketPage() {
                   currentTotal={Number(order.grand_total)}
                   amountPaid={Number(order.amount_paid)}
                   currencySymbol={data.currencySymbol}
-                  onAdjusted={() => {
-                    qc.invalidateQueries({ queryKey: ["order", orderId] });
-                    qc.invalidateQueries({ queryKey: ["orders-list"] });
-                    qc.invalidateQueries({ queryKey: ["dashboard-today"] });
-                  }}
+                  onAdjusted={refreshOrderState}
                 />
               )}
               {canEdit && (
@@ -434,39 +426,82 @@ function OrderTicketPage() {
                   Edit Order
                 </Button>
               )}
-              {canCancel ? (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="destructive" className="w-full">
-                      <Ban className="mr-2 h-4 w-4" />
-                      Cancel Order
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Cancel {data.orderNo}?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This keeps the order in history, marks it cancelled, and restores inventory
-                        deducted when the order was placed.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Keep order</AlertDialogCancel>
-                      <AlertDialogAction
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        onClick={() => cancelOrder.mutate()}
-                        disabled={cancelOrder.isPending}
-                      >
-                        {cancelOrder.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Cancel order
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              ) : (
-                <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-xs text-muted-foreground">
-                  Orders can be cancelled only before payment is recorded.
-                </div>
+              {canCancel && (
+                <OrderReasonActionDialog
+                  title={`Cancel ${data.orderNo}`}
+                  description="Marks this unpaid order as cancelled and restores any stock deducted for it."
+                  buttonLabel="Cancel Order"
+                  confirmLabel="Cancel order"
+                  icon={<Ban className="mr-2 h-4 w-4" />}
+                  variant="destructive"
+                  reasonPlaceholder="e.g. customer left before payment"
+                  onSubmit={async (reason) => {
+                    await runRpc("cancel_order", {
+                      _order_id: orderId,
+                      _reason: reason,
+                    });
+                  }}
+                  onDone={refreshOrderState}
+                  successMessage="Order cancelled and inventory restored"
+                />
+              )}
+              {canVoid && (
+                <VoidOrderDialog
+                  orderId={orderId}
+                  orderNo={data.orderNo}
+                  amountPaid={Number(order.amount_paid)}
+                  currencySymbol={data.currencySymbol}
+                  onDone={refreshOrderState}
+                />
+              )}
+              {canRefund && (
+                <RefundOrderDialog
+                  orderId={orderId}
+                  orderNo={data.orderNo}
+                  amountPaid={Number(order.amount_paid)}
+                  currencySymbol={data.currencySymbol}
+                  onDone={refreshOrderState}
+                />
+              )}
+              {canReopen && (
+                <OrderReasonActionDialog
+                  title={`Reopen ${data.orderNo}`}
+                  description="Moves this completed order back to served so staff can continue operational handling. Payments remain recorded."
+                  buttonLabel="Reopen Order"
+                  confirmLabel="Reopen order"
+                  icon={<RotateCcw className="mr-2 h-4 w-4" />}
+                  reasonPlaceholder="e.g. completed by mistake"
+                  onSubmit={async (reason) => {
+                    await runRpc("reopen_order", {
+                      _order_id: orderId,
+                      _reason: reason,
+                    });
+                  }}
+                  onDone={refreshOrderState}
+                  successMessage="Order reopened"
+                />
+              )}
+              {canDelete && (
+                <OrderReasonActionDialog
+                  title={`Permanently delete ${data.orderNo}`}
+                  description="Owner/admin only. This removes the terminal order and cascades its line items and payments after ensuring inventory has no remaining net impact."
+                  buttonLabel="Delete Order"
+                  confirmLabel="Delete permanently"
+                  icon={<Trash2 className="mr-2 h-4 w-4" />}
+                  variant="destructive"
+                  reasonPlaceholder="e.g. test order created during setup"
+                  onSubmit={async (reason) => {
+                    await runRpc("delete_order_admin", {
+                      _order_id: orderId,
+                      _reason: reason,
+                    });
+                  }}
+                  onDone={async () => {
+                    await refreshOrderState();
+                    nav({ to: "/orders" });
+                  }}
+                  successMessage="Order permanently deleted"
+                />
               )}
             </div>
           )}
@@ -552,7 +587,7 @@ async function waitForElementImages(element: HTMLElement) {
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ children }: { children: ReactNode }) {
   return <div className="text-xs uppercase tracking-widest text-muted-foreground">{children}</div>;
 }
 
@@ -626,17 +661,16 @@ function AdjustDiscountDialog(props: {
     }
     setSubmitting(true);
     try {
-      const { error } = await (supabase.rpc as any)("adjust_order_discount", {
+      await runRpc("adjust_order_discount", {
         _order_id: props.orderId,
         _discount: nextDiscount,
         _reason: reason.trim(),
       });
-      if (error) throw error;
       toast.success("Discount adjusted");
       setOpen(false);
       props.onAdjusted();
-    } catch (err: any) {
-      toast.error(err?.message ?? "Failed to adjust discount");
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Failed to adjust discount"));
     } finally {
       setSubmitting(false);
     }
@@ -671,11 +705,15 @@ function AdjustDiscountDialog(props: {
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Current total</span>
-              <span className="font-mono">{formatMoney(props.currentTotal, props.currencySymbol)}</span>
+              <span className="font-mono">
+                {formatMoney(props.currentTotal, props.currencySymbol)}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Amount paid</span>
-              <span className="font-mono">{formatMoney(props.amountPaid, props.currencySymbol)}</span>
+              <span className="font-mono">
+                {formatMoney(props.amountPaid, props.currencySymbol)}
+              </span>
             </div>
             <div className="mt-2 flex justify-between border-t border-border pt-2">
               <span className="text-muted-foreground">Estimated total</span>
@@ -720,6 +758,346 @@ function AdjustDiscountDialog(props: {
   );
 }
 
+function OrderReasonActionDialog(props: {
+  title: string;
+  description: string;
+  buttonLabel: string;
+  confirmLabel: string;
+  icon: ReactNode;
+  reasonPlaceholder: string;
+  successMessage: string;
+  onSubmit: (reason: string) => Promise<void>;
+  onDone: () => Promise<void> | void;
+  variant?: "default" | "destructive" | "outline";
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    const reasonClean = reason.trim();
+    if (!reasonClean) {
+      toast.error("Enter a reason");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await props.onSubmit(reasonClean);
+      toast.success(props.successMessage);
+      setOpen(false);
+      setReason("");
+      await props.onDone();
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Order operation failed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setReason("");
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant={props.variant ?? "outline"} className="w-full justify-start">
+          {props.icon}
+          {props.buttonLabel}
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{props.title}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/40 p-3 text-sm text-muted-foreground">
+            {props.description}
+          </div>
+          <div className="space-y-1.5">
+            <Label>Reason</Label>
+            <Textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder={props.reasonPlaceholder}
+              rows={3}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+            Back
+          </Button>
+          <Button
+            variant={props.variant === "destructive" ? "destructive" : "default"}
+            onClick={submit}
+            disabled={submitting}
+          >
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {props.confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function VoidOrderDialog(props: {
+  orderId: string;
+  orderNo: string;
+  amountPaid: number;
+  currencySymbol: string;
+  onDone: () => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [reference, setReference] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const hasPayment = props.amountPaid > 0;
+
+  async function submit() {
+    const reasonClean = reason.trim();
+    if (!reasonClean) {
+      toast.error("Enter a reason");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await runRpc("void_order", {
+        _order_id: props.orderId,
+        _reason: reasonClean,
+        _refund_paid: true,
+        _method: method,
+        _reference: reference || null,
+      });
+      toast.success(hasPayment ? "Order voided and payment reversed" : "Order voided");
+      setOpen(false);
+      setReason("");
+      setReference("");
+      await props.onDone();
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Failed to void order"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="destructive" className="w-full justify-start">
+          <Ban className="mr-2 h-4 w-4" />
+          Void Order
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Void {props.orderNo}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            Voiding marks the order as a mistake, restores inventory, and records an audit entry.
+            {hasPayment
+              ? ` A payment reversal of ${formatMoney(props.amountPaid, props.currencySymbol)} will be added.`
+              : ""}
+          </div>
+          {hasPayment && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Reversal method</Label>
+                <Select value={method} onValueChange={(v: PaymentMethod) => setMethod(v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="wallet">Wallet</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Reference</Label>
+                <Input value={reference} onChange={(e) => setReference(e.target.value)} />
+              </div>
+            </div>
+          )}
+          <div className="space-y-1.5">
+            <Label>Reason</Label>
+            <Textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. wrong order paid by mistake"
+              rows={3}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+            Back
+          </Button>
+          <Button variant="destructive" onClick={submit} disabled={submitting}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Void order
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RefundOrderDialog(props: {
+  orderId: string;
+  orderNo: string;
+  amountPaid: number;
+  currencySymbol: string;
+  onDone: () => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(props.amountPaid.toFixed(2));
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [reference, setReference] = useState("");
+  const [reason, setReason] = useState("");
+  const [restoreInventory, setRestoreInventory] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    const refundAmount = Number(amount);
+    const reasonClean = reason.trim();
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+      toast.error("Enter a valid refund amount");
+      return;
+    }
+    if (refundAmount > props.amountPaid) {
+      toast.error("Refund cannot exceed amount paid");
+      return;
+    }
+    if (!reasonClean) {
+      toast.error("Enter a reason");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await runRpc("refund_order", {
+        _order_id: props.orderId,
+        _amount: refundAmount,
+        _method: method,
+        _reason: reasonClean,
+        _restore_inventory: restoreInventory,
+        _reference: reference || null,
+      });
+      toast.success("Refund recorded");
+      setOpen(false);
+      setReason("");
+      setReference("");
+      await props.onDone();
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Failed to refund order"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setAmount(props.amountPaid.toFixed(2));
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" className="w-full justify-start">
+          <CreditCard className="mr-2 h-4 w-4" />
+          Refund Order
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Refund {props.orderNo}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/40 p-3 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Refundable</span>
+              <span className="font-mono">
+                {formatMoney(props.amountPaid, props.currencySymbol)}
+              </span>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Amount</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Method</Label>
+              <Select value={method} onValueChange={(v: PaymentMethod) => setMethod(v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="upi">UPI</SelectItem>
+                  <SelectItem value="wallet">Wallet</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Reference</Label>
+            <Input value={reference} onChange={(e) => setReference(e.target.value)} />
+          </div>
+          <label className="flex items-start gap-3 rounded-lg border border-border bg-background/40 p-3 text-sm">
+            <Checkbox
+              checked={restoreInventory}
+              onCheckedChange={(checked) => setRestoreInventory(checked === true)}
+            />
+            <span>
+              Restore inventory on full refund
+              <span className="block text-xs text-muted-foreground">
+                Keep enabled when the order was cancelled before fulfilment. Turn off for goodwill
+                refunds after food was served.
+              </span>
+            </span>
+          </label>
+          <div className="space-y-1.5">
+            <Label>Reason</Label>
+            <Textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. customer refund after wrong charge"
+              rows={3}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
+            Back
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Record refund
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TakePaymentDialog(props: {
   orderId: string;
   grandTotal: number;
@@ -741,18 +1119,17 @@ function TakePaymentDialog(props: {
     }
     setSubmitting(true);
     try {
-      const { error } = await (supabase.rpc as any)("record_payment", {
+      await runRpc("record_payment", {
         _order_id: props.orderId,
         _method: method,
         _amount: amt,
         _reference: reference || null,
       });
-      if (error) throw error;
       toast.success(`Payment of ${props.currencySymbol}${amt.toFixed(2)} recorded`);
       setOpen(false);
       props.onPaid();
-    } catch (err: any) {
-      toast.error(err?.message ?? "Failed to record payment");
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Failed to record payment"));
     } finally {
       setSubmitting(false);
     }

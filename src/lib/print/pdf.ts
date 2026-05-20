@@ -12,7 +12,10 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
 export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80mm"): jsPDF {
   const widthMm = paperSize === "58mm" ? 58 : 80;
   // Estimate height; jsPDF requires fixed height — pick a generous one and trim later.
-  const lineCount = data.items.reduce((n, i) => n + 1 + (i.notes ? 1 : 0) + (i.addons?.length ?? 0), 0);
+  const lineCount = data.items.reduce(
+    (n, i) => n + 1 + (i.notes ? 1 : 0) + (i.addons?.length ?? 0),
+    0,
+  );
   const heightMm = 70 + lineCount * 6 + data.taxes.length * 4 + data.payments.length * 4;
 
   const doc = new jsPDF({ unit: "mm", format: [widthMm, heightMm], orientation: "portrait" });
@@ -27,11 +30,22 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   y += 5;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
-  if (data.address) { doc.text(wrap(doc, data.address, innerW), widthMm / 2, y, { align: "center" }); y += 3.5; }
-  if (data.phone) { doc.text(`Tel: ${data.phone}`, widthMm / 2, y, { align: "center" }); y += 3.5; }
-  if (data.taxId) { doc.text(`Tax ID: ${data.taxId}`, widthMm / 2, y, { align: "center" }); y += 3.5; }
+  if (data.address) {
+    doc.text(wrap(doc, data.address, innerW), widthMm / 2, y, { align: "center" });
+    y += 3.5;
+  }
+  if (data.phone) {
+    doc.text(`Tel: ${data.phone}`, widthMm / 2, y, { align: "center" });
+    y += 3.5;
+  }
+  if (data.taxId) {
+    doc.text(`Tax ID: ${data.taxId}`, widthMm / 2, y, { align: "center" });
+    y += 3.5;
+  }
 
-  y += 1.5; dashed(doc, padX, y, widthMm - padX); y += 3;
+  y += 1.5;
+  dashed(doc, padX, y, widthMm - padX);
+  y += 3;
 
   // Order info
   doc.setFontSize(9);
@@ -40,15 +54,34 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   y += 4;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
-  kv(doc, padX, y, innerW, "Order #", data.orderNo); y += 3.5;
-  kv(doc, padX, y, innerW, "Date", formatDate(data.createdAt)); y += 3.5;
-  if (data.tableLabel) { kv(doc, padX, y, innerW, "Table", data.tableLabel); y += 3.5; }
-  if (data.cashierName) { kv(doc, padX, y, innerW, "Cashier", data.cashierName); y += 3.5; }
-  if (data.customerName) { kv(doc, padX, y, innerW, "Customer", data.customerName); y += 3.5; }
-  if (data.customerPhone) { kv(doc, padX, y, innerW, "Phone", data.customerPhone); y += 3.5; }
-  if (data.customerAddress) { kv(doc, padX, y, innerW, "Address", data.customerAddress); y += 3.5; }
+  kv(doc, padX, y, innerW, "Order #", data.orderNo);
+  y += 3.5;
+  kv(doc, padX, y, innerW, "Date", formatDate(data.createdAt));
+  y += 3.5;
+  if (data.tableLabel) {
+    kv(doc, padX, y, innerW, "Table", data.tableLabel);
+    y += 3.5;
+  }
+  if (data.cashierName) {
+    kv(doc, padX, y, innerW, "Cashier", data.cashierName);
+    y += 3.5;
+  }
+  if (data.customerName) {
+    kv(doc, padX, y, innerW, "Customer", data.customerName);
+    y += 3.5;
+  }
+  if (data.customerPhone) {
+    kv(doc, padX, y, innerW, "Phone", data.customerPhone);
+    y += 3.5;
+  }
+  if (data.customerAddress) {
+    kv(doc, padX, y, innerW, "Address", data.customerAddress);
+    y += 3.5;
+  }
 
-  y += 1; dashed(doc, padX, y, widthMm - padX); y += 3;
+  y += 1;
+  dashed(doc, padX, y, widthMm - padX);
+  y += 3;
 
   // Items
   for (const it of data.items) {
@@ -76,15 +109,25 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
     doc.setFontSize(8);
   }
 
-  y += 1; dashed(doc, padX, y, widthMm - padX); y += 3;
+  y += 1;
+  dashed(doc, padX, y, widthMm - padX);
+  y += 3;
 
   // Totals
-  kv(doc, padX, y, innerW, "Subtotal", formatMoney(data.subtotal, sym)); y += 3.5;
-  if (data.discount > 0) { kv(doc, padX, y, innerW, "Discount", `-${formatMoney(data.discount, sym)}`); y += 3.5; }
-  for (const t of data.taxes) {
-    kv(doc, padX, y, innerW, `${t.name} (${t.rate}%)`, formatMoney(t.amount, sym)); y += 3.5;
+  kv(doc, padX, y, innerW, "Subtotal", formatMoney(data.subtotal, sym));
+  y += 3.5;
+  if (data.discount > 0) {
+    kv(doc, padX, y, innerW, "Discount", `-${formatMoney(data.discount, sym)}`);
+    y += 3.5;
   }
-  if (data.serviceCharge && data.serviceCharge > 0) { kv(doc, padX, y, innerW, "Service", formatMoney(data.serviceCharge, sym)); y += 3.5; }
+  for (const t of data.taxes) {
+    kv(doc, padX, y, innerW, `${t.name} (${t.rate}%)`, formatMoney(t.amount, sym));
+    y += 3.5;
+  }
+  if (data.serviceCharge && data.serviceCharge > 0) {
+    kv(doc, padX, y, innerW, "Service", formatMoney(data.serviceCharge, sym));
+    y += 3.5;
+  }
 
   y += 1.5;
   doc.setLineWidth(0.4);
@@ -100,16 +143,23 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   for (const p of data.payments) {
-    kv(doc, padX, y, innerW, `Paid · ${p.method}`, formatMoney(p.amount, sym)); y += 3.5;
+    const label =
+      p.amount < 0 || p.kind === "refund" || p.kind === "void_adjustment" ? "Refund" : "Paid";
+    kv(doc, padX, y, innerW, `${label} · ${p.method}`, formatMoney(p.amount, sym));
+    y += 3.5;
   }
   if (data.amountReceived !== undefined && data.amountReceived > 0) {
-    kv(doc, padX, y, innerW, "Received", formatMoney(data.amountReceived, sym)); y += 3.5;
+    kv(doc, padX, y, innerW, "Received", formatMoney(data.amountReceived, sym));
+    y += 3.5;
   }
   if (data.changeReturned !== undefined && data.changeReturned > 0) {
-    kv(doc, padX, y, innerW, "Change", formatMoney(data.changeReturned, sym)); y += 3.5;
+    kv(doc, padX, y, innerW, "Change", formatMoney(data.changeReturned, sym));
+    y += 3.5;
   }
 
-  y += 2; dashed(doc, padX, y, widthMm - padX); y += 4;
+  y += 2;
+  dashed(doc, padX, y, widthMm - padX);
+  y += 4;
   doc.setFontSize(8);
   doc.text(wrap(doc, data.footerNote ?? "Thank you!", innerW), widthMm / 2, y, { align: "center" });
   y += 6;
@@ -133,7 +183,9 @@ function kv(doc: jsPDF, x: number, y: number, w: number, k: string, v: string) {
 function wrap(doc: jsPDF, text: string, w: number): string[] {
   return doc.splitTextToSize(text, w) as string[];
 }
-function truncate(s: string, n: number) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function truncate(s: string, n: number) {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
 
 export function downloadReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80mm") {
   const doc = generateReceiptPdf(data, paperSize);
