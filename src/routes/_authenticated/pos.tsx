@@ -173,6 +173,7 @@ function POSPage() {
   async function placeOrder() {
     if (!branch || !user) return;
     if (cart.length === 0) { toast.error("Cart is empty"); return; }
+    if (isEditing && !editOrderId) { toast.error("Missing order id for edit"); return; }
     if (submitting) return;
     setSubmitting(true);
     try {
@@ -196,18 +197,23 @@ function POSPage() {
           });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
-      if (!row?.order_id) throw new Error("No order returned");
-      toast.success(`Order ${row.order_no} placed · sent to kitchen`);
+      const savedOrderId = row?.order_id ?? row?.updated_order_id;
+      if (!savedOrderId) throw new Error("No order returned");
+      toast.success(
+        isEditing
+          ? `Order ${row.order_no} updated`
+          : `Order ${row.order_no} placed · sent to kitchen`,
+      );
       idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["orders-list"] }),
-        qc.invalidateQueries({ queryKey: ["order", row.order_id] }),
+        qc.invalidateQueries({ queryKey: ["order", savedOrderId] }),
         qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
       ]);
       nav({
         to: "/receipt/$orderId",
-        params: { orderId: row.order_id },
+        params: { orderId: savedOrderId },
         search: isEditing ? {} : { placed: true },
       });
     } catch (err: any) {

@@ -218,8 +218,8 @@ BEGIN
 
   DELETE FROM public.order_item_addons
     WHERE order_item_id IN (SELECT oi.id FROM public.order_items oi WHERE oi.order_id = _order_id);
-  DELETE FROM public.order_items WHERE order_id = _order_id;
-  DELETE FROM public.order_taxes WHERE order_id = _order_id;
+  DELETE FROM public.order_items oi WHERE oi.order_id = _order_id;
+  DELETE FROM public.order_taxes ot WHERE ot.order_id = _order_id;
 
   UPDATE public.orders
     SET dining_type = _dining_type,
