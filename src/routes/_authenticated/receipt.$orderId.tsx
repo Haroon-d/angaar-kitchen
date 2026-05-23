@@ -209,6 +209,7 @@ function OrderTicketPage() {
       qc.invalidateQueries({ queryKey: ["order", orderId] }),
       qc.invalidateQueries({ queryKey: ["orders-list"] }),
       qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
+      qc.invalidateQueries({ queryKey: ["item-usage-report"] }),
       qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
     ]);
   }
@@ -397,7 +398,9 @@ function OrderTicketPage() {
                 grandTotal={data.grandTotal}
                 remaining={remaining}
                 currencySymbol={data.currencySymbol}
-                onPaid={() => qc.invalidateQueries({ queryKey: ["order", orderId] })}
+                onPaid={() => {
+                  void refreshOrderState();
+                }}
               />
             )}
           </div>

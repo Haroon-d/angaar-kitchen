@@ -12,10 +12,12 @@ import {
   DollarSign,
   HandCoins,
   WalletCards,
+  Utensils,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
-import { useMyRoles, isAdmin } from "@/hooks/use-auth";
+import { useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,10 +35,25 @@ export const Route = createFileRoute("/_authenticated/dashboard")({ component: D
 
 const TERMINAL_ORDER_STATUSES = ["completed", "cancelled", "voided", "refunded"];
 
+type UsageReportRow = {
+  report_type: "menu_item" | "inventory_item";
+  item_id: string | null;
+  item_name: string;
+  category: string | null;
+  unit: string | null;
+  quantity: number;
+  completed_quantity: number;
+  active_quantity: number;
+  revenue: number;
+  cost: number;
+  order_count: number;
+};
+
 function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
   const admin = isAdmin(roles);
+  const manager = isManager(roles);
   const symbol = restaurant?.currency_symbol ?? "Rs";
   const nav = useNavigate();
 
@@ -68,7 +85,7 @@ function DashboardPage() {
       let inventoryCost = 0;
       const costByOrder: Record<string, number> = {};
       if (completedOrderIds.length > 0) {
-        const { data: movements, error: movementError } = await (supabase as any)
+        const { data: movements, error: movementError } = await supabase
           .from("inventory_movements")
           .select("related_order_id, quantity_delta, unit_cost")
           .eq("branch_id", branch!.id)
@@ -86,7 +103,7 @@ function DashboardPage() {
         }
       }
 
-      const { data: expenses, error: expensesError } = await (supabase as any)
+      const { data: expenses, error: expensesError } = await supabase
         .from("operational_expenses")
         .select("amount")
         .eq("branch_id", branch!.id)
@@ -96,7 +113,7 @@ function DashboardPage() {
       if (expensesError) throw expensesError;
 
       const otherCosts = (expenses ?? []).reduce(
-        (sum: number, expense: any) => sum + Number(expense.amount || 0),
+        (sum: number, expense) => sum + Number(expense.amount || 0),
         0,
       );
 
@@ -107,12 +124,30 @@ function DashboardPage() {
     queryKey: ["dashboard-low-stock", branch?.id],
     enabled: !!branch,
     queryFn: async () => {
-      const { count, error } = await (supabase as any)
+      const { count, error } = await supabase
         .from("inventory_low_stock")
         .select("id", { count: "exact", head: true })
         .eq("branch_id", branch!.id);
       if (error) throw error;
       return count ?? 0;
+    },
+  });
+  const usageQ = useQuery({
+    queryKey: ["item-usage-report", branch?.id, startDate, endDate],
+    enabled: !!branch && (admin || manager),
+    queryFn: async () => {
+      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const rpcCall = supabase.rpc.bind(supabase) as unknown as (
+        fn: string,
+        args: Record<string, unknown>,
+      ) => Promise<{ data: unknown; error: { message?: string } | null }>;
+      const { data, error } = await rpcCall("get_item_usage_report", {
+        _branch_id: branch!.id,
+        _start_at: bounds.start,
+        _end_at: bounds.end,
+      });
+      if (error) throw error;
+      return toUsageReportRows(data);
     },
   });
 
@@ -129,6 +164,12 @@ function DashboardPage() {
   const zakaat = Math.max(totalProfit, 0) * 0.05;
   const profitAfterZakaat = totalProfit - zakaat;
   const costByOrder = todayQ.data?.costByOrder ?? {};
+  const usageRows = usageQ.data ?? [];
+  const menuUsage = usageRows.filter((row) => row.report_type === "menu_item");
+  const inventoryUsage = usageRows.filter((row) => row.report_type === "inventory_item");
+  const totalMenuQty = menuUsage.reduce((sum, row) => sum + row.quantity, 0);
+  const activeMenuQty = menuUsage.reduce((sum, row) => sum + row.active_quantity, 0);
+  const totalStockQty = inventoryUsage.reduce((sum, row) => sum + row.quantity, 0);
 
   const handleResetDates = () => {
     const dateStr = pakistanDateInputValue();
@@ -255,6 +296,23 @@ function DashboardPage() {
           to="/inventory"
           highlight={(lowStockQ.data ?? 0) > 0}
         />
+        {(admin || manager) && (
+          <Stat
+            icon={Utensils}
+            label={isToday ? "Menu items today" : "Menu items moved"}
+            value={formatQuantity(totalMenuQty)}
+            highlight={activeMenuQty > 0}
+          />
+        )}
+        {(admin || manager) && (
+          <Stat
+            icon={Package}
+            label={isToday ? "Stock used today" : "Stock used"}
+            value={formatQuantity(totalStockQty)}
+            to="/inventory"
+            highlight={totalStockQty > 0}
+          />
+        )}
         {admin && (
           <Stat
             icon={Package}
@@ -284,6 +342,38 @@ function DashboardPage() {
           />
         )}
       </div>
+
+      {(admin || manager) && (
+        <Card>
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-lg">Item accountability</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Sold menu quantities and stock consumed in this period. Active quantities are still
+              open, placed, preparing, ready, or served, so they need payment follow-up.
+            </p>
+          </CardHeader>
+          <CardContent className="grid gap-6 lg:grid-cols-2">
+            <UsageTable
+              title="Menu items sold or in progress"
+              emptyText="No menu items moved in this period."
+              rows={menuUsage.slice(0, 12)}
+              metricLabel="Qty"
+              moneyLabel="Sales"
+              symbol={symbol}
+              showMoney
+            />
+            <UsageTable
+              title="Inventory consumed"
+              emptyText="No recipe stock consumed in this period."
+              rows={inventoryUsage.slice(0, 12)}
+              metricLabel="Used"
+              moneyLabel="Cost"
+              symbol={symbol}
+              showMoney={admin}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -357,6 +447,116 @@ function DashboardPage() {
   );
 }
 
+function UsageTable({
+  title,
+  emptyText,
+  rows,
+  metricLabel,
+  moneyLabel,
+  symbol,
+  showMoney,
+}: {
+  title: string;
+  emptyText: string;
+  rows: UsageReportRow[];
+  metricLabel: string;
+  moneyLabel: string;
+  symbol: string;
+  showMoney: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="font-semibold">{title}</h2>
+        <span className="rounded-md bg-secondary px-2 py-1 text-xs text-muted-foreground">
+          Top {rows.length}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="rounded-md border border-border/70 py-10 text-center text-sm text-muted-foreground">
+          {emptyText}
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-md border border-border/70">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/25 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Item</th>
+                <th className="px-3 py-2 text-right">{metricLabel}</th>
+                <th className="px-3 py-2 text-right">Completed</th>
+                <th className="px-3 py-2 text-right">Active</th>
+                {showMoney && <th className="px-3 py-2 text-right">{moneyLabel}</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr
+                  key={`${row.report_type}-${row.item_id ?? row.item_name}`}
+                  className="border-t border-border/50"
+                >
+                  <td className="min-w-[180px] px-3 py-2">
+                    <div className="font-medium">{row.item_name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.category ?? "Uncategorized"} · {row.order_count} orders
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {formatQuantity(row.quantity, row.unit)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-success">
+                    {formatQuantity(row.completed_quantity, row.unit)}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono ${
+                      row.active_quantity > 0 ? "text-primary" : "text-muted-foreground"
+                    }`}
+                  >
+                    {formatQuantity(row.active_quantity, row.unit)}
+                  </td>
+                  {showMoney && (
+                    <td className="px-3 py-2 text-right font-mono">
+                      {formatMoney(
+                        row.report_type === "menu_item" ? row.revenue : row.cost,
+                        symbol,
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatQuantity(value: number, unit?: string | null) {
+  const normalized = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2);
+  const trimmed = normalized.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  return unit && unit !== "qty" ? `${trimmed} ${unit}` : trimmed;
+}
+
+function toUsageReportRows(data: unknown): UsageReportRow[] {
+  if (!Array.isArray(data)) return [];
+  return data.map((raw) => {
+    const row = raw as Partial<Record<keyof UsageReportRow, unknown>>;
+    return {
+      report_type: row.report_type === "inventory_item" ? "inventory_item" : "menu_item",
+      item_id: typeof row.item_id === "string" ? row.item_id : null,
+      item_name: typeof row.item_name === "string" ? row.item_name : "Unknown item",
+      category: typeof row.category === "string" ? row.category : null,
+      unit: typeof row.unit === "string" ? row.unit : null,
+      quantity: Number(row.quantity || 0),
+      completed_quantity: Number(row.completed_quantity || 0),
+      active_quantity: Number(row.active_quantity || 0),
+      revenue: Number(row.revenue || 0),
+      cost: Number(row.cost || 0),
+      order_count: Number(row.order_count || 0),
+    };
+  });
+}
+
 function Stat({
   icon: Icon,
   label,
@@ -364,10 +564,10 @@ function Stat({
   to,
   highlight,
 }: {
-  icon: any;
+  icon: LucideIcon;
   label: string;
   value: string;
-  to?: string;
+  to?: "/orders" | "/inventory" | "/expenses" | "/pos";
   highlight?: boolean;
 }) {
   const hasCurrency = value.startsWith("Rs");
@@ -395,7 +595,7 @@ function Stat({
       </CardContent>
     </Card>
   );
-  return to ? <Link to={to as any}>{inner}</Link> : inner;
+  return to ? <Link to={to}>{inner}</Link> : inner;
 }
 
 function StatusPill({ status }: { status: string }) {
