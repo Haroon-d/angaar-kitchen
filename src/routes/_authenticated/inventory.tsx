@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Brain,
   Calendar,
   ClipboardList,
   Eye,
@@ -25,6 +26,7 @@ import { useMyRoles, isManager } from "@/hooks/use-auth";
 import {
   formatDate,
   formatMoney,
+  formatPakistanDateLabel,
   pakistanDateInputValue,
   pakistanDateRangeUtcBounds,
 } from "@/lib/format";
@@ -1393,6 +1395,7 @@ function RecipesTab({
 }) {
   const qc = useQueryClient();
   const [selected, setSelected] = useState("");
+  const [selectedSession, setSelectedSession] = useState("");
   const itemsQ = useInventoryItems(branchId, true);
   const menuQ = useQuery({
     queryKey: ["inventory-menu-items", branchId],
@@ -1402,6 +1405,20 @@ function RecipesTab({
         .select("id, name, base_price")
         .eq("branch_id", branchId)
         .order("name");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+  const sessionsQ = useQuery({
+    queryKey: ["stock-count-sessions", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("stock_count_sessions")
+        .select("id, business_date, status")
+        .eq("branch_id", branchId)
+        .eq("status", "closed")
+        .order("business_date", { ascending: false })
+        .limit(30);
       if (error) throw error;
       return data ?? [];
     },
@@ -1419,39 +1436,124 @@ function RecipesTab({
       return data ?? [];
     },
   });
+  const calibrationQ = useQuery({
+    queryKey: ["recipe-usage-calibration", selected, selectedSession],
+    enabled: !!selected && !!selectedSession,
+    queryFn: async () => {
+      const { data, error } = await db.rpc("get_recipe_usage_calibration", {
+        _menu_item_id: selected,
+        _session_id: selectedSession,
+      });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
   const [ingredient, setIngredient] = useState("");
+  const [entryUnit, setEntryUnit] = useState<EntryUnit>("g");
   const [qty, setQty] = useState("0");
+  const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
+  const [learningRecipeId, setLearningRecipeId] = useState<string | null>(null);
+
+  const selectedIngredient = itemsQ.data?.find((i: any) => i.id === ingredient);
 
   async function addRecipe(e: React.FormEvent) {
     e.preventDefault();
-    if (!selected || !ingredient || Number(qty) <= 0) {
-      toast.error("Select item, ingredient, and quantity");
+    const rawQty = Number(qty);
+    if (!selected || !ingredient || !selectedIngredient || !Number.isFinite(rawQty) || rawQty < 0) {
+      toast.error("Select item and enter zero or a positive quantity");
       return;
     }
-    const { error } = await db
-      .from("inventory_recipes")
-      .upsert(
-        { menu_item_id: selected, inventory_item_id: ingredient, quantity: Number(qty) },
-        { onConflict: "menu_item_id,inventory_item_id" },
-      );
+    const baseQty = quantityToBase(rawQty, selectedIngredient.base_unit, entryUnit);
+    const { error } = await db.from("inventory_recipes").upsert(
+      {
+        menu_item_id: selected,
+        inventory_item_id: ingredient,
+        quantity: baseQty,
+        standard_source: baseQty > 0 ? "manual" : "learning",
+        learning_enabled: baseQty === 0,
+      },
+      { onConflict: "menu_item_id,inventory_item_id" },
+    );
     if (error) toast.error(error.message);
     else {
-      toast.success("Recipe saved");
-      setIngredient("");
-      setQty("0");
+      toast.success(editingRecipeId ? "Recipe row updated" : "Recipe row saved");
+      resetRecipeForm();
       qc.invalidateQueries({ queryKey: ["inventory-recipes"] });
       qc.invalidateQueries({ queryKey: ["inventory-reports"] });
+      qc.invalidateQueries({ queryKey: ["recipe-usage-calibration"] });
+    }
+  }
+
+  async function learnAverage(row: any) {
+    if (!selected) return;
+    setLearningRecipeId(row.id);
+    try {
+      const { data, error } = await db.rpc("learn_recipe_quantity_from_history", {
+        _menu_item_id: selected,
+        _inventory_item_id: row.inventory_item_id,
+        _lookback_days: 30,
+        _min_sessions: 3,
+      });
+      if (error) throw error;
+      const learned = data?.[0];
+      toast.success(
+        learned
+          ? `Learned ${qtyLabel(learned.learned_qty, row.inventory_items?.base_unit)} from ${learned.sample_count} days`
+          : "Recipe standard learned",
+      );
+      resetRecipeForm();
+      qc.invalidateQueries({ queryKey: ["inventory-recipes"] });
+      qc.invalidateQueries({ queryKey: ["inventory-reports"] });
+      qc.invalidateQueries({ queryKey: ["recipe-usage-calibration"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Could not learn recipe standard");
+    } finally {
+      setLearningRecipeId(null);
     }
   }
 
   async function removeRecipe(id: string) {
+    if (
+      !window.confirm(
+        "Remove this ingredient from the recipe? Future orders will stop deducting it.",
+      )
+    ) {
+      return;
+    }
     const { error } = await db.from("inventory_recipes").delete().eq("id", id);
     if (error) toast.error(error.message);
     else {
       toast.success("Recipe row removed");
+      if (editingRecipeId === id) resetRecipeForm();
       qc.invalidateQueries({ queryKey: ["inventory-recipes"] });
       qc.invalidateQueries({ queryKey: ["inventory-reports"] });
+      qc.invalidateQueries({ queryKey: ["recipe-usage-calibration"] });
     }
+  }
+
+  function resetRecipeForm() {
+    setIngredient("");
+    setEntryUnit("g");
+    setQty("0");
+    setEditingRecipeId(null);
+  }
+
+  function editRecipe(row: any) {
+    const unit = row.inventory_items?.base_unit as BaseUnit;
+    const preferred = preferredEntryUnit(unit);
+    setEditingRecipeId(row.id);
+    setIngredient(row.inventory_item_id);
+    setEntryUnit(preferred);
+    setQty(String(quantityFromBase(row.quantity, unit, preferred)));
+  }
+
+  function applyObservedAverage(row: any) {
+    const unit = row.unit as BaseUnit;
+    const preferred = preferredEntryUnit(unit);
+    setEditingRecipeId(null);
+    setIngredient(row.inventory_item_id);
+    setEntryUnit(preferred);
+    setQty(String(quantityFromBase(row.observed_qty_per_item, unit, preferred)));
   }
 
   const selectedMenu = menuQ.data?.find((i: any) => i.id === selected);
@@ -1460,16 +1562,28 @@ function RecipesTab({
       sum + Number(r.quantity) * Number(r.inventory_items?.average_cost ?? 0),
     0,
   );
+  const foodCostPercent = selectedMenu?.base_price
+    ? (recipeCost / Number(selectedMenu.base_price)) * 100
+    : 0;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
       <Card>
         <CardHeader>
           <CardTitle>Menu item</CardTitle>
-          <CardDescription>Recipe quantities are per one sold item.</CardDescription>
+          <CardDescription>
+            Add ingredients with zero quantity to let closing data learn the standard.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Select value={selected} onValueChange={setSelected}>
+          <Select
+            value={selected}
+            onValueChange={(value) => {
+              setSelected(value);
+              setSelectedSession("");
+              resetRecipeForm();
+            }}
+          >
             <SelectTrigger>
               <SelectValue placeholder="Select menu item" />
             </SelectTrigger>
@@ -1492,6 +1606,10 @@ function RecipesTab({
                 <span className="font-mono">{formatMoney(recipeCost, symbol)}</span>
               </div>
               <div className="flex justify-between">
+                <span className="text-muted-foreground">Food cost %</span>
+                <span className="font-mono">{foodCostPercent.toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-muted-foreground">Margin</span>
                 <span className="font-mono text-primary">
                   {formatMoney(Number(selectedMenu.base_price) - recipeCost, symbol)}
@@ -1504,15 +1622,22 @@ function RecipesTab({
       <Card>
         <CardHeader>
           <CardTitle>Recipe</CardTitle>
-          <CardDescription>Ingredients deducted when an order is placed.</CardDescription>
+          <CardDescription>Standard ingredient usage per one sold item.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {manager && selected && (
             <form
               onSubmit={addRecipe}
-              className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[1fr_120px_auto]"
+              className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[1fr_120px_110px_auto]"
             >
-              <Select value={ingredient} onValueChange={setIngredient}>
+              <Select
+                value={ingredient}
+                onValueChange={(value) => {
+                  setIngredient(value);
+                  const item = itemsQ.data?.find((i: any) => i.id === value);
+                  if (item) setEntryUnit(preferredEntryUnit(item.base_unit));
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Ingredient" />
                 </SelectTrigger>
@@ -1529,12 +1654,33 @@ function RecipesTab({
                 step="0.001"
                 value={qty}
                 onChange={(e) => setQty(e.target.value)}
-                placeholder="Qty"
+                placeholder="0 to learn"
               />
+              <Select value={entryUnit} onValueChange={(value) => setEntryUnit(value as EntryUnit)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedIngredient ? (
+                    entryUnitsForBase(selectedIngredient.base_unit).map((u) => (
+                      <SelectItem key={u} value={u}>
+                        {u === "l" ? "L" : u === "piece" ? "pc" : u}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value={entryUnit}>{entryUnit}</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
               <Button type="submit">
-                <Plus className="mr-2 h-4 w-4" />
-                Add
+                {editingRecipeId ? <SaveIcon /> : <Plus className="mr-2 h-4 w-4" />}
+                {editingRecipeId ? "Update" : "Add"}
               </Button>
+              {editingRecipeId && (
+                <Button type="button" variant="ghost" onClick={resetRecipeForm}>
+                  Cancel
+                </Button>
+              )}
             </form>
           )}
           {!selected ? (
@@ -1549,7 +1695,25 @@ function RecipesTab({
                   className="flex items-center gap-3 rounded-lg border border-border p-3"
                 >
                   <div className="flex-1">
-                    <div className="font-medium">{r.inventory_items?.name}</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-medium">{r.inventory_items?.name}</div>
+                      {Number(r.quantity || 0) === 0 && (
+                        <Badge
+                          variant="outline"
+                          className="border-primary/30 bg-primary/10 text-primary"
+                        >
+                          Learning
+                        </Badge>
+                      )}
+                      {r.standard_source === "learned" && (
+                        <Badge
+                          variant="outline"
+                          className="border-success/30 bg-success/10 text-success"
+                        >
+                          Learned
+                        </Badge>
+                      )}
+                    </div>
                     <div className="text-xs text-muted-foreground">
                       Cost{" "}
                       {formatMoney(
@@ -1562,9 +1726,27 @@ function RecipesTab({
                     {qtyLabel(r.quantity, r.inventory_items?.base_unit)}
                   </div>
                   {manager && (
-                    <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={learningRecipeId === r.id}
+                        onClick={() => learnAverage(r)}
+                        title="Learn average from closed days"
+                      >
+                        {learningRecipeId === r.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Brain className="h-4 w-4" />
+                        )}
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => editRecipe(r)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -1577,8 +1759,134 @@ function RecipesTab({
           )}
         </CardContent>
       </Card>
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <CardTitle>Average usage calibration</CardTitle>
+          <CardDescription>
+            Compare recipe standards with physical stock usage from a closed daily session.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[220px] flex-1">
+              <Label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Closed session
+              </Label>
+              <Select
+                value={selectedSession}
+                onValueChange={setSelectedSession}
+                disabled={!selected}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select closing day" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sessionsQ.data?.map((s: any) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {formatPakistanDateLabel(s.business_date, { dateStyle: "medium" })}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {calibrationQ.isFetching && (
+              <Loader2 className="mb-3 h-5 w-5 animate-spin text-primary" />
+            )}
+          </div>
+
+          {!selected ? (
+            <div className="py-10 text-center text-muted-foreground">
+              Select a menu item to calculate average usage.
+            </div>
+          ) : !selectedSession ? (
+            <div className="py-10 text-center text-muted-foreground">
+              Select a closed daily session after entering opening and closing stock.
+            </div>
+          ) : calibrationQ.data?.length === 0 ? (
+            <div className="py-10 text-center text-muted-foreground">
+              No recipe rows or sales found for this session.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/30 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Ingredient</th>
+                    <th className="px-3 py-2 text-right">Sold</th>
+                    <th className="px-3 py-2 text-right">Standard/item</th>
+                    <th className="px-3 py-2 text-right">Expected total</th>
+                    <th className="px-3 py-2 text-right">Actual total</th>
+                    <th className="px-3 py-2 text-right">Observed avg/item</th>
+                    <th className="px-3 py-2 text-right">Variance/item</th>
+                    <th className="px-3 py-2 text-right">Cost impact</th>
+                    {manager && <th className="px-3 py-2 text-right">Action</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {calibrationQ.data?.map((row: any) => (
+                    <tr key={row.inventory_item_id} className="border-t border-border">
+                      <td className="px-3 py-2 font-medium">{row.ingredient_name}</td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {Number(row.sold_qty || 0).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {qtyLabel(row.standard_qty, row.unit)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {qtyLabel(row.theoretical_qty, row.unit)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {row.allocated_actual_qty == null
+                          ? "-"
+                          : qtyLabel(row.allocated_actual_qty, row.unit)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {row.observed_qty_per_item == null
+                          ? "-"
+                          : qtyLabel(row.observed_qty_per_item, row.unit)}
+                      </td>
+                      <td
+                        className={`px-3 py-2 text-right font-mono ${
+                          Number(row.variance_qty_per_item || 0) > 0
+                            ? "text-destructive"
+                            : Number(row.variance_qty_per_item || 0) < 0
+                              ? "text-amber-300"
+                              : "text-success"
+                        }`}
+                      >
+                        {row.variance_qty_per_item == null
+                          ? "-"
+                          : qtyLabel(row.variance_qty_per_item, row.unit)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {formatMoney(Math.abs(Number(row.variance_cost_per_item || 0)), symbol)}
+                      </td>
+                      {manager && (
+                        <td className="px-3 py-2 text-right">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={row.observed_qty_per_item == null}
+                            onClick={() => applyObservedAverage(row)}
+                          >
+                            Use average
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
+}
+
+function SaveIcon() {
+  return <Pencil className="mr-2 h-4 w-4" />;
 }
 
 function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: boolean }) {

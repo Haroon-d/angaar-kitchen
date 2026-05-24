@@ -20,6 +20,7 @@ import {
   Receipt,
   Package,
   Banknote,
+  ClipboardCheck,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, useMyRoles, isAdmin, hasOperationalAccess } from "@/hooks/use-auth";
@@ -110,6 +111,7 @@ const NAV = [
   { label: "Orders", to: "/orders", icon: Receipt },
   { label: "Menu", to: "/menu", icon: ChefHat },
   { label: "Inventory", to: "/inventory", icon: Package },
+  { label: "Daily Closing", to: "/daily-closing", icon: ClipboardCheck },
   { label: "Expenses", to: "/expenses", icon: Banknote },
   { label: "Staff", to: "/staff", icon: Users, adminOnly: true },
   { label: "Settings", to: "/settings", icon: Settings, adminOnly: true },
