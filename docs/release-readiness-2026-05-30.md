@@ -36,6 +36,13 @@ Date: 2026-05-30
 - A production database snapshot/export must be taken immediately before cutover.
 - Final preview smoke test should be done on the deployed preview URL before switching live traffic.
 
+## Latest Export Snapshot
+
+- Fresh Supabase read-only export created: `migration-data/2026-05-30T14-57-30-393Z`
+- The export completed without writing to Supabase.
+- Local PostgreSQL does not exactly match this fresh snapshot because local testing changed data counts. Use a new empty production PostgreSQL database for the real import.
+- Keep `migration-data/` out of Git because it can contain business/customer data.
+
 ## Cutover Checklist
 
 1. Confirm the current live app is still on the old environment.

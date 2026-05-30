@@ -29,6 +29,17 @@ VITE_AUTH_BACKEND=postgres
 Legacy Supabase variables may remain during parallel migration/export, but the
 PostgreSQL build must not rely on Supabase for operational app data.
 
+## Vercel PostgreSQL Setup
+
+Vercel Postgres is not available for new projects. For Vercel hosting, create or
+connect PostgreSQL through a Vercel Marketplace Postgres integration, then attach
+the database credentials to this project.
+
+After the database is attached, confirm the project has a production
+`DATABASE_URL`. Also add `SESSION_SECRET`, `APP_URL`, and
+`VITE_AUTH_BACKEND=postgres` to both Preview and Production environments before
+deploying the PostgreSQL build.
+
 ## Pre-Deployment Checklist
 
 1. Confirm local build passes.
