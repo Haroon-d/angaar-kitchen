@@ -235,9 +235,19 @@ Focused on building practical software solutions for real-world business challen
 
 **GitHub:** https://github.com/Haroon-d
 
-**LinkedIn:** Add your LinkedIn profile
+**LinkedIn:** 
 
 **Email:** Add your professional email
+
+### Hanzlah Hassan
+Software Developer
+
+Contributed to:
+- Feature implementation
+- Development support
+- Testing and improvements
+
+GitHub: https://github.com/Hanzlah-Hassan34
 
 ---
 
