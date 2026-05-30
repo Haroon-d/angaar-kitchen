@@ -17,12 +17,16 @@ Date: 2026-05-30
 - `npm.cmd run migration:passwords:audit`
 - `npm.cmd run lint`
 - `npm.cmd run build`
+- Production preview smoke test on `http://127.0.0.1:4173/`
+  - `/`, `/login`, and `/signup` returned `200`
+  - protected routes returned `307` while unauthenticated, as expected
 
 ## Known Warnings
 
 - ESLint reports existing Fast Refresh warnings in shared UI/hook files. These are warnings, not release blockers.
 - Production build reports bundle-size and third-party module directive warnings from Vite/TanStack/Radix/Sonner packages. The build completed successfully.
 - Local build had to be run outside the sandbox because the Windows sandbox blocked Vite from reading the config path.
+- `migration:validate -- --dir migration-data/2026-05-28T16-58-56-259Z` found stale snapshot drift in `order_counters` and `audit_log` only. Use a fresh export at production cutover before treating row-count validation as authoritative.
 
 ## Not Done Yet
 
@@ -52,4 +56,3 @@ Date: 2026-05-30
 4. If live promotion fails, revert the deployment to the last known good deployment in the hosting dashboard.
 5. Point environment variables back to the previous backend if required.
 6. Re-run smoke tests after rollback before resuming restaurant operations.
-
