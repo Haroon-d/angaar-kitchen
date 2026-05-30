@@ -54,10 +54,9 @@ import { Button } from "@/components/ui/button";
 export const Route = createFileRoute("/_authenticated")({
   beforeLoad: async () => {
     if (isPostgresAuthEnabled()) {
-      const token =
-        typeof window !== "undefined"
-          ? window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY)
-          : null;
+      if (typeof window === "undefined") return;
+
+      const token = window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY);
       if (!token) throw redirect({ to: "/login" });
       return;
     }

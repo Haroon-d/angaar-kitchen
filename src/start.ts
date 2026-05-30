@@ -1,5 +1,7 @@
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
+import { isPostgresAuthEnabled } from "./lib/auth-backend";
+import { attachPostgresAuth } from "./integrations/postgres/auth-middleware";
 import { attachSupabaseAuth } from "./integrations/supabase/auth-attacher";
 import { renderErrorPage } from "./lib/error-page";
 
@@ -19,6 +21,6 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 });
 
 export const startInstance = createStart(() => ({
-  functionMiddleware: [attachSupabaseAuth],
+  functionMiddleware: [isPostgresAuthEnabled() ? attachPostgresAuth : attachSupabaseAuth],
   requestMiddleware: [errorMiddleware],
 }));
