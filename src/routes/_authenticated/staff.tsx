@@ -4,7 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2, Plus, Users } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import {
+  createStaffAccountPostgres,
+  listRestaurantStaffPostgres,
+} from "@/lib/staff.postgres.functions";
+import { appDb as supabase } from "@/lib/app-db";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
 import { createStaffAccount } from "@/lib/staff.functions";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { useAuth, useMyRoles, isAdmin } from "@/hooks/use-auth";
@@ -47,15 +52,22 @@ function StaffPage() {
 
   const staffQ = useQuery({
     queryKey: ["staff", restaurant?.id],
-    enabled: !!restaurant && admin,
+    enabled: !!restaurant && admin && !!session,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("user_roles")
-        .select("id, role, branch_id, user_id, created_at")
-        .eq("restaurant_id", restaurant!.id)
-        .order("created_at");
-      if (error) throw error;
-      return (data ?? []) as StaffRoleRow[];
+      if (!isPostgresAuthEnabled()) {
+        const { data, error } = await supabase
+          .from("user_roles")
+          .select("id, role, branch_id, user_id, created_at")
+          .eq("restaurant_id", restaurant!.id)
+          .order("created_at");
+        if (error) throw error;
+        return (data ?? []) as StaffRoleRow[];
+      }
+
+      return listRestaurantStaffPostgres({
+        data: { restaurantId: restaurant!.id },
+        headers: { Authorization: `Bearer ${session!.access_token}` },
+      }) as Promise<StaffRoleRow[]>;
     },
   });
 
@@ -169,7 +181,8 @@ function StaffDialog({
     if (!restaurantId || !token) return;
     setLoading(true);
     try {
-      await createStaffAccount({
+      const create = isPostgresAuthEnabled() ? createStaffAccountPostgres : createStaffAccount;
+      await create({
         data: {
           restaurantId,
           fullName: parsed.data.fullName,

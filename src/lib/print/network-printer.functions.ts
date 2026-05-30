@@ -16,7 +16,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 const ALLOWED_PORTS = new Set([9100, 9101, 9102, 515, 631]);
 
 const Schema = z.object({
-  host: z.string().min(1).max(255).regex(/^[a-zA-Z0-9.\-]+$/, "invalid host"),
+  host: z.string().min(1).max(255).regex(/^[a-zA-Z0-9.-]+$/, "invalid host"),
   port: z.number().int().refine((p) => ALLOWED_PORTS.has(p), "port not allowed").default(9100),
   paperSize: z.enum(["80mm", "58mm"]).default("80mm"),
   /** Plain UTF-8 text. We add ESC/POS init, encoding, line feeds, and cut. */

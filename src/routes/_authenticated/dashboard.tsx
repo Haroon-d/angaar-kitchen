@@ -15,9 +15,12 @@ import {
   Utensils,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
 import { supabase } from "@/integrations/supabase/client";
 import { useActiveBranch } from "@/hooks/use-active-branch";
-import { useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
+import { useAuth, useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
+import { getDashboardSummaryPostgres } from "@/lib/dashboard.postgres.functions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,9 +54,11 @@ type UsageReportRow = {
 
 function DashboardPage() {
   const { branch, restaurant } = useActiveBranch();
+  const { session } = useAuth();
   const { data: roles } = useMyRoles();
   const admin = isAdmin(roles);
   const manager = isManager(roles);
+  const postgresEnabled = isPostgresAuthEnabled();
   const symbol = restaurant?.currency_symbol ?? "Rs";
   const nav = useNavigate();
 
@@ -63,9 +68,23 @@ function DashboardPage() {
 
   const todayQ = useQuery({
     queryKey: ["dashboard-today", branch?.id, startDate, endDate],
-    enabled: !!branch,
+    enabled: !!branch && (!postgresEnabled || !!session),
     queryFn: async () => {
       const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      if (postgresEnabled) {
+        return getDashboardSummaryPostgres({
+          data: {
+            branchId: branch!.id,
+            startAt: bounds.start,
+            endAt: bounds.end,
+            startDate,
+            endDate,
+            includeUsage: admin || manager,
+          },
+          headers: authHeaders(session?.access_token ?? readPostgresToken()),
+        });
+      }
+
       const { data, error } = await supabase
         .from("orders")
         .select(
@@ -117,12 +136,12 @@ function DashboardPage() {
         0,
       );
 
-      return { orders, inventoryCost, costByOrder, otherCosts };
+      return { orders, inventoryCost, costByOrder, otherCosts, lowStockCount: 0, usageRows: [] };
     },
   });
   const lowStockQ = useQuery({
     queryKey: ["dashboard-low-stock", branch?.id],
-    enabled: !!branch,
+    enabled: !!branch && !postgresEnabled,
     queryFn: async () => {
       const { count, error } = await supabase
         .from("inventory_low_stock")
@@ -134,7 +153,7 @@ function DashboardPage() {
   });
   const usageQ = useQuery({
     queryKey: ["item-usage-report", branch?.id, startDate, endDate],
-    enabled: !!branch && (admin || manager),
+    enabled: !!branch && !postgresEnabled && (admin || manager),
     queryFn: async () => {
       const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
       const rpcCall = supabase.rpc.bind(supabase) as unknown as (
@@ -164,7 +183,8 @@ function DashboardPage() {
   const zakaat = Math.max(totalProfit, 0) * 0.05;
   const profitAfterZakaat = totalProfit - zakaat;
   const costByOrder = todayQ.data?.costByOrder ?? {};
-  const usageRows = usageQ.data ?? [];
+  const lowStockCount = postgresEnabled ? (todayQ.data?.lowStockCount ?? 0) : (lowStockQ.data ?? 0);
+  const usageRows = postgresEnabled ? (todayQ.data?.usageRows ?? []) : (usageQ.data ?? []);
   const menuUsage = usageRows.filter((row) => row.report_type === "menu_item");
   const inventoryUsage = usageRows.filter((row) => row.report_type === "inventory_item");
   const totalMenuQty = menuUsage.reduce((sum, row) => sum + row.quantity, 0);
@@ -292,9 +312,9 @@ function DashboardPage() {
         <Stat
           icon={Package}
           label="Low stock"
-          value={String(lowStockQ.data ?? 0)}
+          value={String(lowStockCount)}
           to="/inventory"
-          highlight={(lowStockQ.data ?? 0) > 0}
+          highlight={lowStockCount > 0}
         />
         {(admin || manager) && (
           <Stat
@@ -555,6 +575,15 @@ function toUsageReportRows(data: unknown): UsageReportRow[] {
       order_count: Number(row.order_count || 0),
     };
   });
+}
+
+function authHeaders(token: string | null | undefined) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function readPostgresToken() {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY);
 }
 
 function Stat({

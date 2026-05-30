@@ -20,11 +20,12 @@ import {
   Receipt,
   Package,
   Banknote,
-  ClipboardCheck,
 } from "lucide-react";
+import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, useMyRoles, isAdmin, hasOperationalAccess } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
 import {
   Sidebar,
   SidebarContent,
@@ -52,6 +53,15 @@ import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/_authenticated")({
   beforeLoad: async () => {
+    if (isPostgresAuthEnabled()) {
+      const token =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY)
+          : null;
+      if (!token) throw redirect({ to: "/login" });
+      return;
+    }
+
     const { data } = await supabase.auth.getSession();
     if (!data.session) throw redirect({ to: "/login" });
   },
@@ -111,7 +121,6 @@ const NAV = [
   { label: "Orders", to: "/orders", icon: Receipt },
   { label: "Menu", to: "/menu", icon: ChefHat },
   { label: "Inventory", to: "/inventory", icon: Package },
-  { label: "Daily Closing", to: "/daily-closing", icon: ClipboardCheck },
   { label: "Expenses", to: "/expenses", icon: Banknote },
   { label: "Staff", to: "/staff", icon: Users, adminOnly: true },
   { label: "Settings", to: "/settings", icon: Settings, adminOnly: true },

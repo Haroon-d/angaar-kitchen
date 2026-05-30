@@ -90,7 +90,12 @@ function toEscPos(text: string) {
   const normalized = text
     .replace(/â‚¨|₨|₹/g, "Rs.")
     .replace(/[·×»]/g, (ch) => ({ "·": "-", "×": "x", "»": ">" }[ch] ?? ch))
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
+    .split("")
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126);
+    })
+    .join("");
 
   // ESC @ initialize, then text, feed paper past the cutter, then partial cut.
   return "\x1B@" + normalized.replace(/\n/g, "\r\n") + "\r\n" + "\x1B\x64\x0C" + "\x1D\x56\x42\x00";

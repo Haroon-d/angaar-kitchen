@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PaperSize } from "./types";
-import { supabase } from "@/integrations/supabase/client";
+import { appDb as supabase } from "@/lib/app-db";
 
 export type DriverId = "browser" | "qz" | "network";
 
@@ -58,15 +58,14 @@ async function fetchBranchPrinterSettings(branchId: string): Promise<PrinterSett
 }
 
 async function persistBranchPrinterSettings(branchId: string, settings: PrinterSettings) {
-  await (supabase.from("branch_printer_settings" as any) as any)
-    .upsert(
-      {
-        branch_id: branchId,
-        settings,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "branch_id" },
-    );
+  await (supabase.from("branch_printer_settings" as any) as any).upsert(
+    {
+      branch_id: branchId,
+      settings,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "branch_id" },
+  );
 }
 
 export function usePrinterSettings(branchId?: string) {

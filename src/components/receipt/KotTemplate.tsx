@@ -37,7 +37,14 @@ export function KotTemplate({ data, paperSize = "80mm", preview = false, copyLab
 
   return (
     <div style={wrapStyle}>
-      <div style={{ textAlign: "center", fontWeight: 800, fontSize: paperSize === "58mm" ? 18 : 20, letterSpacing: 1 }}>
+      <div
+        style={{
+          textAlign: "center",
+          fontWeight: 800,
+          fontSize: paperSize === "58mm" ? 18 : 20,
+          letterSpacing: 1,
+        }}
+      >
         KITCHEN TICKET
       </div>
       {copyLabel && (
@@ -53,9 +60,8 @@ export function KotTemplate({ data, paperSize = "80mm", preview = false, copyLab
         <span>#{data.orderNo}</span>
         <span>{formatDate(data.createdAt)}</span>
       </div>
-      {data.customerName && (
-        <div style={{ fontSize: 11 }}>Cust: {data.customerName}</div>
-      )}
+      {data.customerName && <div style={{ fontSize: 11 }}>Cust: {data.customerName}</div>}
+      {data.orderNotes && <div style={{ fontSize: 11 }}>Note: {data.orderNotes}</div>}
 
       <hr style={{ border: "none", borderTop: "1px dashed #555", margin: "6px 0" }} />
 
@@ -63,16 +69,42 @@ export function KotTemplate({ data, paperSize = "80mm", preview = false, copyLab
         <tbody>
           {data.items.map((it, i) => (
             <tr key={it.id ?? i}>
-              <td style={{ verticalAlign: "top", padding: "4px 0", width: 36, fontSize: paperSize === "58mm" ? 18 : 22, fontWeight: 800 }}>
+              <td
+                style={{
+                  verticalAlign: "top",
+                  padding: "4px 0",
+                  width: 36,
+                  fontSize: paperSize === "58mm" ? 18 : 22,
+                  fontWeight: 800,
+                }}
+              >
                 {it.qty}×
               </td>
-              <td style={{ verticalAlign: "top", padding: "4px 0", fontSize: paperSize === "58mm" ? 14 : 16, fontWeight: 700, textTransform: "uppercase" }}>
+              <td
+                style={{
+                  verticalAlign: "top",
+                  padding: "4px 0",
+                  fontSize: paperSize === "58mm" ? 14 : 16,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                }}
+              >
                 {it.name}
                 {it.addons?.map((a, j) => (
-                  <div key={j} style={{ fontSize: 11, fontWeight: 400, paddingLeft: 4 }}>+ {a.name}</div>
+                  <div key={j} style={{ fontSize: 11, fontWeight: 400, paddingLeft: 4 }}>
+                    + {a.name}
+                  </div>
                 ))}
                 {it.notes && (
-                  <div style={{ fontSize: 11, fontStyle: "italic", color: "#000", paddingLeft: 4, marginTop: 2 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontStyle: "italic",
+                      color: "#000",
+                      paddingLeft: 4,
+                      marginTop: 2,
+                    }}
+                  >
                     » {it.notes}
                   </div>
                 )}
@@ -84,7 +116,8 @@ export function KotTemplate({ data, paperSize = "80mm", preview = false, copyLab
 
       <hr style={{ border: "none", borderTop: "2px solid #000", margin: "8px 0 0" }} />
       <div style={{ textAlign: "center", fontSize: 10, color: "#444", paddingTop: 4 }}>
-        {data.items.reduce((n, i) => n + i.qty, 0)} items · printed {new Date().toLocaleTimeString()}
+        {data.items.reduce((n, i) => n + i.qty, 0)} items · printed{" "}
+        {new Date().toLocaleTimeString()}
       </div>
     </div>
   );

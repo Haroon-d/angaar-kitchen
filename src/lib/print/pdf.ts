@@ -78,6 +78,10 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
     kv(doc, padX, y, innerW, "Address", data.customerAddress);
     y += 3.5;
   }
+  if (data.orderNotes) {
+    kv(doc, padX, y, innerW, "Notes", data.orderNotes);
+    y += 3.5;
+  }
 
   y += 1;
   dashed(doc, padX, y, widthMm - padX);

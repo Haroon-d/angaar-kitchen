@@ -40,6 +40,7 @@ export type ReceiptData = {
   customerName?: string | null;
   customerPhone?: string | null;
   customerAddress?: string | null;
+  orderNotes?: string | null;
   cashierName?: string | null;
   createdAt: string;
 

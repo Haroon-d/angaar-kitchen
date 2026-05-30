@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Flame, Loader2, LockKeyhole, Mail } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,7 @@ function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const nav = useNavigate();
+  const { signIn } = useAuth();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,27 +30,14 @@ function LoginPage() {
       return;
     }
     setLoading(true);
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-    const { data: roles, error: roleError } = await supabase
-      .from("user_roles")
-      .select("id")
-      .eq("user_id", data.user.id)
-      .limit(1);
-    if (roleError) {
-      toast.error(roleError.message);
-      return;
-    }
-    if (roles?.length) {
+    try {
+      const result = await signIn(parsed.data);
       toast.success("Welcome back");
-      nav({ to: "/dashboard" });
-    } else {
-      toast.success("Welcome back");
-      nav({ to: "/" });
+      nav({ to: result.roles.length ? "/dashboard" : "/" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to sign in");
+    } finally {
+      setLoading(false);
     }
   }
 

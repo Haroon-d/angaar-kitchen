@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { createFileRoute, useNavigate, redirect } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Flame, Loader2, MapPin } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
 import { setupAngaarKitchen } from "@/lib/onboarding.functions";
+import { setupAngaarKitchenPostgres } from "@/lib/onboarding.postgres.functions";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
 import { useAuth, useMyRoles } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Button } from "@/components/ui/button";
@@ -12,13 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
-export const Route = createFileRoute("/_authenticated/onboarding")({
-  beforeLoad: async () => {
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) throw redirect({ to: "/login" });
-  },
-  component: OnboardingPage,
-});
+export const Route = createFileRoute("/_authenticated/onboarding")({ component: OnboardingPage });
 
 const Schema = z.object({
   address: z.string().max(240).optional(),
@@ -69,7 +64,8 @@ function OnboardingPage() {
 
     setLoading(true);
     try {
-      await setupAngaarKitchen({
+      const setup = isPostgresAuthEnabled() ? setupAngaarKitchenPostgres : setupAngaarKitchen;
+      await setup({
         data: parsed.data,
         headers: { Authorization: `Bearer ${session.access_token}` },
       });

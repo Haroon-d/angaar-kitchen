@@ -21,7 +21,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -75,8 +75,7 @@ type RpcResult = { error: RpcError | null };
 type DynamicRpc = (fn: string, args: Record<string, unknown>) => Promise<RpcResult>;
 
 async function runRpc(fn: string, args: Record<string, unknown>) {
-  const rpcCall = supabase.rpc.bind(supabase) as unknown as DynamicRpc;
-  const { error } = await rpcCall(fn, args);
+  const { error } = (await supabase.rpc(fn, args)) as RpcResult;
   if (error) throw error;
 }
 
@@ -131,6 +130,7 @@ function OrderTicketPage() {
   const data: ReceiptData | null = useMemo(() => {
     if (!q.data || !restaurant) return null;
     const { order, items, taxes, payments, cashier } = q.data;
+    const parsedNotes = parseOrderNotes(order.notes);
     return {
       brandName: restaurant.name,
       legalName: restaurant.legal_name,
@@ -144,7 +144,8 @@ function OrderTicketPage() {
       tableLabel: order.table_label,
       customerName: order.customer_name,
       customerPhone: order.customer_phone,
-      customerAddress: null,
+      customerAddress: parsedNotes.address || null,
+      orderNotes: parsedNotes.notes || null,
       cashierName: cashier,
       createdAt: order.created_at,
       currencySymbol: restaurant.currency_symbol ?? "₨",
@@ -601,6 +602,23 @@ function PrintCount({ n }: { n?: number }) {
 
 function labelForKind(k: "kot" | "bill" | "receipt") {
   return k === "kot" ? "Kitchen ticket" : k === "bill" ? "Bill" : "Receipt";
+}
+
+function parseOrderNotes(value: unknown) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return { address: "", notes: "" };
+
+  const lines = raw.split(/\r?\n/);
+  const addressLine = lines.find((line) => /^address:/i.test(line));
+  const notesLine = lines.find((line) => /^notes:/i.test(line));
+  if (addressLine || notesLine) {
+    return {
+      address: addressLine?.replace(/^address:\s*/i, "").trim() ?? "",
+      notes: notesLine?.replace(/^notes:\s*/i, "").trim() ?? "",
+    };
+  }
+
+  return { address: "", notes: raw };
 }
 
 function StatusBadge({ status }: { status: OrderStatus }) {

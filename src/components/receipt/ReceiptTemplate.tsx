@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { PaperSize, ReceiptData } from "@/lib/print/types";
 import { formatMoney, formatDate } from "@/lib/format";
 
@@ -7,6 +8,9 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   delivery: "DELIVERY",
 };
 
+const DEFAULT_ADDRESS = "Grand Trunk Rd, near Punjab College, Pak Town, Kamoke, 52470";
+const DEFAULT_PHONE = "0335 7200955";
+
 type Props = {
   data: ReceiptData;
   paperSize?: PaperSize;
@@ -15,148 +19,136 @@ type Props = {
 };
 
 /**
- * Realistic thermal receipt template. Pure HTML — re-used by:
- *   • on-screen preview (preview=true)
- *   • print iframe (renderToStaticMarkup → BrowserPrintDriver wraps with @page CSS)
- *   • PDF generator references the same data shape
+ * Simple branded thermal receipt template.
+ * Designed to stay readable while keeping ink usage modest.
  */
 export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: Props) {
-  const widthMm = paperSize === "58mm" ? 58 : 80;
+  const compact = paperSize === "58mm";
+  const widthMm = compact ? 58 : 80;
   const sym = data.currencySymbol;
+  const itemCount = data.items.reduce((total, item) => total + item.qty, 0);
+  const paidAmount = data.payments.reduce((total, payment) => total + payment.amount, 0);
+  const balanceDue = Math.max(0, data.grandTotal - Math.max(paidAmount, data.amountReceived ?? 0));
+  const brandLines = splitBrandName(data.brandName);
+  const legalName = isSameText(data.legalName, data.brandName) ? null : data.legalName;
+  const receiptAddress = cleanText(data.address) || DEFAULT_ADDRESS;
+  const receiptPhone = cleanText(data.phone) || DEFAULT_PHONE;
 
-  const wrapStyle: React.CSSProperties = preview
-    ? {
-        width: `${widthMm}mm`,
-        margin: "0 auto",
-        background: "#fff",
-        color: "#000",
-        padding: "6mm 4mm",
-        boxShadow: "0 30px 60px -20px rgba(0,0,0,.6), 0 10px 20px -10px rgba(0,0,0,.4)",
-        borderRadius: 4,
-        fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
-        fontSize: paperSize === "58mm" ? 11 : 12,
-        lineHeight: 1.45,
-      }
-    : { padding: 0 };
+  const wrapStyle: CSSProperties = {
+    width: preview ? `${widthMm}mm` : "100%",
+    margin: preview ? "0 auto" : 0,
+    background: "#fff",
+    color: "#050505",
+    padding: preview ? (compact ? "5mm 3.5mm" : "6mm 4.5mm") : 0,
+    boxSizing: "border-box",
+    boxShadow: preview
+      ? "0 28px 55px -24px rgba(0,0,0,.55), 0 8px 18px -12px rgba(0,0,0,.35)"
+      : "none",
+    borderRadius: preview ? 6 : 0,
+    fontFamily:
+      "Arial, Helvetica, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    fontSize: compact ? 10.25 : 11.25,
+    lineHeight: 1.33,
+  };
 
   return (
     <div style={wrapStyle}>
-      {/* HEADER */}
-      <div style={{ textAlign: "center" }}>
-        {data.logoUrl ? (
-          <img
-            src={data.logoUrl}
-            alt=""
-            style={{ width: 36, height: 36, objectFit: "contain", margin: "0 auto 4px" }}
-          />
-        ) : (
+      <header style={{ textAlign: "center" }}>
+        <BrandHeader top={brandLines.top} bottom={brandLines.bottom} compact={compact} />
+        <div style={{ marginTop: 5 }}>
+          {legalName && <FineLine>{legalName}</FineLine>}
+          <FineLine>{receiptAddress}</FineLine>
+          <FineLine>Tel: {receiptPhone}</FineLine>
+          {data.taxId && <FineLine>Tax ID: {data.taxId}</FineLine>}
+        </div>
+      </header>
+
+      <Rule strong />
+
+      <section>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 8,
+            alignItems: "center",
+            marginBottom: 4,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 8, color: "#555", textTransform: "uppercase" }}>Order</div>
+            <div style={{ fontSize: compact ? 15 : 17, fontWeight: 900, lineHeight: 1.05 }}>
+              {data.orderNo}
+            </div>
+          </div>
           <div
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: "50%",
-              background: "#000",
-              color: "#fff",
-              margin: "0 auto 4px",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 700,
+              border: "1px solid #000",
+              borderRadius: 999,
+              padding: "2px 7px",
+              fontSize: compact ? 8 : 9,
+              fontWeight: 800,
+              letterSpacing: 0.4,
+              whiteSpace: "nowrap",
             }}
           >
-            🔥
+            {DINING_LABEL[data.diningType]}
           </div>
-        )}
-        <div
-          className="ak-r-h1"
-          style={{
-            fontFamily: "Georgia, 'Times New Roman', serif",
-            fontWeight: 700,
-            fontSize: paperSize === "58mm" ? 16 : 18,
-            letterSpacing: ".5px",
-          }}
-        >
-          {data.brandName}
         </div>
-        {data.legalName && <div style={{ fontSize: 10, color: "#444" }}>{data.legalName}</div>}
-        {data.address && <div style={{ fontSize: 10, color: "#444" }}>{data.address}</div>}
-        {data.phone && <div style={{ fontSize: 10, color: "#444" }}>Tel: {data.phone}</div>}
-        {data.taxId && <div style={{ fontSize: 10, color: "#444" }}>Tax ID: {data.taxId}</div>}
-      </div>
+        <MetaRow label="Date" value={formatDate(data.createdAt)} />
+        {data.tableLabel && <MetaRow label="Table" value={data.tableLabel} />}
+        {data.cashierName && <MetaRow label="Cashier" value={data.cashierName} />}
+        {data.customerName && <MetaRow label="Customer" value={data.customerName} />}
+        {data.customerPhone && <MetaRow label="Phone" value={data.customerPhone} />}
+        {data.customerAddress && <MetaRow label="Address" value={data.customerAddress} />}
+        {data.orderNotes && <MetaRow label="Notes" value={data.orderNotes} />}
+      </section>
 
       <Rule />
 
-      {/* ORDER META */}
-      <div style={{ textAlign: "center", marginBottom: 4 }}>
-        <span
-          style={{
-            display: "inline-block",
-            border: "1px solid #000",
-            padding: "2px 8px",
-            borderRadius: 3,
-            fontWeight: 700,
-            letterSpacing: 1,
-            fontSize: 10,
-          }}
-        >
-          {DINING_LABEL[data.diningType]}
-        </span>
-      </div>
-      <KV k="Order #" v={data.orderNo} bold />
-      <KV k="Date" v={formatDate(data.createdAt)} />
-      {data.tableLabel && <KV k="Table" v={data.tableLabel} />}
-      {data.cashierName && <KV k="Cashier" v={data.cashierName} />}
-      {data.customerName && <KV k="Customer" v={data.customerName} />}
-      {data.customerPhone && <KV k="Phone" v={data.customerPhone} />}
-      {data.customerAddress && <KV k="Address" v={data.customerAddress} />}
-
-      <Rule />
-
-      {/* ITEMS */}
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <SectionTitle label={`${itemCount} item${itemCount === 1 ? "" : "s"}`} />
+      <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
         <tbody>
-          {data.items.map((it, i) => (
-            <tr key={it.id ?? i}>
-              <td style={{ verticalAlign: "top", padding: "2px 0" }}>
-                <div style={{ fontWeight: 600 }}>
-                  <span style={{ display: "inline-block", minWidth: 22 }}>{it.qty}×</span> {it.name}
+          {data.items.map((item, index) => (
+            <tr key={item.id ?? index}>
+              <td style={{ padding: "4px 4px 4px 0", verticalAlign: "top", width: "12%" }}>
+                <span style={{ fontWeight: 800 }}>{item.qty}x</span>
+              </td>
+              <td style={{ padding: "4px 4px 4px 0", verticalAlign: "top", width: "58%" }}>
+                <div style={{ fontWeight: 700, wordBreak: "break-word" }}>{item.name}</div>
+                <div style={{ marginTop: 1, fontSize: compact ? 8 : 8.5, color: "#555" }}>
+                  @ {formatMoney(item.unit_price, sym)}
                 </div>
-                <div style={{ fontSize: 10, color: "#555", paddingLeft: 26 }}>
-                  @ {formatMoney(it.unit_price, sym)}
-                </div>
-                {it.addons?.map((a, j) => (
+                {item.addons?.map((addon, addonIndex) => (
                   <div
-                    key={j}
+                    key={addonIndex}
                     style={{
-                      fontSize: 10,
+                      marginTop: 1,
+                      fontSize: compact ? 8 : 8.5,
                       color: "#555",
-                      paddingLeft: 26,
-                      display: "flex",
-                      justifyContent: "space-between",
+                      wordBreak: "break-word",
                     }}
                   >
-                    <span>+ {a.name}</span>
-                    <span>{formatMoney(a.price, sym)}</span>
+                    + {addon.name} ({formatMoney(addon.price, sym)})
                   </div>
                 ))}
-                {it.notes && (
-                  <div
-                    style={{ fontSize: 10, fontStyle: "italic", color: "#555", paddingLeft: 26 }}
-                  >
-                    * {it.notes}
+                {item.notes && (
+                  <div style={{ marginTop: 2, fontSize: compact ? 8 : 8.5, fontStyle: "italic" }}>
+                    Note: {item.notes}
                   </div>
                 )}
               </td>
               <td
                 style={{
+                  padding: "4px 0 4px 4px",
                   verticalAlign: "top",
-                  padding: "2px 0",
                   textAlign: "right",
+                  width: "30%",
+                  fontWeight: 800,
                   whiteSpace: "nowrap",
-                  fontWeight: 600,
                 }}
               >
-                {formatMoney(it.line_total, sym)}
+                {formatMoney(item.line_total, sym)}
               </td>
             </tr>
           ))}
@@ -165,81 +157,245 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
 
       <Rule />
 
-      {/* TOTALS */}
-      <KV k="Subtotal" v={formatMoney(data.subtotal, sym)} />
-      {data.discount > 0 && <KV k="Discount" v={`-${formatMoney(data.discount, sym)}`} />}
-      {data.taxes.map((t, i) => (
-        <KV key={i} k={`${t.name} (${t.rate}%)`} v={formatMoney(t.amount, sym)} />
-      ))}
-      {data.serviceCharge && data.serviceCharge > 0 && (
-        <KV k="Service" v={formatMoney(data.serviceCharge, sym)} />
-      )}
+      <section>
+        <AmountRow label="Subtotal" value={formatMoney(data.subtotal, sym)} />
+        {data.discount > 0 && (
+          <AmountRow label="Discount" value={`-${formatMoney(data.discount, sym)}`} />
+        )}
+        {data.taxes.map((tax, index) => (
+          <AmountRow
+            key={index}
+            label={`${tax.name} (${tax.rate}%)`}
+            value={formatMoney(tax.amount, sym)}
+          />
+        ))}
+        {data.serviceCharge && data.serviceCharge > 0 && (
+          <AmountRow label="Service" value={formatMoney(data.serviceCharge, sym)} />
+        )}
+        <div
+          style={{
+            borderTop: "1.5px solid #000",
+            borderBottom: "1.5px solid #000",
+            marginTop: 6,
+            padding: "5px 0",
+          }}
+        >
+          <AmountRow label="TOTAL" value={formatMoney(data.grandTotal, sym)} strong />
+        </div>
+      </section>
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          padding: "6px 0 2px",
-          borderTop: "2px solid #000",
-          marginTop: 4,
-          fontWeight: 700,
-          fontSize: paperSize === "58mm" ? 14 : 16,
-        }}
-      >
-        <span>TOTAL</span>
-        <span>{formatMoney(data.grandTotal, sym)}</span>
-      </div>
-
-      {/* PAYMENTS */}
       {data.payments.length > 0 && (
-        <div style={{ marginTop: 6 }}>
-          {data.payments.map((p, i) => {
-            const isRefund = p.amount < 0 || p.kind === "refund" || p.kind === "void_adjustment";
+        <>
+          <Rule />
+          <SectionTitle label="Payment" />
+          {data.payments.map((payment, index) => {
+            const isRefund =
+              payment.amount < 0 || payment.kind === "refund" || payment.kind === "void_adjustment";
             return (
-              <KV
-                key={i}
-                k={`${isRefund ? "Refund" : "Paid"} · ${p.method.toUpperCase()}`}
-                v={formatMoney(p.amount, sym)}
+              <AmountRow
+                key={index}
+                label={`${isRefund ? "Refund" : "Paid"} - ${payment.method.toUpperCase()}`}
+                value={formatMoney(payment.amount, sym)}
               />
             );
           })}
           {data.amountReceived !== undefined && data.amountReceived > 0 && (
-            <KV k="Received" v={formatMoney(data.amountReceived, sym)} />
+            <AmountRow label="Received" value={formatMoney(data.amountReceived, sym)} />
           )}
           {data.changeReturned !== undefined && data.changeReturned > 0 && (
-            <KV k="Change" v={formatMoney(data.changeReturned, sym)} />
+            <AmountRow label="Change" value={formatMoney(data.changeReturned, sym)} strong />
           )}
-        </div>
+          {balanceDue > 0 && (
+            <AmountRow label="Balance Due" value={formatMoney(balanceDue, sym)} strong />
+          )}
+        </>
       )}
 
-      <Rule />
+      <Rule strong />
 
-      <div style={{ textAlign: "center", fontSize: 10, color: "#444" }}>
-        {data.footerNote ?? "Thank you for your visit!"}
+      <footer style={{ textAlign: "center" }}>
+        <div style={{ fontSize: compact ? 9 : 10, fontWeight: 700 }}>
+          {data.footerNote ?? "Thank you for dining with us."}
+        </div>
+        <div style={{ marginTop: 4, fontSize: compact ? 7.5 : 8, color: "#555" }}>
+          Keep this receipt for your records.
+        </div>
+        <div
+          style={{
+            marginTop: 5,
+            fontSize: 7.5,
+            color: "#777",
+            wordBreak: "break-word",
+          }}
+        >
+          Ref: {data.orderId.slice(0, 12)}
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function FineLine({ children }: { children: string }) {
+  return (
+    <div
+      style={{
+        fontSize: 8.5,
+        color: "#444",
+        lineHeight: 1.24,
+        wordBreak: "break-word",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function BrandHeader({ top, bottom, compact }: { top: string; bottom: string; compact: boolean }) {
+  return (
+    <div>
+      <div
+        aria-hidden="true"
+        style={{
+          width: compact ? 18 : 22,
+          height: compact ? 18 : 22,
+          margin: "0 auto 3px",
+          position: "relative",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute",
+            left: compact ? 5 : 6,
+            top: compact ? 1 : 2,
+            width: compact ? 8 : 10,
+            height: compact ? 13 : 15,
+            borderRadius: "80% 20% 75% 25%",
+            background: "#000",
+            transform: "rotate(28deg)",
+          }}
+        />
+        <span
+          style={{
+            position: "absolute",
+            left: compact ? 2 : 3,
+            bottom: compact ? 2 : 3,
+            width: compact ? 14 : 16,
+            height: 2,
+            borderRadius: 999,
+            background: "#000",
+          }}
+        />
       </div>
-      <div style={{ textAlign: "center", fontSize: 9, color: "#888", marginTop: 4 }}>
-        Powered by Angaar Kitchen POS
+      <div
+        style={{
+          fontFamily: "Georgia, 'Times New Roman', serif",
+          fontWeight: 800,
+          fontSize: compact ? 19 : 22,
+          lineHeight: 0.95,
+          letterSpacing: 0,
+          textTransform: "lowercase",
+        }}
+      >
+        {top}
+      </div>
+      <div
+        style={{
+          marginTop: 3,
+          fontSize: compact ? 9 : 10,
+          fontWeight: 700,
+          letterSpacing: compact ? 3.2 : 4,
+          textTransform: "lowercase",
+        }}
+      >
+        {bottom}
       </div>
     </div>
   );
 }
 
-function Rule() {
-  return <hr style={{ border: "none", borderTop: "1px dashed #555", margin: "6px 0" }} />;
+function splitBrandName(name: string) {
+  const parts = name.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return {
+    top: parts[0] ?? "angaar",
+    bottom: parts.slice(1).join(" ") || "kitchen",
+  };
 }
-function KV({ k, v, bold }: { k: string; v: string; bold?: boolean }) {
+
+function cleanText(value: string | null | undefined) {
+  return value?.trim() || "";
+}
+
+function isSameText(left: string | null | undefined, right: string | null | undefined) {
+  return cleanText(left).toLowerCase() === cleanText(right).toLowerCase();
+}
+
+function Rule({ strong = false }: { strong?: boolean }) {
+  return (
+    <div
+      style={{
+        borderTop: strong ? "1.5px solid #000" : "1px dashed #777",
+        margin: strong ? "7px 0" : "6px 0",
+      }}
+    />
+  );
+}
+
+function SectionTitle({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        marginBottom: 3,
+        fontSize: 8,
+        fontWeight: 800,
+        letterSpacing: 0.8,
+        textTransform: "uppercase",
+        color: "#333",
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+function MetaRow({ label, value }: { label: string; value: string }) {
   return (
     <div
       style={{
         display: "flex",
         justifyContent: "space-between",
-        gap: 6,
-        fontWeight: bold ? 700 : 400,
-        fontSize: 11,
+        gap: 8,
+        marginTop: 2,
+        fontSize: 9,
       }}
     >
-      <span>{k}</span>
-      <span style={{ whiteSpace: "nowrap" }}>{v}</span>
+      <span style={{ color: "#555", textTransform: "uppercase", fontSize: 8 }}>{label}</span>
+      <span style={{ textAlign: "right", fontWeight: 700, wordBreak: "break-word" }}>{value}</span>
+    </div>
+  );
+}
+
+function AmountRow({
+  label,
+  value,
+  strong = false,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 8,
+        marginTop: strong ? 0 : 3,
+        fontSize: strong ? 13 : 10,
+        fontWeight: strong ? 900 : 600,
+      }}
+    >
+      <span style={{ wordBreak: "break-word" }}>{label}</span>
+      <span style={{ whiteSpace: "nowrap" }}>{value}</span>
     </div>
   );
 }

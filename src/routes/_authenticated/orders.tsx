@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Search, Receipt, ChefHat, Clock, Plus, Calendar, RotateCcw } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";

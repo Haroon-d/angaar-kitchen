@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,9 +14,10 @@ import {
   Tags,
   Trash2,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isManager, useMyRoles } from "@/hooks/use-auth";
 import { formatMoney, pakistanDateInputValue } from "@/lib/format";
@@ -46,7 +48,43 @@ export const Route = createFileRoute("/_authenticated/expenses")({ component: Ex
 type ExpenseStatus = "due" | "paid" | "void";
 type PaymentMethod = "cash" | "card" | "upi" | "wallet" | "other";
 
-const db = supabase as any;
+type DbError = { message: string };
+type DbResult<T = unknown> = { data: T | null; error: DbError | null };
+type DbQuery<T = unknown> = PromiseLike<DbResult<T>> & {
+  select(columns?: string): DbQuery<T>;
+  insert(values: unknown): DbQuery<unknown>;
+  update(values: unknown): DbQuery<unknown>;
+  delete(): DbQuery<unknown>;
+  eq(column: string, value: unknown): DbQuery<T>;
+  gte(column: string, value: unknown): DbQuery<T>;
+  lte(column: string, value: unknown): DbQuery<T>;
+  order(column: string, options?: { ascending?: boolean }): DbQuery<T>;
+};
+type DbClient = { from(table: string): DbQuery };
+
+const db = supabase as unknown as DbClient;
+
+type ExpenseCategory = {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+};
+
+type Expense = {
+  id: string;
+  branch_id: string;
+  category_id: string | null;
+  expense_date: string | Date;
+  title: string;
+  vendor: string | null;
+  reference_no: string | null;
+  payment_method: PaymentMethod | null;
+  status: ExpenseStatus;
+  amount: number | string;
+  notes: string | null;
+  operational_expense_categories?: { name: string } | null;
+};
 
 const CategorySchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -114,29 +152,29 @@ function ExpensesWorkspace({
         .order("expense_date", { ascending: false })
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []) as Expense[];
     },
   });
 
-  const expenses = expensesQ.data ?? [];
+  const expenses = useMemo(() => expensesQ.data ?? [], [expensesQ.data]);
   const visibleExpenses = useMemo(() => {
     const s = search.trim().toLowerCase();
     if (!s) return expenses;
-    return expenses.filter((e: any) =>
+    return expenses.filter((e) =>
       [e.title, e.vendor, e.reference_no, e.operational_expense_categories?.name]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(s)),
     );
   }, [expenses, search]);
 
-  const activeExpenses = expenses.filter((e: any) => e.status !== "void");
-  const total = activeExpenses.reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+  const activeExpenses = expenses.filter((e) => e.status !== "void");
+  const total = activeExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const paid = activeExpenses
-    .filter((e: any) => e.status === "paid")
-    .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+    .filter((e) => e.status === "paid")
+    .reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const due = activeExpenses
-    .filter((e: any) => e.status === "due")
-    .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+    .filter((e) => e.status === "due")
+    .reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
   return (
     <div className="space-y-6 p-4 sm:p-8">
@@ -144,15 +182,12 @@ function ExpensesWorkspace({
         <div>
           <h1 className="font-display text-3xl">Operational expenses</h1>
           <p className="text-sm text-muted-foreground">
-            {branchName} electricity, gas, salaries, maintenance, rent, and other non-inventory costs.
+            {branchName} electricity, gas, salaries, maintenance, rent, and other non-inventory
+            costs.
           </p>
         </div>
         {manager && (
-          <ExpenseDialog
-            branchId={branchId}
-            categories={categoriesQ.data ?? []}
-            symbol={symbol}
-          />
+          <ExpenseDialog branchId={branchId} categories={categoriesQ.data ?? []} symbol={symbol} />
         )}
       </div>
 
@@ -189,7 +224,9 @@ function ExpensesWorkspace({
           <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
             <div>
               <CardTitle>Expense ledger</CardTitle>
-              <CardDescription>Real expenses only. Voided entries stay visible but do not count.</CardDescription>
+              <CardDescription>
+                Real expenses only. Voided entries stay visible but do not count.
+              </CardDescription>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -219,7 +256,7 @@ function ExpensesWorkspace({
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleExpenses.map((expense: any) => (
+                    {visibleExpenses.map((expense) => (
                       <ExpenseRow
                         key={expense.id}
                         expense={expense}
@@ -246,7 +283,11 @@ function ExpensesWorkspace({
           </CardContent>
         </Card>
 
-        <CategoriesPanel branchId={branchId} manager={manager} categories={categoriesQ.data ?? []} />
+        <CategoriesPanel
+          branchId={branchId}
+          manager={manager}
+          categories={categoriesQ.data ?? []}
+        />
       </div>
     </div>
   );
@@ -262,7 +303,7 @@ function useExpenseCategories(branchId: string) {
         .eq("branch_id", branchId)
         .order("name");
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []) as ExpenseCategory[];
     },
   });
 }
@@ -274,9 +315,9 @@ function ExpenseRow({
   manager,
   symbol,
 }: {
-  expense: any;
+  expense: Expense;
   branchId: string;
-  categories: any[];
+  categories: ExpenseCategory[];
   manager: boolean;
   symbol: string;
 }) {
@@ -294,7 +335,7 @@ function ExpenseRow({
 
   return (
     <tr className="border-t border-border">
-      <td className="py-2 pr-4 text-muted-foreground">{expense.expense_date}</td>
+      <td className="py-2 pr-4 text-muted-foreground">{toDateInputValue(expense.expense_date)}</td>
       <td className="pr-4">
         <div className="font-medium">{expense.title}</div>
         <div className="text-xs text-muted-foreground">{expense.vendor || "-"}</div>
@@ -331,8 +372,8 @@ function ExpenseDialog({
   symbol,
 }: {
   branchId: string;
-  categories: any[];
-  expense?: any;
+  categories: ExpenseCategory[];
+  expense?: Expense;
   symbol: string;
 }) {
   const qc = useQueryClient();
@@ -341,7 +382,7 @@ function ExpenseDialog({
   const [f, setF] = useState({
     title: expense?.title ?? "",
     category_id: expense?.category_id ?? "none",
-    expense_date: expense?.expense_date ?? pakistanDateInputValue(),
+    expense_date: toDateInputValue(expense?.expense_date) || pakistanDateInputValue(),
     vendor: expense?.vendor ?? "",
     reference_no: expense?.reference_no ?? "",
     payment_method: expense?.payment_method ?? "cash",
@@ -350,7 +391,7 @@ function ExpenseDialog({
     notes: expense?.notes ?? "",
   });
 
-  async function save(e: React.FormEvent) {
+  async function save(e: FormEvent) {
     e.preventDefault();
     const parsed = ExpenseSchema.safeParse({
       ...f,
@@ -430,8 +471,8 @@ function ExpenseDialog({
                 <SelectContent>
                   <SelectItem value="none">Uncategorized</SelectItem>
                   {categories
-                    .filter((c: any) => c.is_active || c.id === expense?.category_id)
-                    .map((c: any) => (
+                    .filter((c) => c.is_active || c.id === expense?.category_id)
+                    .map((c) => (
                       <SelectItem key={c.id} value={c.id}>
                         {c.name}
                       </SelectItem>
@@ -441,7 +482,10 @@ function ExpenseDialog({
             </div>
             <div className="space-y-1.5">
               <Label>Status</Label>
-              <Select value={f.status} onValueChange={(v: ExpenseStatus) => setF({ ...f, status: v })}>
+              <Select
+                value={f.status}
+                onValueChange={(v: ExpenseStatus) => setF({ ...f, status: v })}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -506,7 +550,7 @@ function CategoriesPanel({
 }: {
   branchId: string;
   manager: boolean;
-  categories: any[];
+  categories: ExpenseCategory[];
 }) {
   return (
     <Card>
@@ -518,8 +562,11 @@ function CategoriesPanel({
         {manager && <CategoryDialog branchId={branchId} />}
       </CardHeader>
       <CardContent className="space-y-2">
-        {categories.map((category: any) => (
-          <div key={category.id} className="flex items-center gap-3 rounded-lg border border-border p-3">
+        {categories.map((category) => (
+          <div
+            key={category.id}
+            className="flex items-center gap-3 rounded-lg border border-border p-3"
+          >
             <Tags className="h-4 w-4 text-primary" />
             <div className="min-w-0 flex-1">
               <div className="truncate font-medium">{category.name}</div>
@@ -541,7 +588,7 @@ function CategoriesPanel({
   );
 }
 
-function CategoryDialog({ branchId, category }: { branchId: string; category?: any }) {
+function CategoryDialog({ branchId, category }: { branchId: string; category?: ExpenseCategory }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({
@@ -550,7 +597,7 @@ function CategoryDialog({ branchId, category }: { branchId: string; category?: a
     is_active: category?.is_active ?? true,
   });
 
-  async function save(e: React.FormEvent) {
+  async function save(e: FormEvent) {
     e.preventDefault();
     const parsed = CategorySchema.safeParse({ ...f, description: f.description || null });
     if (!parsed.success) {
@@ -559,7 +606,9 @@ function CategoryDialog({ branchId, category }: { branchId: string; category?: a
     }
     const { error } = category
       ? await db.from("operational_expense_categories").update(parsed.data).eq("id", category.id)
-      : await db.from("operational_expense_categories").insert({ ...parsed.data, branch_id: branchId });
+      : await db
+          .from("operational_expense_categories")
+          .insert({ ...parsed.data, branch_id: branchId });
     if (error) toast.error(error.message);
     else {
       toast.success("Category saved");
@@ -649,6 +698,17 @@ function DateInput({
   );
 }
 
+function toDateInputValue(value: unknown) {
+  if (!value) return "";
+  if (value instanceof Date) return pakistanDateInputValue(value);
+  if (typeof value === "string") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : pakistanDateInputValue(parsed);
+  }
+  return "";
+}
+
 function StatusBadge({ status }: { status: ExpenseStatus }) {
   const cls: Record<ExpenseStatus, string> = {
     paid: "border-success/30 bg-success/15 text-success",
@@ -668,7 +728,7 @@ function Stat({
   value,
   highlight,
 }: {
-  icon: any;
+  icon: LucideIcon;
   label: string;
   value: string;
   highlight?: boolean;

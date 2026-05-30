@@ -30,8 +30,15 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import heroImageUrl from "../../Images/img2.png";
-import { getCustomerMenu, placeCustomerOrder } from "@/lib/customer-order.functions";
-import { supabase } from "@/integrations/supabase/client";
+import {
+  getCustomerMenu as getCustomerMenuSupabase,
+  placeCustomerOrder as placeCustomerOrderSupabase,
+} from "@/lib/customer-order.functions";
+import {
+  getCustomerMenuPostgres as getCustomerMenu,
+  placeCustomerOrderPostgres as placeCustomerOrder,
+} from "@/lib/customer-order.postgres.functions";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,11 +69,11 @@ type CustomerTax = { rate: number; is_inclusive: boolean };
 type LastOrder = { orderNo: string; total: number; diningType: "takeaway" | "delivery" };
 
 function CustomerHome() {
-  const { user, signOut } = useAuth();
+  const { user, signIn: authSignIn, signOut } = useAuth();
   const nav = useNavigate();
   const menuQ = useQuery({
     queryKey: ["customer-menu"],
-    queryFn: () => getCustomerMenu(),
+    queryFn: () => (isPostgresAuthEnabled() ? getCustomerMenu() : getCustomerMenuSupabase()),
   });
   const menu = menuQ.data;
   const symbol = menu?.restaurant?.currency_symbol ?? "Rs";
@@ -138,29 +145,18 @@ function CustomerHome() {
       return;
     }
     setSigningIn(true);
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: loginEmail.trim(),
-      password: loginPassword,
-    });
-    setSigningIn(false);
-    if (error) {
-      toast.error(error.message);
-      return;
+    try {
+      const result = await authSignIn({ email: loginEmail.trim(), password: loginPassword });
+      if (result.roles.length) {
+        nav({ to: "/dashboard" });
+        return;
+      }
+      toast.success("Signed in for ordering");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to sign in");
+    } finally {
+      setSigningIn(false);
     }
-    const { data: roles, error: roleError } = await supabase
-      .from("user_roles")
-      .select("id")
-      .eq("user_id", data.user.id)
-      .limit(1);
-    if (roleError) {
-      toast.error(roleError.message);
-      return;
-    }
-    if (roles?.length) {
-      nav({ to: "/dashboard" });
-      return;
-    }
-    toast.success("Signed in for ordering");
   }
 
   async function submitOrder() {
@@ -186,16 +182,17 @@ function CustomerHome() {
 
     setSubmitting(true);
     try {
-      const result = await placeCustomerOrder({
-        data: {
-          branchId: menu.branch.id,
-          diningType,
-          customerName,
-          customerPhone,
-          notes: notes || null,
-          items: cart.map((item) => ({ itemId: item.itemId, qty: item.qty })),
-        },
-      });
+      const payload = {
+        branchId: menu.branch.id,
+        diningType,
+        customerName,
+        customerPhone,
+        notes: notes || null,
+        items: cart.map((item) => ({ itemId: item.itemId, qty: item.qty })),
+      };
+      const result = isPostgresAuthEnabled()
+        ? await placeCustomerOrder({ data: payload })
+        : await placeCustomerOrderSupabase({ data: payload });
       toast.success(`Order ${result.orderNo} placed`);
       setLastOrder({ orderNo: result.orderNo, total, diningType });
       setCart([]);
