@@ -23,6 +23,7 @@ Set these in the deployment host before the PostgreSQL build goes live:
 DATABASE_URL=<production-postgresql-connection-string>
 SESSION_SECRET=<long-random-secret>
 APP_URL=<production-app-url>
+VITE_AUTH_BACKEND=postgres
 ```
 
 Legacy Supabase variables may remain during parallel migration/export, but the
