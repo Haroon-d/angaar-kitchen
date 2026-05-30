@@ -240,7 +240,7 @@ Focused on building practical software solutions for real-world business challen
 **Email:** Add your professional email
 
 ### Hanzlah Hassan
-Software Developer
+AI Engineer
 
 Contributed to:
 - Feature implementation
