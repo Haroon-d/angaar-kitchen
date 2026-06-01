@@ -91,20 +91,36 @@ async function insertRows(table, rows) {
     return;
   }
 
+  const batchSize = batchSizeFor(rows[0]);
   const columns = Object.keys(rows[0]);
-  const columnSql = columns.map(quoteIdent).join(", ");
-  const valueSql = columns.map((_, index) => `$${index + 1}`).join(", ");
-  const sql = `insert into ${quoteIdent(table)} (${columnSql}) values (${valueSql})`;
-
   for (const row of rows) {
     assertSameColumns(table, columns, row);
-    await client.query(
-      sql,
-      columns.map((column) => row[column]),
-    );
+  }
+
+  const columnSql = columns.map(quoteIdent).join(", ");
+
+  for (let offset = 0; offset < rows.length; offset += batchSize) {
+    const batch = rows.slice(offset, offset + batchSize);
+    const values = [];
+    const valueGroups = batch.map((row, rowIndex) => {
+      const placeholders = columns.map((column, columnIndex) => {
+        values.push(row[column]);
+        return `$${rowIndex * columns.length + columnIndex + 1}`;
+      });
+
+      return `(${placeholders.join(", ")})`;
+    });
+
+    const sql = `insert into ${quoteIdent(table)} (${columnSql}) values ${valueGroups.join(", ")}`;
+    await client.query(sql, values);
   }
 
   console.log(`${table} <- ${rows.length} rows`);
+}
+
+function batchSizeFor(row) {
+  const columnCount = Object.keys(row).length || 1;
+  return Math.max(1, Math.floor(30000 / columnCount));
 }
 
 function toPostgresUser(user) {
