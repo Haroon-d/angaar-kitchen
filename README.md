@@ -25,7 +25,7 @@ The platform is designed with scalability in mind and serves as the foundation f
 * Customer-facing digital menu
 * Order management and tracking
 * Staff operations portal
-* PDF receipt generation
+* KOT, bill, and reciept Printing system
 * Sales analytics dashboard
 * Role-based access control
 * Responsive web application for desktop and mobile devices
@@ -237,7 +237,7 @@ Focused on building practical software solutions for real-world business challen
 
 **LinkedIn:** 
 
-**Email:** Add your professional email
+**Email:** mharoonkhan779@gmail.com
 
 ### Hanzlah Hassan
 AI Engineer
