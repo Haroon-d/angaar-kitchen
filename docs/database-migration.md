@@ -14,6 +14,15 @@ Drizzle. Until cutover, Supabase remains the live source of truth.
 - Put local-only migration values such as `DATABASE_URL`, `SESSION_SECRET`, and
   `SUPABASE_SERVICE_ROLE_KEY` in `.env.local` when possible.
 
+## Current Preview Status
+
+- `postgres-migration` preview is wired to Neon PostgreSQL.
+- Real Supabase data was imported into Neon for preview testing.
+- Row-count validation, integrity validation, password audit, and production build passed.
+- Supabase remains the live source of truth until production cutover.
+- Do not run another import until the final production cutover window, unless intentionally
+  refreshing preview test data.
+
 ## Local Dry Run
 
 1. Start PostgreSQL and apply Drizzle migrations.
@@ -92,3 +101,44 @@ not included in the new schema or migration export:
 
 Historical Supabase migrations are left in the repository for audit history, but the new Drizzle
 schema is the target schema for plain PostgreSQL.
+
+## Production Cutover Checklist
+
+Use this only when the restaurant is ready to switch production from Supabase to PostgreSQL.
+
+1. Pause live ordering/admin changes briefly so the final export is complete.
+2. Take a final Supabase export.
+
+```powershell
+npm.cmd run migration:export
+```
+
+3. Import that final snapshot into the target production PostgreSQL database.
+
+```powershell
+npm.cmd run migration:import -- --dir migration-data/<final-snapshot-folder>
+npm.cmd run migration:import -- --dir migration-data/<final-snapshot-folder> --commit
+```
+
+4. Validate final data.
+
+```powershell
+npm.cmd run migration:validate -- --dir migration-data/<final-snapshot-folder>
+npm.cmd run migration:validate-integrity
+npm.cmd run migration:passwords:audit
+```
+
+5. Confirm Vercel production environment variables:
+
+- `DATABASE_URL` points to the final Neon PostgreSQL database.
+- `VITE_AUTH_BACKEND=postgres`
+- `SESSION_SECRET` is present.
+- Supabase browser variables may remain temporarily for rollback, but should not be used in
+  PostgreSQL mode.
+
+6. Promote/deploy the verified `postgres-migration` branch to production.
+7. Smoke test production login, dashboard, POS, orders, receipt, expenses, and inventory.
+
+Rollback path: if production has a serious problem immediately after cutover, restore the previous
+Vercel production deployment and keep Supabase as the source of truth. Do not delete Supabase or old
+environment variables until PostgreSQL production has been stable through real restaurant use.
