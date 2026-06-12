@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { WEEKDAYS } from "@/lib/format";
 import { usePrinterSettings } from "@/lib/print/settings";
 import { PrintService } from "@/lib/print/print-service";
+import { renderReceiptText } from "@/lib/print/text-render";
 import { ReceiptTemplate } from "@/components/receipt/ReceiptTemplate";
 import type { PaperSize, ReceiptData } from "@/lib/print/types";
 import { Printer } from "lucide-react";
@@ -567,10 +568,12 @@ function PrinterTab() {
 
   async function testPrint() {
     try {
-      const html = PrintService.renderHtml(
-        <ReceiptTemplate data={sample} paperSize={settings.paperSize} />,
-      );
-      await PrintService.print({ html, kind: "receipt", paperSize: settings.paperSize });
+      const driverId = await PrintService.activeDriverId();
+      const body =
+        driverId === "qz" || driverId === "network"
+          ? renderReceiptText(sample)
+          : PrintService.renderHtml(<ReceiptTemplate data={sample} paperSize={settings.paperSize} />);
+      await PrintService.print({ html: body, kind: "receipt", paperSize: settings.paperSize });
       toast.success("Print job sent");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Print failed");

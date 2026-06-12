@@ -67,6 +67,7 @@ export class QZTrayDriver implements PrinterDriver {
     if (!printerName) {
       throw new Error("No printer selected. Pick one in Settings → Printer.");
     }
+    await assertPrinterExists(qz, printerName);
     const config = qz.configs.create(printerName, {
       encoding: "CP437",
       spool: { end: "\n" },
@@ -83,6 +84,23 @@ export class QZTrayDriver implements PrinterDriver {
     const qz = (window as any).qz;
     if (!qz?.websocket?.isActive()) return [];
     try { return await qz.printers.find(); } catch { return []; }
+  }
+}
+
+async function assertPrinterExists(qz: any, printerName: string) {
+  const expected = printerName.trim();
+  if (!expected) throw new Error("No printer selected. Pick one in Settings → Printer.");
+  try {
+    const printers = await qz.printers.find();
+    if (!Array.isArray(printers) || printers.length === 0) return;
+    const exact = printers.some((name) => String(name).trim() === expected);
+    if (!exact) {
+      throw new Error(
+        `Printer "${expected}" was not found by QZ Tray. Use the exact Windows printer name.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("was not found")) throw error;
   }
 }
 
