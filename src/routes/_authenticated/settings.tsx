@@ -566,11 +566,15 @@ function PrinterTab() {
   };
 
   async function testPrint() {
-    const html = PrintService.renderHtml(
-      <ReceiptTemplate data={sample} paperSize={settings.paperSize} />,
-    );
-    await PrintService.print({ html, kind: "receipt", paperSize: settings.paperSize });
-    toast.success("Print job sent");
+    try {
+      const html = PrintService.renderHtml(
+        <ReceiptTemplate data={sample} paperSize={settings.paperSize} />,
+      );
+      await PrintService.print({ html, kind: "receipt", paperSize: settings.paperSize });
+      toast.success("Print job sent");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Print failed");
+    }
   }
 
   return (

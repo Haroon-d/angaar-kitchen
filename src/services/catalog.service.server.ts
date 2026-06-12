@@ -12,15 +12,13 @@ import {
   menuCategories,
   menuItems,
   operatingHours,
-  orderItems,
-  orders,
   restaurants,
   taxes,
   userRoles,
 } from "@/db/schema";
 import { getAccessibleBranches } from "@/services/authorization.service.server";
 
-const PUBLIC_MENU_CACHE_TTL_MS = 120_000;
+const PUBLIC_MENU_CACHE_TTL_MS = 300_000;
 
 type PublicCustomerMenuResult = Awaited<ReturnType<typeof buildPublicCustomerMenu>>;
 const publicMenuCache = new Map<string, { expiresAt: number; value: PublicCustomerMenuResult }>();
@@ -128,6 +126,23 @@ export async function getBranchMenuCatalog(
   };
 }
 
+async function getBranchPublicMenuCatalog(branchId: string) {
+  const [categories, items] = await Promise.all([
+    db
+      .select()
+      .from(menuCategories)
+      .where(and(eq(menuCategories.branchId, branchId), eq(menuCategories.isActive, true)))
+      .orderBy(asc(menuCategories.sortOrder), asc(menuCategories.createdAt)),
+    db
+      .select()
+      .from(menuItems)
+      .where(and(eq(menuItems.branchId, branchId), eq(menuItems.isAvailable, true)))
+      .orderBy(asc(menuItems.sortOrder), asc(menuItems.createdAt)),
+  ]);
+
+  return { categories, items };
+}
+
 export async function getPublicCustomerMenu(branchId?: string) {
   const cacheKey = branchId ?? "default";
   const cached = publicMenuCache.get(cacheKey);
@@ -171,12 +186,9 @@ async function buildPublicCustomerMenu(branchId?: string) {
     };
   }
 
-  const [catalog, activeTaxes, hours, liveRows, promotions, reviewSummaryRows, recentReviews, popularRows] =
+  const [catalog, activeTaxes, hours, promotions, reviewSummaryRows, recentReviews] =
     await Promise.all([
-    getBranchMenuCatalog(row.branch.id, {
-      activeCategoriesOnly: true,
-      availableItemsOnly: true,
-    }),
+    getBranchPublicMenuCatalog(row.branch.id),
     db
       .select()
       .from(taxes)
@@ -192,14 +204,6 @@ async function buildPublicCustomerMenu(branchId?: string) {
       .from(operatingHours)
       .where(eq(operatingHours.branchId, row.branch.id))
       .orderBy(asc(operatingHours.weekday)),
-      db
-        .select({
-          activeOrders: sql<number>`count(*) filter (where ${orders.status} in ('open', 'placed', 'preparing', 'ready'))::int`,
-          todayOrders: sql<number>`count(*) filter (where ${orders.createdAt} >= date_trunc('day', now() at time zone ${row.restaurant.timezone}) at time zone ${row.restaurant.timezone})::int`,
-          latestOrderAt: sql<Date | null>`max(${orders.createdAt})`,
-        })
-        .from(orders)
-        .where(eq(orders.branchId, row.branch.id)),
       db
         .select()
         .from(homepagePromotions)
@@ -243,23 +247,6 @@ async function buildPublicCustomerMenu(branchId?: string) {
         )
         .orderBy(desc(customerReviews.createdAt))
         .limit(6),
-      db
-        .select({
-          itemId: orderItems.itemId,
-          purchases: sql<number>`sum(${orderItems.qty})::int`,
-        })
-        .from(orderItems)
-        .innerJoin(orders, eq(orders.id, orderItems.orderId))
-        .where(
-          and(
-            eq(orders.branchId, row.branch.id),
-            sql`${orders.createdAt} >= now() - interval '45 days'`,
-            sql`${orderItems.itemId} is not null`,
-          ),
-        )
-        .groupBy(orderItems.itemId)
-        .orderBy(sql`sum(${orderItems.qty}) desc`)
-        .limit(10),
     ]);
   const todayHours = getTodayHours(hours);
   const reviewSummary = reviewSummaryRows[0] ?? { averageRating: 0, totalReviews: 0 };
@@ -285,16 +272,14 @@ async function buildPublicCustomerMenu(branchId?: string) {
       })),
     },
     rankings: {
-      mostOrderedItemIds: popularRows
-        .map((row) => row.itemId)
-        .filter((id): id is string => Boolean(id)),
+      mostOrderedItemIds: [],
     },
     live: {
       isOpenNow: isOpenNow(todayHours, row.restaurant.timezone),
       todayHours,
-      activeOrders: Number(liveRows[0]?.activeOrders ?? 0),
-      todayOrders: Number(liveRows[0]?.todayOrders ?? 0),
-      latestOrderAt: liveRows[0]?.latestOrderAt?.toISOString?.() ?? null,
+      activeOrders: 0,
+      todayOrders: 0,
+      latestOrderAt: null,
       menuUpdatedAt:
         catalog.items
           .map((item) => item.updatedAt)

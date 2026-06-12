@@ -217,9 +217,9 @@ function CustomerHome() {
     queryKey: ["customer-menu"],
     queryFn: async () =>
       (isPostgresAuthEnabled() ? await getCustomerMenu() : await getCustomerMenuSupabase()) as CustomerMenuResponse,
-    staleTime: 120_000,
+    staleTime: 300_000,
     gcTime: 10 * 60_000,
-    refetchInterval: 180_000,
+    refetchInterval: 300_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -930,8 +930,8 @@ function CustomerHome() {
                           srcSet={cloudinaryImageSrcSet(promo.image, [640, 960, 1200, 1600])}
                           sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 72vw"
                           alt={promo.title}
-                          loading={index === 0 ? "eager" : "lazy"}
-                          fetchPriority={index === 0 ? "high" : "low"}
+                          loading="lazy"
+                          fetchPriority="low"
                           decoding="async"
                           className="aspect-[16/7] w-full object-cover"
                         />

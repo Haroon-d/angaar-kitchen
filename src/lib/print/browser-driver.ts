@@ -20,11 +20,13 @@ export class BrowserPrintDriver implements PrinterDriver {
     return new Promise<void>((resolve, reject) => {
       const iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
-      iframe.style.right = "0";
-      iframe.style.bottom = "0";
-      iframe.style.width = "0";
-      iframe.style.height = "0";
+      iframe.style.left = "0";
+      iframe.style.top = "0";
+      iframe.style.width = "1px";
+      iframe.style.height = "1px";
       iframe.style.border = "0";
+      iframe.style.opacity = "0";
+      iframe.style.pointerEvents = "none";
       iframe.setAttribute("aria-hidden", "true");
       document.body.appendChild(iframe);
 
@@ -54,24 +56,36 @@ export class BrowserPrintDriver implements PrinterDriver {
           }));
         };
 
+        let triggered = false;
         const trigger = async () => {
+          if (triggered) return;
+          triggered = true;
           try {
             await waitForAssets();
-            iframe.contentWindow?.focus();
-            iframe.contentWindow?.print();
+            const frameWindow = iframe.contentWindow;
+            if (!frameWindow) throw new Error("Print frame unavailable");
+            frameWindow.onafterprint = cleanup;
+            frameWindow.focus();
+            frameWindow.print();
             resolve();
           } catch (err) {
             reject(err);
           } finally {
-            cleanup();
+            setTimeout(cleanup, 2500);
           }
         };
 
-        // Wait for images/fonts to settle.
+        // Wait for images/fonts to settle. Some Chromium builds do not fire
+        // iframe.onload after document.write, so keep a short fallback.
+        const fallback = window.setTimeout(() => void trigger(), 500);
         if (iframe.contentDocument?.readyState === "complete") {
+          window.clearTimeout(fallback);
           setTimeout(() => void trigger(), 150);
         } else {
-          iframe.onload = () => setTimeout(() => void trigger(), 150);
+          iframe.onload = () => {
+            window.clearTimeout(fallback);
+            setTimeout(() => void trigger(), 150);
+          };
         }
       } catch (err) {
         cleanup();

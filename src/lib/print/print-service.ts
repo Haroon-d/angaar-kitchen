@@ -48,6 +48,9 @@ async function pickDriver(): Promise<PrinterDriver> {
   const s = loadSettings();
   const requested = drivers[s.driver] ?? drivers.browser;
   if (await requested.isAvailable()) return requested;
+  if (s.driver === "qz") {
+    throw new Error("QZ Tray is not connected. Open QZ Tray on this computer, then try again.");
+  }
   return drivers.browser;
 }
 
