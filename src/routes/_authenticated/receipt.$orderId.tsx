@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactElement, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { toPng } from "html-to-image";
 import { z } from "zod";
 import {
   Printer,
@@ -235,19 +234,11 @@ function OrderTicketPage() {
       if (driverId === "network" || driverId === "qz") {
         body = kind === "kot" ? renderKotText(data) : renderReceiptText(data);
       } else if (kind === "kot") {
-        body = await renderTicketImageHtml({
-          node: <KotTemplate data={data} paperSize={settings.paperSize} />,
-          paperSize: settings.paperSize,
-          alt: "Kitchen ticket",
-          sourceFontSizePx: settings.paperSize === "58mm" ? 13 : 14,
-        });
+        body = PrintService.renderHtml(<KotTemplate data={data} paperSize={settings.paperSize} />);
       } else {
-        body = await renderTicketImageHtml({
-          node: <ReceiptTemplate data={data} paperSize={settings.paperSize} />,
-          paperSize: settings.paperSize,
-          alt: "Receipt",
-          sourceFontSizePx: settings.paperSize === "58mm" ? 11 : 12,
-        });
+        body = PrintService.renderHtml(
+          <ReceiptTemplate data={data} paperSize={settings.paperSize} />,
+        );
       }
       await PrintService.print({
         html: body,
@@ -541,71 +532,6 @@ function OrderTicketPage() {
         </aside>
       </div>
     </div>
-  );
-}
-
-async function renderTicketImageHtml({
-  node,
-  paperSize,
-  alt,
-  sourceFontSizePx,
-}: {
-  node: ReactElement;
-  paperSize: "58mm" | "80mm";
-  alt: string;
-  sourceFontSizePx: number;
-}) {
-  const widthMm = paperSize === "58mm" ? 58 : 80;
-  const printableHeightMm = 145;
-  const cutterSafeBottomFeedMm = 8;
-  const sheetTailFeedMm = 297 - printableHeightMm;
-  const source = document.createElement("div");
-
-  source.setAttribute("aria-hidden", "true");
-  Object.assign(source.style, {
-    position: "fixed",
-    left: "0",
-    top: "0",
-    width: `${widthMm}mm`,
-    boxSizing: "border-box",
-    background: "#fff",
-    color: "#000",
-    padding: `4mm 3mm ${cutterSafeBottomFeedMm}mm`,
-    fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
-    fontSize: `${sourceFontSizePx}px`,
-    lineHeight: "1.4",
-    pointerEvents: "none",
-    zIndex: "2147483647",
-  } satisfies Partial<CSSStyleDeclaration>);
-
-  source.innerHTML = PrintService.renderHtml(node);
-  document.body.appendChild(source);
-
-  try {
-    await document.fonts?.ready;
-    await waitForElementImages(source);
-    const png = await toPng(source, {
-      backgroundColor: "#ffffff",
-      cacheBust: true,
-      pixelRatio: 1.5,
-      skipFonts: true,
-    });
-    return `<div class="ak-print-sheet" style="display:block;width:${widthMm}mm;height:297mm;overflow:hidden;padding:0 0 ${sheetTailFeedMm}mm;margin:0;text-align:center;"><img class="ak-print-image" src="${png}" alt="${alt}" style="display:block;max-width:${widthMm}mm;max-height:${printableHeightMm}mm;width:auto;height:auto;margin:0 auto;padding:0;object-fit:contain;object-position:top center;" /></div>`;
-  } finally {
-    source.remove();
-  }
-}
-
-async function waitForElementImages(element: HTMLElement) {
-  const images = Array.from(element.querySelectorAll("img"));
-  await Promise.all(
-    images.map((img) => {
-      if (img.complete) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-      });
-    }),
   );
 }
 
