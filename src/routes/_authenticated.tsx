@@ -13,6 +13,7 @@ import {
   ChefHat,
   ScrollText,
   Users,
+  UserRound,
   Settings,
   LogOut,
   Loader2,
@@ -20,12 +21,20 @@ import {
   Receipt,
   Package,
   Banknote,
+  Gift,
 } from "lucide-react";
 import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth, useMyRoles, isAdmin, hasOperationalAccess } from "@/hooks/use-auth";
+import { useAuth, useMyRoles } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isPostgresAuthEnabled } from "@/lib/auth-backend";
+import {
+  canAccessPath,
+  firstAllowedPath,
+  hasOperationalAccess,
+  hasPermission,
+  type AppPermission,
+} from "@/lib/rbac";
 import {
   Sidebar,
   SidebarContent,
@@ -78,10 +87,15 @@ function AuthedLayout() {
   }, [user, loading, nav]);
 
   useEffect(() => {
-    if (!rolesLoading && roles && !hasOperationalAccess(roles)) {
+    if (rolesLoading || !roles || router === "/onboarding") return;
+    if (!hasOperationalAccess(roles)) {
       nav({ to: "/" });
+      return;
     }
-  }, [roles, rolesLoading, nav]);
+    if (!canAccessPath(roles, router)) {
+      nav({ to: firstAllowedPath(roles) });
+    }
+  }, [roles, rolesLoading, router, nav]);
 
   if (loading || rolesLoading) {
     return (
@@ -96,6 +110,10 @@ function AuthedLayout() {
   }
 
   if (roles && !hasOperationalAccess(roles)) {
+    return null;
+  }
+
+  if (roles && router !== "/onboarding" && !canAccessPath(roles, router)) {
     return null;
   }
 
@@ -114,15 +132,23 @@ function AuthedLayout() {
   );
 }
 
-const NAV = [
-  { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
-  { label: "POS", to: "/pos", icon: ScrollText },
-  { label: "Orders", to: "/orders", icon: Receipt },
-  { label: "Menu", to: "/menu", icon: ChefHat },
-  { label: "Inventory", to: "/inventory", icon: Package },
-  { label: "Expenses", to: "/expenses", icon: Banknote },
-  { label: "Staff", to: "/staff", icon: Users, adminOnly: true },
-  { label: "Settings", to: "/settings", icon: Settings, adminOnly: true },
+const NAV: Array<{
+  label: string;
+  to: string;
+  icon: typeof LayoutDashboard;
+  permission: AppPermission;
+}> = [
+  { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard, permission: "dashboard:view" },
+  { label: "POS", to: "/pos", icon: ScrollText, permission: "pos:use" },
+  { label: "Orders", to: "/orders", icon: Receipt, permission: "orders:view" },
+  { label: "Customers", to: "/customers", icon: UserRound, permission: "customers:view" },
+  { label: "Promotions", to: "/promotions", icon: Gift, permission: "customers:manage" },
+  { label: "Menu", to: "/menu", icon: ChefHat, permission: "menu:manage" },
+  { label: "Inventory", to: "/inventory", icon: Package, permission: "inventory:view" },
+  { label: "Expenses", to: "/expenses", icon: Banknote, permission: "expenses:view" },
+  { label: "Staff", to: "/staff", icon: Users, permission: "staff:manage" },
+  { label: "Branches", to: "/branches", icon: Store, permission: "branches:manage" },
+  { label: "Settings", to: "/settings", icon: Settings, permission: "settings:manage" },
 ];
 
 function AppSidebar() {
@@ -130,12 +156,12 @@ function AppSidebar() {
   const collapsed = state === "collapsed";
   const path = useRouterState({ select: (s) => s.location.pathname });
   const { data: roles } = useMyRoles();
-  const admin = isAdmin(roles);
+  const homePath = firstAllowedPath(roles);
 
   return (
     <Sidebar collapsible="icon" className="border-sidebar-border/80">
       <SidebarHeader className="p-3">
-        <Link to="/dashboard" className="flex items-center gap-2 rounded-md px-2 py-2">
+        <Link to={homePath} className="flex items-center gap-2 rounded-md px-2 py-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ember-gradient shadow-ember">
             <Flame className="h-4 w-4 text-primary-foreground" />
           </div>
@@ -156,7 +182,7 @@ function AppSidebar() {
           <SidebarGroupLabel>Operations</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV.filter((n) => admin || !n.adminOnly).map((item) => {
+              {NAV.filter((item) => hasPermission(roles, item.permission)).map((item) => {
                 const active = path === item.to || path.startsWith(item.to + "/");
                 return (
                   <SidebarMenuItem key={item.to}>
@@ -182,8 +208,10 @@ function AppSidebar() {
 
 function UserMenu({ collapsed }: { collapsed: boolean }) {
   const { user, signOut } = useAuth();
+  const { data: roles } = useMyRoles();
   const nav = useNavigate();
   const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
+  const canManageSettings = hasPermission(roles, "settings:manage");
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -202,10 +230,12 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => nav({ to: "/settings" })}>
-          <Settings className="mr-2 h-4 w-4" />
-          Settings
-        </DropdownMenuItem>
+        {canManageSettings && (
+          <DropdownMenuItem onClick={() => nav({ to: "/settings" })}>
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onClick={async () => {
             await signOut();

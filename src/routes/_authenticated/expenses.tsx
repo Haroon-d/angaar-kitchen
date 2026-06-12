@@ -243,7 +243,7 @@ function ExpensesWorkspace({
               <Loader2 className="h-5 w-5 animate-spin text-primary" />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="min-w-[760px] w-full text-sm">
                   <thead className="text-left text-xs uppercase text-muted-foreground">
                     <tr>
                       <th className="py-2 pr-4">Date</th>
@@ -337,14 +337,20 @@ function ExpenseRow({
     <tr className="border-t border-border">
       <td className="py-2 pr-4 text-muted-foreground">{toDateInputValue(expense.expense_date)}</td>
       <td className="pr-4">
-        <div className="font-medium">{expense.title}</div>
-        <div className="text-xs text-muted-foreground">{expense.vendor || "-"}</div>
+        <div className="max-w-[240px] truncate font-medium">{expense.title}</div>
+        <div className="max-w-[240px] truncate text-xs text-muted-foreground">
+          {expense.vendor || "-"}
+        </div>
       </td>
-      <td className="pr-4">{expense.operational_expense_categories?.name || "Uncategorized"}</td>
+      <td className="max-w-[180px] truncate pr-4">
+        {expense.operational_expense_categories?.name || "Uncategorized"}
+      </td>
       <td className="pr-4">
         <StatusBadge status={expense.status} />
       </td>
-      <td className="pr-4 text-muted-foreground">{expense.reference_no || "-"}</td>
+      <td className="max-w-[180px] truncate pr-4 text-muted-foreground">
+        {expense.reference_no || "-"}
+      </td>
       <td className="text-right font-mono">{formatMoney(expense.amount, symbol)}</td>
       {manager && (
         <td className="text-right">
@@ -434,7 +440,7 @@ function ExpenseDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{expense ? "Edit expense" : "New expense"}</DialogTitle>
         </DialogHeader>
@@ -631,7 +637,7 @@ function CategoryDialog({ branchId, category }: { branchId: string; category?: E
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{category ? "Edit category" : "New category"}</DialogTitle>
         </DialogHeader>

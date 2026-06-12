@@ -130,6 +130,7 @@ function OrderTicketPage() {
   const data: ReceiptData | null = useMemo(() => {
     if (!q.data || !restaurant) return null;
     const { order, items, taxes, payments, cashier } = q.data;
+    const orderWithDelivery = order as OrderRow & { delivery_fee?: number | string | null };
     const parsedNotes = parseOrderNotes(order.notes);
     return {
       brandName: restaurant.name,
@@ -159,6 +160,7 @@ function OrderTicketPage() {
       })),
       subtotal: Number(order.subtotal),
       discount: Number(order.discount_total),
+      deliveryFee: Number(orderWithDelivery.delivery_fee ?? 0),
       taxes: taxes.map((t) => ({
         name: t.name_snapshot,
         rate: Number(t.rate_snapshot),
@@ -204,6 +206,8 @@ function OrderTicketPage() {
   const canRefund = manager && !cancelled && Number(order.amount_paid) > 0;
   const canReopen = manager && orderStatus === "completed";
   const canDelete = admin && cancelled;
+  const canUpdateFulfillment =
+    manager && !cancelled && paymentStatus !== "refunded" && orderStatus !== "completed";
 
   async function refreshOrderState() {
     await Promise.all([
@@ -409,6 +413,20 @@ function OrderTicketPage() {
           {manager && (
             <div className="space-y-2">
               <SectionLabel>Order control</SectionLabel>
+              {canUpdateFulfillment && (
+                <FulfillmentStatusControls
+                  orderStatus={orderStatus}
+                  orderNo={data.orderNo}
+                  onChange={async (nextStatus) => {
+                    await runRpc("update_order_status", {
+                      _order_id: orderId,
+                      _status: nextStatus,
+                    });
+                    toast.success(`Order marked ${statusLabel(nextStatus).toLowerCase()}`);
+                    await refreshOrderState();
+                  }}
+                />
+              )}
               {!cancelled && paymentStatus !== "refunded" && (
                 <AdjustDiscountDialog
                   orderId={orderId}
@@ -609,16 +627,86 @@ function parseOrderNotes(value: unknown) {
   if (!raw) return { address: "", notes: "" };
 
   const lines = raw.split(/\r?\n/);
-  const addressLine = lines.find((line) => /^address:/i.test(line));
+  const addressLine = lines.find((line) => /^(delivery\s+address|address):/i.test(line));
   const notesLine = lines.find((line) => /^notes:/i.test(line));
   if (addressLine || notesLine) {
     return {
-      address: addressLine?.replace(/^address:\s*/i, "").trim() ?? "",
+      address: addressLine?.replace(/^(delivery\s+address|address):\s*/i, "").trim() ?? "",
       notes: notesLine?.replace(/^notes:\s*/i, "").trim() ?? "",
     };
   }
 
   return { address: "", notes: raw };
+}
+
+const FULFILLMENT_STATUSES: OrderStatus[] = [
+  "placed",
+  "preparing",
+  "ready",
+  "served",
+  "completed",
+];
+
+function FulfillmentStatusControls(props: {
+  orderStatus: OrderStatus;
+  orderNo: string;
+  onChange: (status: OrderStatus) => Promise<void>;
+}) {
+  const [submitting, setSubmitting] = useState<OrderStatus | null>(null);
+
+  async function setStatus(status: OrderStatus) {
+    if (status === props.orderStatus || submitting) return;
+    setSubmitting(status);
+    try {
+      await props.onChange(status);
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, `Failed to update ${props.orderNo}`));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {FULFILLMENT_STATUSES.map((status) => {
+        const active = status === props.orderStatus;
+        return (
+          <Button
+            key={status}
+            type="button"
+            variant={active ? "default" : "outline"}
+            className="justify-start"
+            disabled={active || submitting !== null}
+            onClick={() => void setStatus(status)}
+          >
+            {submitting === status ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : status === "completed" ? (
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+            ) : (
+              <ChefHat className="mr-2 h-4 w-4" />
+            )}
+            {statusLabel(status)}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+function statusLabel(status: OrderStatus) {
+  const map: Record<OrderStatus, string> = {
+    open: "Open",
+    placed: "Placed",
+    preparing: "Preparing",
+    ready: "Ready",
+    served: "Served",
+    completed: "Completed",
+    cancelled: "Cancelled",
+    voided: "Voided",
+    refunded: "Refunded",
+  };
+  return map[status] ?? "Open";
 }
 
 function StatusBadge({ status }: { status: OrderStatus }) {

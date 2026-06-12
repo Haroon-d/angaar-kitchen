@@ -23,6 +23,55 @@ Drizzle. Until cutover, Supabase remains the live source of truth.
 - Do not run another import until the final production cutover window, unless intentionally
   refreshing preview test data.
 
+## Latest Pre-Production Check
+
+Date: 2026-06-12
+
+- Drizzle migrations applied successfully against the configured PostgreSQL database.
+- Fresh read-only Supabase export created:
+  `migration-data/2026-06-12T01-01-26-466Z`
+- Export did not write to Supabase.
+- PostgreSQL integrity validation passed.
+- PostgreSQL password audit passed: all active PostgreSQL users have password credentials.
+- Lint and production build passed.
+- Row-count validation against the fresh export does not match because the configured
+  PostgreSQL database already contains older preview/test migrated data.
+
+Important: do not import the fresh export into the current PostgreSQL database without an
+intentional refresh plan. For production cutover, use a fresh empty PostgreSQL database, or take a
+backup of the current target and explicitly replace it during the final cutover window.
+
+## Final Closed-Window Merge
+
+Date: 2026-06-12
+
+- Final read-only Supabase export created:
+  `migration-data/2026-06-12T01-14-13-720Z`
+- PostgreSQL pre-merge backup created:
+  `migration-data/postgres-backup/2026-06-12T01-14-58-377Z`
+- Final export was merged into PostgreSQL with `migration:merge`.
+- The merge preserved PostgreSQL-only data:
+  - PostgreSQL login password credentials
+  - operating hours
+  - homepage promotions/banners
+  - customer-system records
+  - PostgreSQL-only staff/user access rows
+- Stale preview rows were cleaned:
+  - 11 stale order-item rows
+  - 1 stale order-counter row
+  - 1 stale `Delivery Charges` menu item
+- Cutover validation passed with all critical business tables exact:
+  - `orders`: 359
+  - `order_items`: 935
+  - `payments`: 354
+  - `inventory_items`: 159
+  - `inventory_movements`: 2996
+  - `operational_expenses`: 222
+- Remaining count differences are intentional PostgreSQL-only setup data:
+  - extra staff/user row
+  - operating hours
+  - local audit entries
+
 ## Local Dry Run
 
 1. Start PostgreSQL and apply Drizzle migrations.

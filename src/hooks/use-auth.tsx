@@ -8,14 +8,18 @@ import {
   getCurrentUserPostgres,
   signInWithPasswordPostgres,
   signOutPostgres,
-  signUpWithPasswordPostgres,
 } from "@/lib/auth.postgres.functions";
-
-type Role = "owner" | "admin" | "manager" | "cashier" | "kitchen" | "waiter";
+import {
+  ADMIN_ROLES,
+  MANAGER_ROLES,
+  hasOperationalAccess as hasRoleAccess,
+  rolesInclude as rolesIncludeSet,
+  type AppRole,
+} from "@/lib/rbac";
 
 export type UserRoleRow = {
   id: string;
-  role: Role;
+  role: AppRole;
   restaurant_id: string;
   branch_id: string | null;
 };
@@ -103,30 +107,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { roles: (roles ?? []) as UserRoleRow[] };
     },
     signUp: async (input) => {
-      if (isPostgresAuthEnabled()) {
-        const result = await signUpWithPasswordPostgres({
-          data: {
-            fullName: input.fullName,
-            email: input.email,
-            password: input.password,
-          },
-        });
-        storePostgresToken(result.token);
-        setSession({ access_token: result.token, user: result.user } as Session);
-        setPostgresUser(result.user as User);
-        await qc.invalidateQueries();
-        return;
-      }
-
-      const { error } = await supabase.auth.signUp({
-        email: input.email,
-        password: input.password,
-        options: {
-          emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
-          data: { full_name: input.fullName },
-        },
-      });
-      if (error) throw error;
+      void input;
+      throw new Error("Account creation is admin-only. Ask an owner or admin to create staff access.");
     },
     signOut: async () => {
       if (isPostgresAuthEnabled()) {
@@ -172,12 +154,8 @@ export function useMyRoles() {
   });
 }
 
-const ADMIN_ROLES: Role[] = ["owner", "admin"];
-const MANAGER_ROLES: Role[] = ["owner", "admin", "manager"];
-
-export function rolesInclude(roles: UserRoleRow[] | undefined, set: Role[]) {
-  if (!roles) return false;
-  return roles.some((r) => set.includes(r.role));
+export function rolesInclude(roles: UserRoleRow[] | undefined, set: readonly AppRole[]) {
+  return rolesIncludeSet(roles, set);
 }
 
 export function isAdmin(roles: UserRoleRow[] | undefined) {
@@ -188,7 +166,7 @@ export function isManager(roles: UserRoleRow[] | undefined) {
 }
 
 export function hasOperationalAccess(roles: UserRoleRow[] | undefined) {
-  return !!roles?.length;
+  return hasRoleAccess(roles);
 }
 
 function authHeaders(token: string) {

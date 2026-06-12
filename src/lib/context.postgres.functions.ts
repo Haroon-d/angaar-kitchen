@@ -62,6 +62,7 @@ function serializeBranch(branch: {
   code: string;
   address: string | null;
   phone: string | null;
+  deliveryFee: string | number;
   isActive: boolean;
 }) {
   return {
@@ -71,6 +72,7 @@ function serializeBranch(branch: {
     code: branch.code,
     address: branch.address,
     phone: branch.phone,
+    delivery_fee: branch.deliveryFee,
     is_active: branch.isActive,
   };
 }

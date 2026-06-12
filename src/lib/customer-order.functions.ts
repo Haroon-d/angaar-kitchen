@@ -13,19 +13,23 @@ export const getCustomerMenu = createServerFn({ method: "GET" }).handler(async (
   const { data: branch, error: branchError } = await supabaseAdmin
     .from("branches")
     .select(
-      "id, name, address, phone, restaurant_id, restaurants(id, name, currency_symbol, address, phone)",
+      "id, name, address, phone, restaurant_id, restaurants(id, name, currency_symbol, address, phone, timezone)",
     )
     .eq("is_active", true)
     .order("created_at")
     .limit(1)
     .maybeSingle();
   if (branchError) throw new Error(branchError.message);
-  if (!branch) return { branch: null, restaurant: null, categories: [], items: [], taxes: [] };
+  if (!branch)
+    return { branch: null, restaurant: null, categories: [], items: [], taxes: [], hours: [], live: null };
 
   const [
     { data: categories, error: categoriesError },
     { data: items, error: itemsError },
     { data: taxes, error: taxesError },
+    { data: hours, error: hoursError },
+    { data: activeOrders, error: activeOrdersError, count: activeOrdersCount },
+    { data: todayOrders, error: todayOrdersError, count: todayOrdersCount },
   ] = await Promise.all([
     supabaseAdmin
       .from("menu_categories")
@@ -45,10 +49,33 @@ export const getCustomerMenu = createServerFn({ method: "GET" }).handler(async (
       .eq("restaurant_id", branch.restaurant_id)
       .eq("is_active", true)
       .eq("apply_by_default", true),
+    supabaseAdmin
+      .from("operating_hours")
+      .select("weekday, open_time, close_time, is_closed")
+      .eq("branch_id", branch.id)
+      .order("weekday"),
+    supabaseAdmin
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("branch_id", branch.id)
+      .in("status", ["open", "placed", "preparing", "ready"]),
+    supabaseAdmin
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("branch_id", branch.id)
+      .gte("created_at", getLocalDayStart(getRestaurantTimezone(branch.restaurants)).toISOString()),
   ]);
   if (categoriesError) throw new Error(categoriesError.message);
   if (itemsError) throw new Error(itemsError.message);
   if (taxesError) throw new Error(taxesError.message);
+  if (hoursError) throw new Error(hoursError.message);
+  if (activeOrdersError) throw new Error(activeOrdersError.message);
+  if (todayOrdersError) throw new Error(todayOrdersError.message);
+  void activeOrders;
+  void todayOrders;
+
+  const restaurant = Array.isArray(branch.restaurants) ? branch.restaurants[0] : branch.restaurants;
+  const todayHours = getTodayHours(hours ?? []);
 
   return {
     branch: {
@@ -57,10 +84,19 @@ export const getCustomerMenu = createServerFn({ method: "GET" }).handler(async (
       address: branch.address,
       phone: branch.phone,
     },
-    restaurant: Array.isArray(branch.restaurants) ? branch.restaurants[0] : branch.restaurants,
+    restaurant,
     categories: categories ?? [],
     items: items ?? [],
     taxes: taxes ?? [],
+    hours: hours ?? [],
+    live: {
+      isOpenNow: isOpenNow(todayHours, getRestaurantTimezone(branch.restaurants)),
+      todayHours,
+      activeOrders: activeOrdersCount ?? 0,
+      todayOrders: todayOrdersCount ?? 0,
+      latestOrderAt: null,
+      menuUpdatedAt: null,
+    },
   };
 });
 
@@ -131,7 +167,7 @@ export const placeCustomerOrder = createServerFn({ method: "POST" })
       branch_id: branch.id,
       order_no: orderNo,
       dining_type: data.diningType,
-      status: "open",
+      status: "placed",
       payment_status: "pending",
       customer_name: data.customerName.trim(),
       customer_phone: data.customerPhone.trim(),
@@ -188,6 +224,17 @@ export const placeCustomerOrder = createServerFn({ method: "POST" })
     return { orderId, orderNo, grandTotal };
   });
 
+export const lookupCustomerForOrder = createServerFn({ method: "POST" })
+  .inputValidator((input) =>
+    z
+      .object({
+        branchId: z.string().uuid(),
+        phone: z.string().min(6).max(40),
+      })
+      .parse(input),
+  )
+  .handler(async () => null);
+
 async function nextOrderNo(branchId: string, branchCode: string | null) {
   const { data, error } = await supabaseAdmin.rpc("next_order_number", { _branch: branchId });
   if (error) throw new Error(error.message);
@@ -199,4 +246,65 @@ async function nextOrderNo(branchId: string, branchCode: string | null) {
 
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function getRestaurantTimezone(restaurants: unknown) {
+  const restaurant = Array.isArray(restaurants) ? restaurants[0] : restaurants;
+  const timezone = (restaurant as { timezone?: string | null } | null)?.timezone;
+  return timezone || "Asia/Karachi";
+}
+
+function getTodayHours(
+  hours: Array<{
+    weekday: number;
+    open_time: string | null;
+    close_time: string | null;
+    is_closed: boolean;
+  }>,
+) {
+  const weekday = new Date().getDay();
+  const today = hours.find((row) => row.weekday === weekday);
+  if (!today || today.is_closed || !today.open_time || !today.close_time) return null;
+  return {
+    weekday: today.weekday,
+    openTime: today.open_time,
+    closeTime: today.close_time,
+  };
+}
+
+function isOpenNow(
+  todayHours: { openTime: string; closeTime: string } | null,
+  timeZone: string,
+) {
+  if (!todayHours) return false;
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const [hour, minute] = formatter.format(new Date()).split(":").map(Number);
+  const nowMinutes = hour * 60 + minute;
+  const openMinutes = timeToMinutes(todayHours.openTime);
+  const closeMinutes = timeToMinutes(todayHours.closeTime);
+  return closeMinutes <= openMinutes
+    ? nowMinutes >= openMinutes || nowMinutes < closeMinutes
+    : nowMinutes >= openMinutes && nowMinutes < closeMinutes;
+}
+
+function timeToMinutes(value: string) {
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function getLocalDayStart(timeZone: string) {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return new Date(`${byType.year}-${byType.month}-${byType.day}T00:00:00+05:00`);
 }

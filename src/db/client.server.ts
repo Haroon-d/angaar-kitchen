@@ -10,6 +10,7 @@ if (!connectionString) {
 
 const globalForDb = globalThis as typeof globalThis & {
   __angaarPgPool?: Pool;
+  __angaarPgPoolErrorHandlerAttached?: boolean;
 };
 
 export const pgPool =
@@ -18,6 +19,13 @@ export const pgPool =
     connectionString,
     max: 10,
   });
+
+if (!globalForDb.__angaarPgPoolErrorHandlerAttached) {
+  pgPool.on("error", (error) => {
+    console.warn("PostgreSQL idle connection error:", error.message);
+  });
+  globalForDb.__angaarPgPoolErrorHandlerAttached = true;
+}
 
 if (process.env.NODE_ENV !== "production") {
   globalForDb.__angaarPgPool = pgPool;

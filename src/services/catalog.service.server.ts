@@ -1,18 +1,29 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db/client.server";
 import {
   addonGroups,
   addons,
   branches,
+  customerReviews,
+  customers,
+  homepagePromotions,
   itemAddonGroups,
   itemVariants,
   menuCategories,
   menuItems,
+  operatingHours,
+  orderItems,
+  orders,
   restaurants,
   taxes,
   userRoles,
 } from "@/db/schema";
 import { getAccessibleBranches } from "@/services/authorization.service.server";
+
+const PUBLIC_MENU_CACHE_TTL_MS = 120_000;
+
+type PublicCustomerMenuResult = Awaited<ReturnType<typeof buildPublicCustomerMenu>>;
+const publicMenuCache = new Map<string, { expiresAt: number; value: PublicCustomerMenuResult }>();
 
 export async function getUserRestaurantContext(userId: string) {
   const roles = await db
@@ -118,6 +129,21 @@ export async function getBranchMenuCatalog(
 }
 
 export async function getPublicCustomerMenu(branchId?: string) {
+  const cacheKey = branchId ?? "default";
+  const cached = publicMenuCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const value = await buildPublicCustomerMenu(branchId);
+  publicMenuCache.set(cacheKey, {
+    expiresAt: Date.now() + PUBLIC_MENU_CACHE_TTL_MS,
+    value,
+  });
+  return value;
+}
+
+async function buildPublicCustomerMenu(branchId?: string) {
   const branchFilter = branchId
     ? and(eq(branches.id, branchId), eq(branches.isActive, true))
     : eq(branches.isActive, true);
@@ -140,10 +166,13 @@ export async function getPublicCustomerMenu(branchId?: string) {
       categories: [],
       items: [],
       taxes: [],
+      hours: [],
+      live: null,
     };
   }
 
-  const [catalog, activeTaxes] = await Promise.all([
+  const [catalog, activeTaxes, hours, liveRows, promotions, reviewSummaryRows, recentReviews, popularRows] =
+    await Promise.all([
     getBranchMenuCatalog(row.branch.id, {
       activeCategoriesOnly: true,
       availableItemsOnly: true,
@@ -158,7 +187,82 @@ export async function getPublicCustomerMenu(branchId?: string) {
           eq(taxes.applyByDefault, true),
         ),
       ),
-  ]);
+    db
+      .select()
+      .from(operatingHours)
+      .where(eq(operatingHours.branchId, row.branch.id))
+      .orderBy(asc(operatingHours.weekday)),
+      db
+        .select({
+          activeOrders: sql<number>`count(*) filter (where ${orders.status} in ('open', 'placed', 'preparing', 'ready'))::int`,
+          todayOrders: sql<number>`count(*) filter (where ${orders.createdAt} >= date_trunc('day', now() at time zone ${row.restaurant.timezone}) at time zone ${row.restaurant.timezone})::int`,
+          latestOrderAt: sql<Date | null>`max(${orders.createdAt})`,
+        })
+        .from(orders)
+        .where(eq(orders.branchId, row.branch.id)),
+      db
+        .select()
+        .from(homepagePromotions)
+        .where(
+          and(
+            eq(homepagePromotions.restaurantId, row.restaurant.id),
+            eq(homepagePromotions.isActive, true),
+            sql`(${homepagePromotions.startDate} is null or ${homepagePromotions.startDate} <= now())`,
+            sql`(${homepagePromotions.endDate} is null or ${homepagePromotions.endDate} >= now())`,
+          ),
+        )
+        .orderBy(desc(homepagePromotions.priority), asc(homepagePromotions.createdAt))
+        .limit(12),
+      db
+        .select({
+          averageRating: sql<number>`coalesce(avg(${customerReviews.rating}), 0)::float`,
+          totalReviews: sql<number>`count(*)::int`,
+        })
+        .from(customerReviews)
+        .where(
+          and(
+            eq(customerReviews.restaurantId, row.restaurant.id),
+            eq(customerReviews.isApproved, true),
+          ),
+        ),
+      db
+        .select({
+          id: customerReviews.id,
+          rating: customerReviews.rating,
+          review: customerReviews.review,
+          createdAt: customerReviews.createdAt,
+          customerName: customers.name,
+        })
+        .from(customerReviews)
+        .innerJoin(customers, eq(customers.id, customerReviews.customerId))
+        .where(
+          and(
+            eq(customerReviews.restaurantId, row.restaurant.id),
+            eq(customerReviews.isApproved, true),
+          ),
+        )
+        .orderBy(desc(customerReviews.createdAt))
+        .limit(6),
+      db
+        .select({
+          itemId: orderItems.itemId,
+          purchases: sql<number>`sum(${orderItems.qty})::int`,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orders.id, orderItems.orderId))
+        .where(
+          and(
+            eq(orders.branchId, row.branch.id),
+            sql`${orders.createdAt} >= now() - interval '45 days'`,
+            sql`${orderItems.itemId} is not null`,
+          ),
+        )
+        .groupBy(orderItems.itemId)
+        .orderBy(sql`sum(${orderItems.qty}) desc`)
+        .limit(10),
+    ]);
+  const todayHours = getTodayHours(hours);
+  const reviewSummary = reviewSummaryRows[0] ?? { averageRating: 0, totalReviews: 0 };
 
   return {
     branch: row.branch,
@@ -166,5 +270,82 @@ export async function getPublicCustomerMenu(branchId?: string) {
     categories: catalog.categories,
     items: catalog.items,
     taxes: activeTaxes,
+    hours,
+    promotions,
+    reviews: {
+      averageRating: Number(reviewSummary.averageRating ?? 0),
+      totalReviews: Number(reviewSummary.totalReviews ?? 0),
+      recent: recentReviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        review: review.review,
+        createdAt: review.createdAt.toISOString(),
+        customerName: review.customerName,
+        isVerifiedPurchase: true,
+      })),
+    },
+    rankings: {
+      mostOrderedItemIds: popularRows
+        .map((row) => row.itemId)
+        .filter((id): id is string => Boolean(id)),
+    },
+    live: {
+      isOpenNow: isOpenNow(todayHours, row.restaurant.timezone),
+      todayHours,
+      activeOrders: Number(liveRows[0]?.activeOrders ?? 0),
+      todayOrders: Number(liveRows[0]?.todayOrders ?? 0),
+      latestOrderAt: liveRows[0]?.latestOrderAt?.toISOString?.() ?? null,
+      menuUpdatedAt:
+        catalog.items
+          .map((item) => item.updatedAt)
+          .filter(Boolean)
+          .sort((a, b) => b.getTime() - a.getTime())[0]
+          ?.toISOString() ?? null,
+    },
   };
+}
+
+type PublicHoursRow = typeof operatingHours.$inferSelect;
+
+function getTodayHours(hours: PublicHoursRow[]) {
+  const weekday = new Date().getDay();
+  const today = hours.find((row) => row.weekday === weekday);
+  if (!today || today.isClosed || !today.openTime || !today.closeTime) {
+    return null;
+  }
+
+  return {
+    weekday: today.weekday,
+    openTime: today.openTime,
+    closeTime: today.closeTime,
+  };
+}
+
+function isOpenNow(
+  todayHours: { openTime: string; closeTime: string } | null,
+  timeZone: string | null,
+) {
+  if (!todayHours) return false;
+
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timeZone || "Asia/Karachi",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const [hour, minute] = formatter.format(new Date()).split(":").map(Number);
+  const nowMinutes = hour * 60 + minute;
+  const openMinutes = timeToMinutes(todayHours.openTime);
+  const closeMinutes = timeToMinutes(todayHours.closeTime);
+
+  if (closeMinutes <= openMinutes) {
+    return nowMinutes >= openMinutes || nowMinutes < closeMinutes;
+  }
+
+  return nowMinutes >= openMinutes && nowMinutes < closeMinutes;
+}
+
+function timeToMinutes(value: string) {
+  const [hour, minute] = value.split(":").map(Number);
+  return hour * 60 + minute;
 }

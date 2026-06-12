@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Flame, Loader2, LockKeyhole, Mail } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
+import { firstAllowedPath } from "@/lib/rbac";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,7 +34,7 @@ function LoginPage() {
     try {
       const result = await signIn(parsed.data);
       toast.success("Welcome back");
-      nav({ to: result.roles.length ? "/dashboard" : "/" });
+      nav({ to: firstAllowedPath(result.roles) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to sign in");
     } finally {
@@ -115,12 +116,8 @@ function LoginPage() {
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Sign in
             </Button>
           </form>
-
           <p className="mt-6 text-sm text-muted-foreground">
-            New to Angaar?{" "}
-            <Link to="/signup" className="font-medium text-primary hover:underline">
-              Create an account
-            </Link>
+            Staff access is created by an owner or admin.
           </p>
         </div>
       </div>

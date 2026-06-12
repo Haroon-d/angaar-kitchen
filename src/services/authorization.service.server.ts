@@ -1,13 +1,19 @@
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db/client.server";
 import { branches, userRoles } from "@/db/schema";
+import {
+  ADMIN_ROLES,
+  APP_ROLES,
+  MANAGER_ROLES,
+  rolesInclude as rolesIncludeSet,
+  type AppRole,
+} from "@/lib/rbac";
 
-export const APP_ROLES = ["owner", "admin", "manager", "cashier", "kitchen", "waiter"] as const;
-export type AppRole = (typeof APP_ROLES)[number];
+export { ADMIN_ROLES, APP_ROLES, MANAGER_ROLES };
+export type { AppRole };
+
 export type UserRole = typeof userRoles.$inferSelect;
 
-export const ADMIN_ROLES = ["owner", "admin"] as const satisfies readonly AppRole[];
-export const MANAGER_ROLES = ["owner", "admin", "manager"] as const satisfies readonly AppRole[];
 export const OPERATIONAL_ROLES = APP_ROLES;
 
 export class AuthorizationError extends Error {
@@ -23,7 +29,7 @@ export function rolesInclude(
   roles: ReadonlyArray<Pick<UserRole, "role">> | null | undefined,
   allowedRoles: readonly AppRole[],
 ) {
-  return !!roles?.some((role) => allowedRoles.includes(role.role));
+  return rolesIncludeSet(roles, allowedRoles);
 }
 
 export function isAdminRole(roles: ReadonlyArray<Pick<UserRole, "role">> | null | undefined) {

@@ -50,6 +50,7 @@ export type ReceiptData = {
   subtotal: number;
   discount: number;
   taxes: ReceiptTaxLine[];
+  deliveryFee?: number;
   serviceCharge?: number;
   grandTotal: number;
   payments: ReceiptPayment[];

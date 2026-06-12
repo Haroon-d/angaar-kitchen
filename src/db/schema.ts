@@ -45,6 +45,13 @@ export const paymentStatus = pgEnum("payment_status", ["pending", "partial", "pa
 
 export const paymentKind = pgEnum("payment_kind", ["payment", "refund", "void_adjustment"]);
 
+export const couponDiscountType = pgEnum("coupon_discount_type", [
+  "amount",
+  "percent",
+  "free_delivery",
+]);
+export const couponAppliesTo = pgEnum("coupon_applies_to", ["both", "pos", "website"]);
+
 export const inventoryUnit = pgEnum("inventory_unit", ["g", "kg", "ml", "l", "piece", "pack"]);
 export const inventoryBaseUnit = pgEnum("inventory_base_unit", ["g", "ml", "piece"]);
 export const inventoryMovementType = pgEnum("inventory_movement_type", [
@@ -173,6 +180,7 @@ export const branches = pgTable(
     name: text("name").notNull(),
     address: text("address"),
     phone: text("phone"),
+    deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }).default("0").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt,
     updatedAt,
@@ -274,6 +282,12 @@ export const menuItems = pgTable(
     imageUrl: text("image_url"),
     isAvailable: boolean("is_available").default(true).notNull(),
     isVeg: boolean("is_veg"),
+    isBestSeller: boolean("is_best_seller").default(false).notNull(),
+    isChefRecommended: boolean("is_chef_recommended").default(false).notNull(),
+    isPopular: boolean("is_popular").default(false).notNull(),
+    isNewItem: boolean("is_new_item").default(false).notNull(),
+    spiceLevel: text("spice_level"),
+    servingSize: text("serving_size"),
     prepTimeMin: integer("prep_time_min").default(15),
     sortOrder: integer("sort_order").default(0).notNull(),
     createdAt,
@@ -331,6 +345,63 @@ export const itemAddonGroups = pgTable(
   (table) => [primaryKey({ columns: [table.itemId, table.groupId] })],
 );
 
+export const homepagePromotions = pgTable(
+  "homepage_promotions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    subtitle: text("subtitle"),
+    description: text("description"),
+    imageUrl: text("image_url"),
+    ctaText: text("cta_text").default("Order now").notNull(),
+    ctaLink: text("cta_link").default("#order").notNull(),
+    actionType: text("action_type").default("link").notNull(),
+    menuItemId: uuid("menu_item_id").references(() => menuItems.id, { onDelete: "set null" }),
+    startDate: timestamp("start_date", { withTimezone: true }),
+    endDate: timestamp("end_date", { withTimezone: true }),
+    priority: integer("priority").default(0).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("homepage_promotions_restaurant_active_idx").on(
+      table.restaurantId,
+      table.isActive,
+      table.priority,
+    ),
+    index("homepage_promotions_menu_item_idx").on(table.menuItemId),
+  ],
+);
+
+export const productAnalyticsEvents = pgTable(
+  "product_analytics_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    itemId: uuid("item_id").references(() => menuItems.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    searchQuery: text("search_query"),
+    sessionId: text("session_id"),
+    createdAt,
+  },
+  (table) => [
+    index("product_analytics_restaurant_event_idx").on(
+      table.restaurantId,
+      table.eventType,
+      table.createdAt,
+    ),
+    index("product_analytics_item_event_idx").on(table.itemId, table.eventType, table.createdAt),
+  ],
+);
+
 export const orderCounters = pgTable(
   "order_counters",
   {
@@ -341,6 +412,91 @@ export const orderCounters = pgTable(
     lastSeq: integer("last_seq").default(0).notNull(),
   },
   (table) => [primaryKey({ columns: [table.branchId, table.counterDate] })],
+);
+
+export const customers = pgTable(
+  "customers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    name: text("name"),
+    primaryPhone: text("primary_phone").notNull(),
+    phoneNormalized: text("phone_normalized").notNull(),
+    email: text("email"),
+    defaultAddress: text("default_address"),
+    notes: text("notes"),
+    spicePreference: text("spice_preference"),
+    isVip: boolean("is_vip").default(false).notNull(),
+    isBlocked: boolean("is_blocked").default(false).notNull(),
+    firstOrderAt: timestamp("first_order_at", { withTimezone: true }),
+    lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
+    totalOrders: integer("total_orders").default(0).notNull(),
+    totalSpent: numeric("total_spent", { precision: 14, scale: 2 }).default("0").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("customers_restaurant_phone_unique").on(
+      table.restaurantId,
+      table.phoneNormalized,
+    ),
+    index("customers_restaurant_last_order_idx").on(table.restaurantId, table.lastOrderAt),
+    index("customers_branch_last_order_idx").on(table.branchId, table.lastOrderAt),
+  ],
+);
+
+export const customerAddresses = pgTable(
+  "customer_addresses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    label: text("label").default("Delivery").notNull(),
+    address: text("address").notNull(),
+    area: text("area"),
+    city: text("city"),
+    instructions: text("instructions"),
+    isDefault: boolean("is_default").default(false).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("customer_addresses_customer_address_unique").on(table.customerId, table.address),
+    index("customer_addresses_customer_idx").on(table.customerId),
+  ],
+);
+
+export const couponCampaigns = pgTable(
+  "coupon_campaigns",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    discountType: couponDiscountType("discount_type").notNull(),
+    discountValue: numeric("discount_value", { precision: 12, scale: 2 }).notNull(),
+    maxDiscount: numeric("max_discount", { precision: 12, scale: 2 }),
+    minOrderTotal: numeric("min_order_total", { precision: 12, scale: 2 }).default("0").notNull(),
+    usageLimit: integer("usage_limit"),
+    perCustomerLimit: integer("per_customer_limit").default(1).notNull(),
+    appliesTo: couponAppliesTo("applies_to").default("both").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("coupon_campaigns_restaurant_code_unique").on(table.restaurantId, table.code),
+    index("coupon_campaigns_restaurant_active_idx").on(table.restaurantId, table.isActive),
+  ],
 );
 
 export const orders = pgTable(
@@ -354,6 +510,7 @@ export const orders = pgTable(
     diningType: diningType("dining_type").default("dine_in").notNull(),
     status: orderStatus("status").default("open").notNull(),
     paymentStatus: paymentStatus("payment_status").default("pending").notNull(),
+    customerId: uuid("customer_id").references(() => customers.id, { onDelete: "set null" }),
     customerName: text("customer_name"),
     customerPhone: text("customer_phone"),
     tableLabel: text("table_label"),
@@ -361,8 +518,10 @@ export const orders = pgTable(
     subtotal: numeric("subtotal", { precision: 12, scale: 2 }).default("0").notNull(),
     discountTotal: numeric("discount_total", { precision: 12, scale: 2 }).default("0").notNull(),
     taxTotal: numeric("tax_total", { precision: 12, scale: 2 }).default("0").notNull(),
+    deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }).default("0").notNull(),
     grandTotal: numeric("grand_total", { precision: 12, scale: 2 }).default("0").notNull(),
     amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }).default("0").notNull(),
+    couponId: uuid("coupon_id").references(() => couponCampaigns.id, { onDelete: "set null" }),
     kotPrintCount: integer("kot_print_count").default(0).notNull(),
     billPrintCount: integer("bill_print_count").default(0).notNull(),
     receiptPrintCount: integer("receipt_print_count").default(0).notNull(),
@@ -376,7 +535,88 @@ export const orders = pgTable(
     uniqueIndex("orders_order_no_unique").on(table.orderNo),
     uniqueIndex("orders_idempotency_key_unique").on(table.idempotencyKey),
     index("orders_branch_created_idx").on(table.branchId, table.createdAt),
+    index("orders_customer_idx").on(table.customerId),
     index("orders_status_idx").on(table.status),
+  ],
+);
+
+export const customerReviews = pgTable(
+  "customer_reviews",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    rating: integer("rating").notNull(),
+    review: text("review"),
+    isVerifiedPurchase: boolean("is_verified_purchase").default(true).notNull(),
+    isApproved: boolean("is_approved").default(false).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("customer_reviews_order_customer_unique").on(table.orderId, table.customerId),
+    index("customer_reviews_restaurant_approved_idx").on(
+      table.restaurantId,
+      table.isApproved,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const couponRedemptions = pgTable(
+  "coupon_redemptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    couponId: uuid("coupon_id")
+      .notNull()
+      .references(() => couponCampaigns.id, { onDelete: "restrict" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    codeSnapshot: text("code_snapshot").notNull(),
+    discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull(),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex("coupon_redemptions_coupon_order_unique").on(table.couponId, table.orderId),
+    index("coupon_redemptions_coupon_idx").on(table.couponId),
+    index("coupon_redemptions_customer_idx").on(table.customerId),
+    index("coupon_redemptions_restaurant_created_idx").on(table.restaurantId, table.createdAt),
+  ],
+);
+
+export const customerEvents = pgTable(
+  "customer_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "set null" }),
+    orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    meta: jsonb("meta").default({}).notNull(),
+    createdAt,
+  },
+  (table) => [
+    index("customer_events_customer_created_idx").on(table.customerId, table.createdAt),
+    index("customer_events_restaurant_created_idx").on(table.restaurantId, table.createdAt),
   ],
 );
 

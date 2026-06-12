@@ -43,6 +43,52 @@ Date: 2026-05-30
 - Local PostgreSQL does not exactly match this fresh snapshot because local testing changed data counts. Use a new empty production PostgreSQL database for the real import.
 - Keep `migration-data/` out of Git because it can contain business/customer data.
 
+## Latest Pre-Production Check
+
+Date: 2026-06-12
+
+- Drizzle migrations applied successfully against the configured PostgreSQL database.
+- Fresh Supabase read-only export created: `migration-data/2026-06-12T01-01-26-466Z`
+- Export counts show Supabase is ahead of the current PostgreSQL preview data:
+  - `orders`: Supabase 359, PostgreSQL 156
+  - `order_items`: Supabase 935, PostgreSQL 437
+  - `payments`: Supabase 354, PostgreSQL 153
+  - `inventory_movements`: Supabase 2996, PostgreSQL 725
+  - `operational_expenses`: Supabase 222, PostgreSQL 120
+- PostgreSQL integrity validation passed.
+- PostgreSQL password audit passed.
+- Lint, diff check, and production build passed.
+- Do not treat the current PostgreSQL database as final production data. It is a preview/import
+  target with older data. The production cutover should import a fresh final export into a fresh
+  empty PostgreSQL database, or into a deliberately refreshed target after backup.
+
+## Final Closed-Window PostgreSQL Data Merge
+
+Date: 2026-06-12
+
+- Final Supabase source export: `migration-data/2026-06-12T01-14-13-720Z`
+- PostgreSQL target backup before merge:
+  `migration-data/postgres-backup/2026-06-12T01-14-58-377Z`
+- Merge dry-run passed and was rolled back.
+- Merge commit completed.
+- Targeted cleanup completed:
+  - removed 11 stale order-item rows
+  - removed 1 stale order-counter row
+  - removed 1 stale `Delivery Charges` menu item
+- Cutover-aware validation passed:
+  - `orders`: exact 359
+  - `order_items`: exact 935
+  - `payments`: exact 354
+  - `inventory_items`: exact 159
+  - `inventory_movements`: exact 2996
+  - `operational_expenses`: exact 222
+- PostgreSQL-only rows intentionally preserved:
+  - 1 extra staff/user access row
+  - 7 operating-hour rows
+  - 11 local audit rows
+- PostgreSQL password audit passed: 2 active users, 2 with passwords, 0 missing.
+- PostgreSQL integrity validation passed.
+
 ## Cutover Checklist
 
 1. Confirm the current live app is still on the old environment.

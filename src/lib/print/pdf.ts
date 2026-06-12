@@ -7,6 +7,7 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   takeaway: "TAKEAWAY",
   delivery: "DELIVERY",
 };
+const DEFAULT_ADDRESS = "Grand Trunk Rd, near Punjab College, Pak Town, Kamoke, 52470";
 
 /** Generate a thermal-width PDF that mirrors the on-screen receipt. */
 export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80mm"): jsPDF {
@@ -30,10 +31,8 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   y += 5;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
-  if (data.address) {
-    doc.text(wrap(doc, data.address, innerW), widthMm / 2, y, { align: "center" });
-    y += 3.5;
-  }
+  doc.text(wrap(doc, receiptLocation(data.address), innerW), widthMm / 2, y, { align: "center" });
+  y += 3.5;
   if (data.phone) {
     doc.text(`Tel: ${data.phone}`, widthMm / 2, y, { align: "center" });
     y += 3.5;
@@ -124,8 +123,12 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
     kv(doc, padX, y, innerW, "Discount", `-${formatMoney(data.discount, sym)}`);
     y += 3.5;
   }
-  for (const t of data.taxes) {
+  for (const t of data.taxes.filter((tax) => tax.amount > 0)) {
     kv(doc, padX, y, innerW, `${t.name} (${t.rate}%)`, formatMoney(t.amount, sym));
+    y += 3.5;
+  }
+  if (data.deliveryFee && data.deliveryFee > 0) {
+    kv(doc, padX, y, innerW, "Delivery fee", formatMoney(data.deliveryFee, sym));
     y += 3.5;
   }
   if (data.serviceCharge && data.serviceCharge > 0) {
@@ -189,6 +192,11 @@ function wrap(doc: jsPDF, text: string, w: number): string[] {
 }
 function truncate(s: string, n: number) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function receiptLocation(value: string | null | undefined) {
+  const text = value?.trim() || "";
+  return !text || text.toLowerCase() === "pakistan" ? DEFAULT_ADDRESS : text;
 }
 
 export function downloadReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80mm") {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, Link, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Minus, Trash2, Loader2, Receipt, Search, X, MessageSquare } from "lucide-react";
@@ -15,6 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMoney } from "@/lib/format";
+import { previewCouponPostgres } from "@/lib/coupons.postgres.functions";
+import { searchCustomersForPosPostgres } from "@/lib/customers.postgres.functions";
 
 export const Route = createFileRoute("/_authenticated/pos")({
   validateSearch: z.object({ editOrderId: z.string().optional() }),
@@ -84,6 +86,18 @@ type PosOrderRpcRow = {
   order_no?: string;
 };
 
+type PosCustomerMatch = {
+  id: string;
+  name: string | null;
+  phone: string;
+  defaultAddress: string | null;
+  spicePreference: string | null;
+  isBlocked: boolean;
+  totalOrders: number;
+  totalSpent: number;
+  lastOrderAt: string | null;
+};
+
 type RpcResult<T> = {
   data: T | null;
   error: { message?: string } | null;
@@ -112,7 +126,7 @@ function errorMessage(err: unknown, fallback: string) {
 }
 
 function POSPage() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { branch, restaurant } = useActiveBranch();
   const symbol = restaurant?.currency_symbol ?? "₨";
   const nav = useNavigate();
@@ -125,9 +139,17 @@ function POSPage() {
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
+  const [customerMatches, setCustomerMatches] = useState<PosCustomerMatch[]>([]);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [orderNotes, setOrderNotes] = useState("");
   const [tableLabel, setTableLabel] = useState("");
   const [discount, setDiscount] = useState("0");
+  const [couponCode, setCouponCode] = useState("");
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponDiscountType, setCouponDiscountType] = useState<"amount" | "percent" | "free_delivery" | null>(null);
+  const [couponMessage, setCouponMessage] = useState("");
+  const [checkingCoupon, setCheckingCoupon] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [expandedNoteUid, setExpandedNoteUid] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -239,9 +261,15 @@ function POSPage() {
     setCustomerName(order.customer_name ?? "");
     setCustomerPhone(order.customer_phone ?? "");
     setCustomerAddress(parsedNotes.address);
+    setCustomerMatches([]);
+    setSelectedCustomerId(null);
     setOrderNotes(parsedNotes.notes);
     setTableLabel(order.table_label ?? "");
     setDiscount(String(Number(order.discount_total ?? 0)));
+    setCouponCode("");
+    setCouponDiscount(0);
+    setCouponDiscountType(null);
+    setCouponMessage("");
     setCart(
       items.map((item) => ({
         uid: crypto.randomUUID(),
@@ -296,9 +324,15 @@ function POSPage() {
     setCustomerName("");
     setCustomerPhone("");
     setCustomerAddress("");
+    setCustomerMatches([]);
+    setSelectedCustomerId(null);
     setOrderNotes("");
     setTableLabel("");
     setDiscount("0");
+    setCouponCode("");
+    setCouponDiscount(0);
+    setCouponDiscountType(null);
+    setCouponMessage("");
     setExpandedNoteUid(null);
   }
   function exitEditMode() {
@@ -309,7 +343,11 @@ function POSPage() {
 
   const subtotal = cart.reduce((s, x) => s + x.unit_price * x.qty, 0);
   const discountNum = Math.max(0, Math.min(subtotal, Number(discount) || 0));
-  const taxableBase = Math.max(0, subtotal - discountNum);
+  const deliveryFee = diningType === "delivery" ? Number(branch?.delivery_fee ?? 0) : 0;
+  const couponItemDiscount = couponDiscountType === "free_delivery" ? 0 : couponDiscount;
+  const couponDeliveryDiscount = couponDiscountType === "free_delivery" ? couponDiscount : 0;
+  const itemDiscount = Math.max(0, Math.min(subtotal, discountNum + couponItemDiscount));
+  const taxableBase = Math.max(0, subtotal - itemDiscount);
   const taxBreakdown = (taxesQ.data ?? []).map((t) => {
     const rate = Number(t.rate);
     const amount = t.is_inclusive
@@ -318,7 +356,108 @@ function POSPage() {
     return { tax_id: t.id, name: t.name, rate, amount, is_inclusive: t.is_inclusive };
   });
   const taxTotal = taxBreakdown.filter((t) => !t.is_inclusive).reduce((s, t) => s + t.amount, 0);
-  const grandTotal = +(taxableBase + taxTotal).toFixed(2);
+  const grandTotal = +(taxableBase + taxTotal + deliveryFee - couponDeliveryDiscount).toFixed(2);
+
+  const applyCustomerMatch = useCallback(
+    (customer: PosCustomerMatch, options: { silent?: boolean } = {}) => {
+      setSelectedCustomerId(customer.id);
+      setCustomerName(customer.name ?? "");
+      setCustomerPhone(customer.phone);
+      if (customer.defaultAddress) {
+        setCustomerAddress(customer.defaultAddress);
+        if (diningType !== "delivery") setDiningType("delivery");
+      }
+      if (customer.spicePreference && !orderNotes.trim()) {
+        setOrderNotes(customer.spicePreference);
+      }
+      setCustomerMatches([]);
+      if (customer.isBlocked) {
+        toast.error("This customer is blocked. Please review before taking an order.");
+        return;
+      }
+      if (!options.silent) toast.success("Customer details loaded");
+    },
+    [diningType, orderNotes],
+  );
+
+  useEffect(() => {
+    if (!branch?.id || !session?.access_token || isEditing) return;
+    const query = customerPhone.trim().length >= 3 ? customerPhone.trim() : customerName.trim();
+    if (query.length < 2) {
+      setCustomerMatches([]);
+      setCustomerLookupLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setCustomerLookupLoading(true);
+      try {
+        const matches = await searchCustomersForPosPostgres({
+          data: { branchId: branch.id, query },
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (cancelled) return;
+        setCustomerMatches(matches);
+        const exactPhone = normalizePhone(customerPhone) || null;
+        const autoMatch =
+          exactPhone && matches.find((customer) => normalizePhone(customer.phone) === exactPhone);
+        if (autoMatch) {
+          applyCustomerMatch(autoMatch, { silent: true });
+        }
+      } catch {
+        if (!cancelled) setCustomerMatches([]);
+      } finally {
+        if (!cancelled) setCustomerLookupLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [applyCustomerMatch, branch?.id, customerName, customerPhone, isEditing, session?.access_token]);
+
+  async function applyCoupon() {
+    if (!branch?.id) return;
+    if (!couponCode.trim()) {
+      setCouponDiscount(0);
+      setCouponMessage("");
+      return;
+    }
+    if (subtotal <= 0) {
+      toast.error("Add items before applying a coupon");
+      return;
+    }
+
+    setCheckingCoupon(true);
+    try {
+      const coupon = await previewCouponPostgres({
+        data: {
+          branchId: branch.id,
+          code: couponCode.trim(),
+          subtotal,
+          deliveryFee,
+          source: "pos",
+        },
+      });
+      setCouponDiscount(coupon?.discountAmount ?? 0);
+      setCouponDiscountType(coupon?.discountType ?? null);
+      setCouponMessage(
+        coupon
+          ? `${coupon.code} applied: ${formatMoney(coupon.discountAmount, symbol)} off`
+          : "",
+      );
+      if (coupon) toast.success(`${coupon.code} applied`);
+    } catch (error) {
+      setCouponDiscount(0);
+      setCouponDiscountType(null);
+      setCouponMessage("");
+      toast.error(error instanceof Error ? error.message : "Coupon could not be applied");
+    } finally {
+      setCheckingCoupon(false);
+    }
+  }
 
   async function placeOrder() {
     if (!branch || !user) return;
@@ -340,6 +479,7 @@ function POSPage() {
         _table_label: diningType === "dine_in" ? tableLabel : "",
         _notes: buildOrderNotes(diningType === "delivery" ? customerAddress : "", orderNotes),
         _discount: discountNum,
+        _coupon_code: couponCode.trim() || null,
         _items: cart.map((x) => ({ item_id: x.item_id, qty: x.qty, notes: x.notes ?? null })),
       };
       const { data, error } = isEditing
@@ -523,13 +663,56 @@ function POSPage() {
             <Input
               placeholder="Customer name"
               value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
+              onChange={(e) => {
+                setSelectedCustomerId(null);
+                setCustomerName(e.target.value);
+              }}
             />
             <Input
               placeholder="Phone"
               value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
+              onChange={(e) => {
+                setSelectedCustomerId(null);
+                setCustomerPhone(e.target.value);
+              }}
             />
+            {(customerLookupLoading || customerMatches.length > 0 || selectedCustomerId) && (
+              <div className="col-span-2 rounded-md border border-border bg-background/45 p-2 text-xs">
+                {customerLookupLoading ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Checking saved customers...
+                  </div>
+                ) : selectedCustomerId ? (
+                  <div className="text-success">Saved customer loaded.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {customerMatches.map((customer) => (
+                      <button
+                        key={customer.id}
+                        type="button"
+                        className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted"
+                        onClick={() => applyCustomerMatch(customer)}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">
+                            {customer.name || "Unnamed customer"}
+                            {customer.isBlocked ? " - blocked" : ""}
+                          </span>
+                          <span className="block truncate text-muted-foreground">
+                            {customer.phone}
+                            {customer.defaultAddress ? ` · ${customer.defaultAddress}` : ""}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-muted-foreground">
+                          {customer.totalOrders} orders
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {diningType === "delivery" && (
               <Textarea
                 className="col-span-2 min-h-[58px] resize-none"
@@ -653,6 +836,39 @@ function POSPage() {
                 onChange={(e) => setDiscount(e.target.value)}
               />
             </div>
+            <div className="space-y-1.5 rounded-md border border-border bg-background/35 p-2">
+              <Label className="text-xs">Coupon</Label>
+              <div className="flex gap-2">
+                <Input
+                  className="h-8 uppercase"
+                  value={couponCode}
+                  onChange={(e) => {
+                    setCouponCode(e.target.value.toUpperCase());
+                    setCouponDiscount(0);
+                    setCouponDiscountType(null);
+                    setCouponMessage("");
+                  }}
+                  placeholder="CODE"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={applyCoupon}
+                  disabled={checkingCoupon || cart.length === 0}
+                >
+                  {checkingCoupon && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                  Apply
+                </Button>
+              </div>
+              {couponMessage && <div className="text-xs text-success">{couponMessage}</div>}
+            </div>
+            {couponDiscount > 0 && (
+              <Row label="Coupon" value={`-${formatMoney(couponDiscount, symbol)}`} muted />
+            )}
+            {deliveryFee > 0 && (
+              <Row label="Delivery fee" value={formatMoney(deliveryFee, symbol)} muted />
+            )}
             {taxBreakdown.map((t) => (
               <Row
                 key={t.tax_id}
@@ -722,6 +938,14 @@ function parseOrderNotes(value: unknown) {
   }
 
   return { address: "", notes: raw };
+}
+
+function normalizePhone(value: string | null | undefined) {
+  const digits = value?.replace(/\D/g, "") ?? "";
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("0")) return `92${digits.slice(1)}`;
+  if (digits.length === 10 && digits.startsWith("3")) return `92${digits}`;
+  return digits;
 }
 
 function getStockWarning(stock: StockStatus | undefined) {

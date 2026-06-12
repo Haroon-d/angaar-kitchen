@@ -303,7 +303,7 @@ function StockTab({
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-[760px] w-full text-sm">
                 <thead className="text-left text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-4">Ingredient</th>
@@ -459,7 +459,7 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{item ? "Edit ingredient" : "New ingredient"}</DialogTitle>
         </DialogHeader>
@@ -733,13 +733,13 @@ function PurchasesTab({
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,380px)_1fr]">
-      <Card>
+    <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Purchase history</CardTitle>
           <CardDescription>Received stock updates weighted average cost.</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           {purchasesQ.isLoading ? (
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : (
@@ -760,20 +760,22 @@ function PurchasesTab({
                     trigger={
                       <button
                         type="button"
-                        className="flex min-w-[220px] flex-1 items-center gap-3 text-left"
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       >
-                        <div className="flex-1">
-                          <div className="font-medium">{p.invoice_no || "Purchase"}</div>
-                          <div className="text-xs text-muted-foreground">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{p.invoice_no || "Purchase"}</div>
+                          <div className="truncate text-xs text-muted-foreground">
                             {p.suppliers?.name || "No supplier"} - {formatDate(p.purchase_date)}
                           </div>
                         </div>
-                        <div className="font-mono text-primary">{formatMoney(p.total, symbol)}</div>
+                        <div className="shrink-0 whitespace-nowrap font-mono text-primary">
+                          {formatMoney(p.total, symbol)}
+                        </div>
                       </button>
                     }
                   />
                   {manager && (
-                    <div className="flex gap-1">
+                    <div className="flex shrink-0 gap-1">
                       <PurchaseEditDialog
                         purchaseId={p.id}
                         items={itemsQ.data ?? []}
@@ -802,12 +804,12 @@ function PurchasesTab({
           )}
         </CardContent>
       </Card>
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Record purchase</CardTitle>
           <CardDescription>Add received ingredients to stock.</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           {manager ? (
             <PurchaseForm
               branchId={branchId}
@@ -869,7 +871,7 @@ function PurchaseDetailsDialog(props: {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{props.trigger}</DialogTrigger>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{purchase?.invoice_no || "Purchase details"}</DialogTitle>
         </DialogHeader>
@@ -898,7 +900,7 @@ function PurchaseDetailsDialog(props: {
               </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-[720px] w-full text-sm">
                 <thead className="text-left text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-4">Ingredient</th>
@@ -992,7 +994,7 @@ function PurchaseEditDialog(props: {
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit purchase</DialogTitle>
         </DialogHeader>
@@ -1268,8 +1270,8 @@ function PurchaseForm(props: {
       </div>
       <div className="space-y-2">
         <Label>Lines</Label>
-        <div className="overflow-x-auto">
-          <div className="min-w-[680px] grid gap-2 rounded-lg border border-border bg-surface p-3 text-xs uppercase tracking-wide text-muted-foreground grid-cols-[minmax(0,2.6fr)_80px_90px_90px_90px_36px]">
+        <div className="max-w-full overflow-x-auto">
+          <div className="grid min-w-[600px] grid-cols-[minmax(0,2.2fr)_72px_82px_82px_86px_36px] gap-2 rounded-lg border border-border bg-surface p-3 text-xs uppercase tracking-wide text-muted-foreground">
             <div>Ingredient</div>
             <div>Qty</div>
             <div>Unit</div>
@@ -1281,8 +1283,8 @@ function PurchaseForm(props: {
         {lines.map((line, idx) => {
           const item = itemMap.get(line.inventory_item_id);
           return (
-            <div key={idx} className="overflow-x-auto rounded-lg border border-border p-0">
-              <div className="min-w-[680px] grid gap-2 p-3 min-w-0 grid-cols-[minmax(0,2.6fr)_80px_90px_90px_90px_36px]">
+            <div key={idx} className="max-w-full overflow-x-auto rounded-lg border border-border p-0">
+              <div className="grid min-w-[600px] grid-cols-[minmax(0,2.2fr)_72px_82px_82px_86px_36px] gap-2 p-3">
                 <Select
                   value={line.inventory_item_id}
                   onValueChange={(v) =>
@@ -1950,7 +1952,7 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-[860px] w-full text-sm">
                 <thead className="text-left text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-4">Time</th>

@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db/client.server";
+import { db, pgPool } from "@/db/client.server";
 import {
   auditLog,
   branches,
+  customerAddresses,
+  customerEvents,
+  customers,
   menuItems,
   orderCounters,
   orderItems,
@@ -11,6 +14,9 @@ import {
   orderTaxes,
   taxes,
 } from "@/db/schema";
+import { validateCoupon } from "@/services/coupon.service.server";
+
+type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type CustomerOrderInput = {
   branchId: string;
@@ -18,6 +24,7 @@ export type CustomerOrderInput = {
   customerName: string;
   customerPhone: string;
   notes?: string | null;
+  couponCode?: string | null;
   items: Array<{
     itemId: string;
     qty: number;
@@ -30,7 +37,7 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
     throw new Error("Order must contain at least one item.");
   }
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const [branch] = await tx
       .select()
       .from(branches)
@@ -61,6 +68,30 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
       subtotal += Number(item.basePrice) * line.qty;
     }
 
+    const customer = await findOrCreateCustomer(tx, {
+      restaurantId: branch.restaurantId,
+      branchId: branch.id,
+      name: input.customerName,
+      phone: input.customerPhone,
+      notes: input.notes,
+    });
+    if (customer?.isBlocked) {
+      throw new Error("This customer is blocked. Please review the customer profile before taking an order.");
+    }
+    const deliveryFee = input.diningType === "delivery" ? roundMoney(Number(branch.deliveryFee ?? 0)) : 0;
+    const coupon = await validateCouponForOrder({
+      restaurantId: branch.restaurantId,
+      branchId: branch.id,
+      code: input.couponCode,
+      subtotal,
+      deliveryFee,
+      customerId: customer?.id ?? null,
+      source: "website",
+    });
+    const itemDiscount = coupon?.discountType === "free_delivery" ? 0 : (coupon?.discountAmount ?? 0);
+    const deliveryDiscount = coupon?.discountType === "free_delivery" ? (coupon?.discountAmount ?? 0) : 0;
+    const discountTotal = roundMoney(itemDiscount + deliveryDiscount);
+    const taxableBase = Math.max(0, subtotal - itemDiscount);
     const activeTaxes = await tx
       .select()
       .from(taxes)
@@ -75,8 +106,8 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
     const taxRows = activeTaxes.map((tax) => {
       const rate = Number(tax.rate);
       const amount = tax.isInclusive
-        ? roundMoney(subtotal - subtotal / (1 + rate / 100))
-        : roundMoney((subtotal * rate) / 100);
+        ? roundMoney(taxableBase - taxableBase / (1 + rate / 100))
+        : roundMoney((taxableBase * rate) / 100);
 
       return {
         id: tax.id,
@@ -90,7 +121,7 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
     const taxTotal = taxRows
       .filter((tax) => !tax.isInclusive)
       .reduce((sum, tax) => sum + tax.amount, 0);
-    const grandTotal = roundMoney(subtotal + taxTotal);
+    const grandTotal = roundMoney(taxableBase + taxTotal + deliveryFee - deliveryDiscount);
     const orderNo = await reserveNextOrderNumber(tx, branch.id, branch.code);
     const orderId = randomUUID();
 
@@ -99,16 +130,19 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
       branchId: branch.id,
       orderNo,
       diningType: input.diningType,
-      status: "open",
+      status: "placed",
       paymentStatus: "pending",
+      customerId: customer?.id ?? null,
       customerName: normalizeText(input.customerName),
       customerPhone: normalizeText(input.customerPhone),
       notes: normalizeNullableText(input.notes),
       subtotal: moneyString(subtotal),
-      discountTotal: "0.00",
+      discountTotal: moneyString(discountTotal),
       taxTotal: moneyString(taxTotal),
+      deliveryFee: moneyString(deliveryFee),
       grandTotal: moneyString(grandTotal),
       amountPaid: "0.00",
+      couponId: coupon?.id ?? null,
       idempotencyKey: randomUUID(),
     });
 
@@ -155,16 +189,152 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
       },
     });
 
+    if (customer) {
+      await recordCustomerOrder(tx, {
+        customerId: customer.id,
+        restaurantId: branch.restaurantId,
+        branchId: branch.id,
+        orderId,
+        grandTotal,
+        orderNo,
+      });
+    }
+    if (coupon) {
+      await tx.execute(sql`
+        insert into coupon_redemptions (
+          coupon_id,
+          order_id,
+          customer_id,
+          restaurant_id,
+          branch_id,
+          code_snapshot,
+          discount_amount
+        )
+        values (
+          ${coupon.id},
+          ${orderId},
+          ${customer?.id ?? null},
+          ${branch.restaurantId},
+          ${branch.id},
+          ${coupon.code},
+          ${moneyString(coupon.discountAmount)}::numeric
+        )
+        on conflict (coupon_id, order_id) do nothing
+      `);
+    }
     return {
       orderId,
       orderNo,
       grandTotal,
     };
   });
+
+  return {
+    orderId: result.orderId,
+    orderNo: result.orderNo,
+    grandTotal: result.grandTotal,
+  };
+}
+
+async function validateCouponForOrder(input: Parameters<typeof validateCoupon>[1]) {
+  const client = await pgPool.connect();
+  try {
+    return validateCoupon(client, input);
+  } finally {
+    client.release();
+  }
+}
+
+async function findOrCreateCustomer(
+  tx: DbTx,
+  input: {
+    restaurantId: string;
+    branchId: string;
+    name: string | null | undefined;
+    phone: string | null | undefined;
+    notes: string | null | undefined;
+  },
+) {
+  const phone = normalizeNullableText(input.phone);
+  const phoneNormalized = normalizePhone(phone);
+  if (!phone || !phoneNormalized) return null;
+
+  const name = normalizeNullableText(input.name);
+  const context = parseCustomerContext(input.notes);
+  const [customer] = await tx
+    .insert(customers)
+    .values({
+      restaurantId: input.restaurantId,
+      branchId: input.branchId,
+      name,
+      primaryPhone: phone,
+      phoneNormalized,
+      defaultAddress: context.address,
+      notes: context.preferenceNote,
+    })
+    .onConflictDoUpdate({
+      target: [customers.restaurantId, customers.phoneNormalized],
+      set: {
+        branchId: input.branchId,
+        name: sql`coalesce(excluded.name, ${customers.name})`,
+        primaryPhone: sql`excluded.primary_phone`,
+        defaultAddress: sql`coalesce(${customers.defaultAddress}, excluded.default_address)`,
+        notes: sql`coalesce(${customers.notes}, excluded.notes)`,
+        updatedAt: sql`now()`,
+      },
+    })
+    .returning({ id: customers.id, isBlocked: customers.isBlocked });
+
+  if (context.address) {
+    await tx
+      .insert(customerAddresses)
+      .values({
+        customerId: customer.id,
+        address: context.address,
+        isDefault: true,
+      })
+      .onConflictDoNothing();
+  }
+
+  return customer;
+}
+
+async function recordCustomerOrder(
+  tx: DbTx,
+  input: {
+    customerId: string;
+    restaurantId: string;
+    branchId: string;
+    orderId: string;
+    orderNo: string;
+    grandTotal: number;
+  },
+) {
+  await tx
+    .update(customers)
+    .set({
+      firstOrderAt: sql`coalesce(${customers.firstOrderAt}, now())`,
+      lastOrderAt: sql`now()`,
+      totalOrders: sql`${customers.totalOrders} + 1`,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(customers.id, input.customerId));
+
+  await tx.insert(customerEvents).values({
+    customerId: input.customerId,
+    restaurantId: input.restaurantId,
+    branchId: input.branchId,
+    orderId: input.orderId,
+    eventType: "order_placed",
+    meta: {
+      order_no: input.orderNo,
+      grand_total: input.grandTotal,
+    },
+  });
 }
 
 async function reserveNextOrderNumber(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tx: DbTx,
   branchId: string,
   branchCode: string,
 ) {
@@ -210,6 +380,30 @@ function normalizeText(value: string) {
 function normalizeNullableText(value: string | null | undefined) {
   const trimmed = value?.trim();
   return trimmed || null;
+}
+
+function normalizePhone(value: string | null | undefined) {
+  const digits = value?.replace(/\D/g, "") ?? "";
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("0")) return `92${digits.slice(1)}`;
+  if (digits.length === 10 && digits.startsWith("3")) return `92${digits}`;
+  return digits;
+}
+
+function parseCustomerContext(notes: string | null | undefined) {
+  const raw = normalizeNullableText(notes);
+  if (!raw) return { address: null, preferenceNote: null };
+
+  const lines = raw.split(/\r?\n/);
+  const addressLine = lines.find((line) => /^(delivery address|address):/i.test(line));
+  const address = addressLine?.replace(/^(delivery address|address):\s*/i, "").trim() || null;
+  const preferenceNote =
+    lines
+      .filter((line) => !/^(delivery address|address):/i.test(line))
+      .join("\n")
+      .trim() || null;
+
+  return { address, preferenceNote };
 }
 
 function utcDateString() {

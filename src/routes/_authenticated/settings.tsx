@@ -59,6 +59,7 @@ function SettingsPage() {
         <TabsList>
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="taxes">Taxes</TabsTrigger>
+          <TabsTrigger value="delivery">Delivery</TabsTrigger>
           <TabsTrigger value="hours">Hours</TabsTrigger>
           <TabsTrigger value="printer">Printer</TabsTrigger>
         </TabsList>
@@ -67,6 +68,9 @@ function SettingsPage() {
         </TabsContent>
         <TabsContent value="taxes" className="mt-6">
           <TaxesTab />
+        </TabsContent>
+        <TabsContent value="delivery" className="mt-6">
+          {branch ? <DeliveryTab /> : <p className="text-muted-foreground">Select a branch.</p>}
         </TabsContent>
         <TabsContent value="hours" className="mt-6">
           {branch ? (
@@ -92,6 +96,22 @@ const ProfileSchema = z.object({
   currency: z.string().min(2).max(8),
   currency_symbol: z.string().min(1).max(4),
 });
+
+type OperatingHourRow = {
+  id: string;
+  branch_id: string;
+  weekday: number;
+  open_time: string | null;
+  close_time: string | null;
+  is_closed: boolean;
+};
+
+const DeliverySchema = z.object({
+  delivery_fee: z.coerce.number().min(0).max(100000),
+});
+
+const DEFAULT_OPEN_TIME = "10:00";
+const DEFAULT_CLOSE_TIME = "22:00";
 
 function ProfileTab() {
   const { restaurant, refetch } = useActiveBranch();
@@ -317,9 +337,78 @@ function TaxesTab() {
   );
 }
 
+function DeliveryTab() {
+  const { branch, refetch } = useActiveBranch();
+  const [deliveryFee, setDeliveryFee] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (branch) setDeliveryFee(String(Number(branch.delivery_fee ?? 0)));
+  }, [branch]);
+
+  async function save() {
+    if (!branch) return;
+    const parsed = DeliverySchema.safeParse({ delivery_fee: deliveryFee });
+    if (!parsed.success) {
+      toast.error("Enter a valid delivery fee.");
+      return;
+    }
+
+    setLoading(true);
+    const { error } = await supabase
+      .from("branches")
+      .update({ delivery_fee: parsed.data.delivery_fee.toFixed(2) })
+      .eq("id", branch.id);
+    setLoading(false);
+
+    if (error) toast.error(error.message);
+    else {
+      toast.success("Delivery settings saved");
+      refetch();
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Delivery</CardTitle>
+        <CardDescription>
+          Fee for delivery orders at the active branch. It is added only when the order type is
+          delivery.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>Active branch</Label>
+            <Input value={branch?.name ?? ""} disabled />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Delivery fee</Label>
+            <Input
+              type="number"
+              min="0"
+              step="1"
+              value={deliveryFee}
+              onChange={(event) => setDeliveryFee(event.target.value)}
+              placeholder="0"
+            />
+          </div>
+        </div>
+        <Button onClick={save} disabled={loading || !branch}>
+          {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          <Save className="mr-2 h-4 w-4" />
+          Save delivery settings
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 function HoursTab({ branchId }: { branchId: string }) {
   const qc = useQueryClient();
-  const hoursQ = useQuery({
+  const [ensuringHours, setEnsuringHours] = useState(false);
+  const hoursQ = useQuery<OperatingHourRow[]>({
     queryKey: ["hours", branchId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -331,8 +420,41 @@ function HoursTab({ branchId }: { branchId: string }) {
       return data ?? [];
     },
   });
+
+  useEffect(() => {
+    if (!hoursQ.data || ensuringHours) return;
+    const existingDays = new Set(hoursQ.data.map((row) => row.weekday));
+    const missingRows = Array.from({ length: 7 }, (_, weekday) => weekday)
+      .filter((weekday) => !existingDays.has(weekday))
+      .map((weekday) => ({
+        branch_id: branchId,
+        weekday,
+        open_time: DEFAULT_OPEN_TIME,
+        close_time: DEFAULT_CLOSE_TIME,
+        is_closed: false,
+      }));
+
+    if (!missingRows.length) return;
+
+    async function createMissingHours() {
+      setEnsuringHours(true);
+      const { error } = await supabase
+        .from("operating_hours")
+        .upsert(missingRows, { onConflict: "branch_id,weekday" });
+      setEnsuringHours(false);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      qc.invalidateQueries({ queryKey: ["hours", branchId] });
+      qc.invalidateQueries({ queryKey: ["customer-menu"] });
+    }
+
+    void createMissingHours();
+  }, [branchId, ensuringHours, hoursQ.data, qc]);
+
   const save = useMutation({
-    mutationFn: async (row: any) => {
+    mutationFn: async (row: OperatingHourRow) => {
       const { error } = await supabase
         .from("operating_hours")
         .update({
@@ -346,6 +468,7 @@ function HoursTab({ branchId }: { branchId: string }) {
     onSuccess: () => {
       toast.success("Hours updated");
       qc.invalidateQueries({ queryKey: ["hours"] });
+      qc.invalidateQueries({ queryKey: ["customer-menu"] });
     },
     onError: (e: any) => toast.error(e.message),
   });
@@ -354,10 +477,19 @@ function HoursTab({ branchId }: { branchId: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Operating hours</CardTitle>
-        <CardDescription>Set the daily schedule for this branch.</CardDescription>
+        <CardDescription>
+          Set the daily schedule for this branch. The customer website open/closed status uses
+          these hours.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        {hoursQ.data?.map((h: any) => (
+        {(hoursQ.isLoading || ensuringHours) && (
+          <div className="flex items-center gap-2 rounded-lg border border-border p-4 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            Preparing branch hours...
+          </div>
+        )}
+        {hoursQ.data?.map((h) => (
           <div
             key={h.id}
             className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"
@@ -377,14 +509,14 @@ function HoursTab({ branchId }: { branchId: string }) {
                 <Input
                   type="time"
                   className="w-32"
-                  value={h.open_time?.slice(0, 5) ?? ""}
+                  value={h.open_time?.slice(0, 5) ?? DEFAULT_OPEN_TIME}
                   onChange={(e) => save.mutate({ ...h, open_time: e.target.value })}
                 />
                 <span className="text-muted-foreground">to</span>
                 <Input
                   type="time"
                   className="w-32"
-                  value={h.close_time?.slice(0, 5) ?? ""}
+                  value={h.close_time?.slice(0, 5) ?? DEFAULT_CLOSE_TIME}
                   onChange={(e) => save.mutate({ ...h, close_time: e.target.value })}
                 />
               </>

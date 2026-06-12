@@ -16,4 +16,25 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
+  vite: {
+    logLevel: process.env.NODE_ENV === "production" ? "error" : "info",
+    build: {
+      chunkSizeWarningLimit: 900,
+      rollupOptions: {
+        onwarn(warning, defaultHandler) {
+          const message = warning.message ?? "";
+          if (message.includes("Module level directives") && message.includes('"use client"')) {
+            return;
+          }
+          if (message.includes("are imported from external module") && message.includes("never used")) {
+            return;
+          }
+          if (message.includes("Circular chunk: _libs/pg")) {
+            return;
+          }
+          defaultHandler(warning);
+        },
+      },
+    },
+  },
 });

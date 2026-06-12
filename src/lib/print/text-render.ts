@@ -27,7 +27,7 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
   const itemCount = data.items.reduce((n, item) => n + item.qty, 0);
   const brandLines = splitBrandName(data.brandName);
   const legalName = isSameText(data.legalName, data.brandName) ? null : data.legalName;
-  const receiptAddress = cleanText(data.address) || DEFAULT_ADDRESS;
+  const receiptAddress = receiptLocation(data.address);
   const receiptPhone = cleanText(data.phone) || DEFAULT_PHONE;
 
   lines.push(center(brandLines.top.toUpperCase()));
@@ -60,7 +60,11 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
   lines.push(rule);
   lines.push(row("Subtotal", fmt(data.subtotal)));
   if (data.discount > 0) lines.push(row("Discount", "-" + fmt(data.discount)));
-  for (const t of data.taxes) lines.push(row(`${t.name} (${t.rate}%)`, fmt(t.amount)));
+  for (const t of data.taxes.filter((tax) => tax.amount > 0)) {
+    lines.push(row(`${t.name} (${t.rate}%)`, fmt(t.amount)));
+  }
+  if (data.deliveryFee && data.deliveryFee > 0)
+    lines.push(row("Delivery fee", fmt(data.deliveryFee)));
   if (data.serviceCharge && data.serviceCharge > 0)
     lines.push(row("Service", fmt(data.serviceCharge)));
   lines.push(dbl);
@@ -121,6 +125,11 @@ function splitBrandName(name: string) {
 
 function cleanText(value: string | null | undefined) {
   return value?.trim() || "";
+}
+
+function receiptLocation(value: string | null | undefined) {
+  const text = cleanText(value);
+  return !text || text.toLowerCase() === "pakistan" ? DEFAULT_ADDRESS : text;
 }
 
 function isSameText(left: string | null | undefined, right: string | null | undefined) {

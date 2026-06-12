@@ -31,7 +31,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
   const balanceDue = Math.max(0, data.grandTotal - Math.max(paidAmount, data.amountReceived ?? 0));
   const brandLines = splitBrandName(data.brandName);
   const legalName = isSameText(data.legalName, data.brandName) ? null : data.legalName;
-  const receiptAddress = cleanText(data.address) || DEFAULT_ADDRESS;
+  const receiptAddress = receiptLocation(data.address);
   const receiptPhone = cleanText(data.phone) || DEFAULT_PHONE;
 
   const wrapStyle: CSSProperties = {
@@ -47,8 +47,8 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
     borderRadius: preview ? 6 : 0,
     fontFamily:
       "Arial, Helvetica, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    fontSize: compact ? 10.25 : 11.25,
-    lineHeight: 1.33,
+    fontSize: compact ? 11.25 : 12.25,
+    lineHeight: 1.38,
   };
 
   return (
@@ -76,8 +76,10 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
           }}
         >
           <div>
-            <div style={{ fontSize: 8, color: "#555", textTransform: "uppercase" }}>Order</div>
-            <div style={{ fontSize: compact ? 15 : 17, fontWeight: 900, lineHeight: 1.05 }}>
+            <div style={{ fontSize: compact ? 8.5 : 9, color: "#555", textTransform: "uppercase" }}>
+              Order
+            </div>
+            <div style={{ fontSize: compact ? 17 : 20, fontWeight: 900, lineHeight: 1.05 }}>
               {data.orderNo}
             </div>
           </div>
@@ -86,7 +88,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
               border: "1px solid #000",
               borderRadius: 999,
               padding: "2px 7px",
-              fontSize: compact ? 8 : 9,
+              fontSize: compact ? 9 : 10,
               fontWeight: 800,
               letterSpacing: 0.4,
               whiteSpace: "nowrap",
@@ -100,8 +102,8 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
         {data.cashierName && <MetaRow label="Cashier" value={data.cashierName} />}
         {data.customerName && <MetaRow label="Customer" value={data.customerName} />}
         {data.customerPhone && <MetaRow label="Phone" value={data.customerPhone} />}
-        {data.customerAddress && <MetaRow label="Address" value={data.customerAddress} />}
-        {data.orderNotes && <MetaRow label="Notes" value={data.orderNotes} />}
+        {data.customerAddress && <MetaBlock label="Address" value={data.customerAddress} />}
+        {data.orderNotes && <MetaBlock label="Notes" value={data.orderNotes} />}
       </section>
 
       <Rule />
@@ -116,7 +118,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
               </td>
               <td style={{ padding: "4px 4px 4px 0", verticalAlign: "top", width: "58%" }}>
                 <div style={{ fontWeight: 700, wordBreak: "break-word" }}>{item.name}</div>
-                <div style={{ marginTop: 1, fontSize: compact ? 8 : 8.5, color: "#555" }}>
+                <div style={{ marginTop: 1, fontSize: compact ? 8.75 : 9.25, color: "#555" }}>
                   @ {formatMoney(item.unit_price, sym)}
                 </div>
                 {item.addons?.map((addon, addonIndex) => (
@@ -124,7 +126,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
                     key={addonIndex}
                     style={{
                       marginTop: 1,
-                      fontSize: compact ? 8 : 8.5,
+                      fontSize: compact ? 8.75 : 9.25,
                       color: "#555",
                       wordBreak: "break-word",
                     }}
@@ -133,7 +135,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
                   </div>
                 ))}
                 {item.notes && (
-                  <div style={{ marginTop: 2, fontSize: compact ? 8 : 8.5, fontStyle: "italic" }}>
+                  <div style={{ marginTop: 2, fontSize: compact ? 8.75 : 9.25, fontStyle: "italic" }}>
                     Note: {item.notes}
                   </div>
                 )}
@@ -162,13 +164,16 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
         {data.discount > 0 && (
           <AmountRow label="Discount" value={`-${formatMoney(data.discount, sym)}`} />
         )}
-        {data.taxes.map((tax, index) => (
+        {data.taxes.filter((tax) => tax.amount > 0).map((tax, index) => (
           <AmountRow
             key={index}
             label={`${tax.name} (${tax.rate}%)`}
             value={formatMoney(tax.amount, sym)}
           />
         ))}
+        {data.deliveryFee && data.deliveryFee > 0 && (
+          <AmountRow label="Delivery fee" value={formatMoney(data.deliveryFee, sym)} />
+        )}
         {data.serviceCharge && data.serviceCharge > 0 && (
           <AmountRow label="Service" value={formatMoney(data.serviceCharge, sym)} />
         )}
@@ -239,7 +244,7 @@ function FineLine({ children }: { children: string }) {
   return (
     <div
       style={{
-        fontSize: 8.5,
+        fontSize: 9.25,
         color: "#444",
         lineHeight: 1.24,
         wordBreak: "break-word",
@@ -254,44 +259,11 @@ function BrandHeader({ top, bottom, compact }: { top: string; bottom: string; co
   return (
     <div>
       <div
-        aria-hidden="true"
-        style={{
-          width: compact ? 18 : 22,
-          height: compact ? 18 : 22,
-          margin: "0 auto 3px",
-          position: "relative",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            left: compact ? 5 : 6,
-            top: compact ? 1 : 2,
-            width: compact ? 8 : 10,
-            height: compact ? 13 : 15,
-            borderRadius: "80% 20% 75% 25%",
-            background: "#000",
-            transform: "rotate(28deg)",
-          }}
-        />
-        <span
-          style={{
-            position: "absolute",
-            left: compact ? 2 : 3,
-            bottom: compact ? 2 : 3,
-            width: compact ? 14 : 16,
-            height: 2,
-            borderRadius: 999,
-            background: "#000",
-          }}
-        />
-      </div>
-      <div
         style={{
           fontFamily: "Georgia, 'Times New Roman', serif",
-          fontWeight: 800,
-          fontSize: compact ? 19 : 22,
-          lineHeight: 0.95,
+          fontWeight: 900,
+          fontSize: compact ? 30 : 35,
+          lineHeight: 0.9,
           letterSpacing: 0,
           textTransform: "lowercase",
         }}
@@ -300,14 +272,34 @@ function BrandHeader({ top, bottom, compact }: { top: string; bottom: string; co
       </div>
       <div
         style={{
-          marginTop: 3,
-          fontSize: compact ? 9 : 10,
-          fontWeight: 700,
-          letterSpacing: compact ? 3.2 : 4,
+          alignItems: "center",
+          display: "flex",
+          gap: compact ? 5 : 7,
+          justifyContent: "center",
+          marginTop: 5,
+          fontSize: compact ? 12 : 14,
+          fontWeight: 800,
+          letterSpacing: compact ? 3.8 : 4.6,
           textTransform: "lowercase",
         }}
       >
-        {bottom}
+        <span
+          aria-hidden="true"
+          style={{
+            borderTop: "1px dashed #000",
+            display: "inline-block",
+            width: compact ? 22 : 28,
+          }}
+        />
+        <span>{bottom}</span>
+        <span
+          aria-hidden="true"
+          style={{
+            borderTop: "1px dashed #000",
+            display: "inline-block",
+            width: compact ? 22 : 28,
+          }}
+        />
       </div>
     </div>
   );
@@ -323,6 +315,11 @@ function splitBrandName(name: string) {
 
 function cleanText(value: string | null | undefined) {
   return value?.trim() || "";
+}
+
+function receiptLocation(value: string | null | undefined) {
+  const text = cleanText(value);
+  return !text || text.toLowerCase() === "pakistan" ? DEFAULT_ADDRESS : text;
 }
 
 function isSameText(left: string | null | undefined, right: string | null | undefined) {
@@ -345,7 +342,7 @@ function SectionTitle({ label }: { label: string }) {
     <div
       style={{
         marginBottom: 3,
-        fontSize: 8,
+        fontSize: compactSectionTitleFontSize(label),
         fontWeight: 800,
         letterSpacing: 0.8,
         textTransform: "uppercase",
@@ -365,11 +362,30 @@ function MetaRow({ label, value }: { label: string; value: string }) {
         justifyContent: "space-between",
         gap: 8,
         marginTop: 2,
-        fontSize: 9,
+        fontSize: 10,
       }}
     >
-      <span style={{ color: "#555", textTransform: "uppercase", fontSize: 8 }}>{label}</span>
-      <span style={{ textAlign: "right", fontWeight: 700, wordBreak: "break-word" }}>{value}</span>
+      <span style={{ color: "#555", textTransform: "uppercase", fontSize: 9 }}>{label}</span>
+      <span style={{ textAlign: "right", fontWeight: 800, wordBreak: "break-word" }}>{value}</span>
+    </div>
+  );
+}
+
+function MetaBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ marginTop: 5, fontSize: 10 }}>
+      <div style={{ color: "#555", textTransform: "uppercase", fontSize: 9 }}>{label}</div>
+      <div
+        style={{
+          marginTop: 1,
+          fontWeight: 800,
+          lineHeight: 1.26,
+          overflowWrap: "anywhere",
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
@@ -390,7 +406,7 @@ function AmountRow({
         justifyContent: "space-between",
         gap: 8,
         marginTop: strong ? 0 : 3,
-        fontSize: strong ? 13 : 10,
+        fontSize: strong ? 15 : 11,
         fontWeight: strong ? 900 : 600,
       }}
     >
@@ -398,4 +414,8 @@ function AmountRow({
       <span style={{ whiteSpace: "nowrap" }}>{value}</span>
     </div>
   );
+}
+
+function compactSectionTitleFontSize(label: string) {
+  return label.length > 10 ? 8.5 : 9;
 }

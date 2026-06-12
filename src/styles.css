@@ -171,6 +171,42 @@
     opacity: 0.42;
     mix-blend-mode: overlay;
   }
+  .ak-menu-board {
+    background:
+      radial-gradient(circle at 12% 8%, rgba(184, 149, 78, 0.1), transparent 24%),
+      radial-gradient(circle at 90% 8%, rgba(216, 189, 119, 0.06), transparent 24%),
+      linear-gradient(180deg, #070604 0%, #040403 48%, #080706 100%);
+  }
+  .ak-gold-frame {
+    border-color: rgba(184, 149, 78, 0.28);
+    background:
+      linear-gradient(180deg, rgba(248, 239, 216, 0.035), transparent),
+      rgba(6, 5, 4, 0.88);
+    box-shadow: inset 0 0 0 1px rgba(248, 239, 216, 0.025), 0 20px 50px -42px rgba(184, 149, 78, 0.5);
+  }
+  .ak-ornate-line {
+    background: linear-gradient(90deg, transparent, rgba(184, 149, 78, 0.78), rgba(255, 231, 154, 0.84), rgba(184, 149, 78, 0.78), transparent);
+  }
+  .ak-customer-card {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+      #090806;
+    border-color: rgba(184, 149, 78, 0.22);
+  }
+  .ak-gold-cta {
+    border: 1px solid rgba(248, 239, 216, 0.18);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 44%),
+      linear-gradient(135deg, #efd58b 0%, #bf9850 54%, #957037 100%);
+    color: #130f08;
+    box-shadow: 0 16px 28px -24px rgba(216, 189, 119, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  }
+  .ak-gold-cta:hover {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 44%),
+      linear-gradient(135deg, #f6dda0 0%, #cba55f 54%, #a57e3d 100%);
+    color: #080604;
+  }
 }
 
 @media print {

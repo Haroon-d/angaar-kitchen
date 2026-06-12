@@ -4,7 +4,6 @@ import { requirePostgresAuth } from "@/integrations/postgres/auth-middleware";
 import {
   authenticateWithPassword,
   createSession,
-  createUserWithPasswordAndProfile,
   revokeSessionToken,
 } from "@/services/auth.service.server";
 import { getUserRoles } from "@/services/authorization.service.server";
@@ -39,20 +38,8 @@ export const signInWithPasswordPostgres = createServerFn({ method: "POST" })
 
 export const signUpWithPasswordPostgres = createServerFn({ method: "POST" })
   .inputValidator((input) => SignUpSchema.parse(input))
-  .handler(async ({ data }) => {
-    const user = await createUserWithPasswordAndProfile({
-      email: data.email,
-      password: data.password,
-      fullName: data.fullName,
-      emailVerified: true,
-    });
-    const { token } = await createSession(user.id);
-
-    return {
-      token,
-      user: serializeUser(user),
-      roles: [],
-    };
+  .handler(async () => {
+    throw new Error("Public account creation is disabled. Ask an owner or admin to create staff access.");
   });
 
 export const getCurrentUserPostgres = createServerFn({ method: "GET" })

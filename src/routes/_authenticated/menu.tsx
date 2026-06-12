@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatMoney } from "@/lib/format";
+import { cloudinaryImageSrcSet, optimizeCloudinaryImageUrl } from "@/lib/image-delivery";
 
 export const Route = createFileRoute("/_authenticated/menu")({ component: MenuPage });
 
@@ -107,8 +108,8 @@ function MenuPage() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
-        <Card>
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">Categories</CardTitle>
           </CardHeader>
@@ -140,13 +141,13 @@ function MenuPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">
               {activeCat ? catsQ.data?.find((c) => c.id === activeCat)?.name : "All items"}
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-w-0">
             {itemsQ.isLoading ? (
               <Loader2 className="h-5 w-5 animate-spin" />
             ) : itemsQ.data?.length === 0 ? (
@@ -161,11 +162,20 @@ function MenuPage() {
                   const recipeCost = Number(cost?.recipe_cost ?? 0);
                   const foodPct = Number(cost?.food_cost_percent ?? 0);
                   return (
-                    <div key={it.id} className="rounded-lg border border-border bg-card p-4">
+                    <div key={it.id} className="min-w-0 rounded-lg border border-border bg-card p-4">
                       {it.image_url ? (
                         <img
-                          src={it.image_url}
+                          src={
+                            optimizeCloudinaryImageUrl(it.image_url, {
+                              width: 520,
+                              height: 360,
+                            }) ?? it.image_url
+                          }
+                          srcSet={cloudinaryImageSrcSet(it.image_url, [320, 520, 760])}
+                          sizes="(min-width: 1280px) 25vw, (min-width: 640px) 50vw, 100vw"
                           alt={it.name}
+                          loading="lazy"
+                          decoding="async"
                           className="mb-3 h-32 w-full rounded-md object-cover"
                         />
                       ) : null}
@@ -178,7 +188,7 @@ function MenuPage() {
                             </div>
                           )}
                         </div>
-                        <div className="font-mono text-sm">
+                        <div className="shrink-0 whitespace-nowrap font-mono text-sm">
                           {formatMoney(it.base_price, symbol)}
                         </div>
                       </div>
@@ -199,13 +209,13 @@ function MenuPage() {
                           </span>
                         )}
                       </div>
-                      <div className="mt-3 flex items-center justify-between">
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs ${it.is_available ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"}`}
                         >
                           {it.is_available ? "Available" : "Unavailable"}
                         </span>
-                        <div className="flex gap-1">
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
                           <Button variant="ghost" size="sm" asChild>
                             <Link to="/inventory">Recipe</Link>
                           </Button>
@@ -301,7 +311,7 @@ function CategoryDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{category ? "Edit category" : "New category"}</DialogTitle>
         </DialogHeader>
@@ -343,6 +353,12 @@ const ItemSchema = z.object({
   base_price: z.number().min(0),
   is_available: z.boolean(),
   is_veg: z.boolean().nullable(),
+  is_best_seller: z.boolean(),
+  is_chef_recommended: z.boolean(),
+  is_popular: z.boolean(),
+  is_new_item: z.boolean(),
+  spice_level: z.string().max(40).optional().nullable(),
+  serving_size: z.string().max(60).optional().nullable(),
   prep_time_min: z.number().int().min(0).max(240),
 });
 
@@ -366,6 +382,12 @@ function ItemDialog({
     base_price: String(item?.base_price ?? "0"),
     is_available: item?.is_available ?? true,
     is_veg: item?.is_veg ?? null,
+    is_best_seller: item?.is_best_seller ?? false,
+    is_chef_recommended: item?.is_chef_recommended ?? false,
+    is_popular: item?.is_popular ?? false,
+    is_new_item: item?.is_new_item ?? false,
+    spice_level: item?.spice_level ?? "",
+    serving_size: item?.serving_size ?? "",
     prep_time_min: String(item?.prep_time_min ?? "15"),
   });
   const [loading, setLoading] = useState(false);
@@ -378,6 +400,8 @@ function ItemDialog({
       description: f.description || null,
       image_url: f.image_url || null,
       is_veg: f.is_veg,
+      spice_level: f.spice_level || null,
+      serving_size: f.serving_size || null,
     });
     if (!p.success) {
       toast.error(p.error.issues[0].message);
@@ -409,7 +433,7 @@ function ItemDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{item ? "Edit item" : "New item"}</DialogTitle>
         </DialogHeader>
@@ -446,10 +470,14 @@ function ItemDialog({
             <Input
               value={f.image_url}
               onChange={(e) => setF({ ...f, image_url: e.target.value })}
-              placeholder="https://..."
+              placeholder="Paste Cloudinary image URL"
             />
+            <p className="text-xs leading-5 text-muted-foreground">
+              Design menu item images at 1200 x 800 px. Paste the normal Cloudinary URL; the
+              website will resize and optimize it automatically.
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>Base price</Label>
               <Input
@@ -483,6 +511,46 @@ function ItemDialog({
               <Label>Veg</Label>
             </div>
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Spice level</Label>
+              <Input
+                value={f.spice_level}
+                onChange={(e) => setF({ ...f, spice_level: e.target.value })}
+                placeholder="Mild, normal, spicy"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Serving size</Label>
+              <Input
+                value={f.serving_size}
+                onChange={(e) => setF({ ...f, serving_size: e.target.value })}
+                placeholder="Half, full, 2 persons"
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2">
+            <BadgeSwitch
+              label="Best seller"
+              checked={f.is_best_seller}
+              onCheckedChange={(is_best_seller) => setF({ ...f, is_best_seller })}
+            />
+            <BadgeSwitch
+              label="Chef recommendation"
+              checked={f.is_chef_recommended}
+              onCheckedChange={(is_chef_recommended) => setF({ ...f, is_chef_recommended })}
+            />
+            <BadgeSwitch
+              label="Popular"
+              checked={f.is_popular}
+              onCheckedChange={(is_popular) => setF({ ...f, is_popular })}
+            />
+            <BadgeSwitch
+              label="New item"
+              checked={f.is_new_item}
+              onCheckedChange={(is_new_item) => setF({ ...f, is_new_item })}
+            />
+          </div>
           <DialogFooter>
             <Button type="submit" disabled={loading}>
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Save
@@ -491,5 +559,22 @@ function ItemDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function BadgeSwitch({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-md bg-background/35 px-3 py-2">
+      <span className="text-sm font-medium">{label}</span>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </label>
   );
 }
