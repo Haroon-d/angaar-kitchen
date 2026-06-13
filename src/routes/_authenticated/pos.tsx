@@ -619,7 +619,7 @@ function POSPage() {
       </div>
 
       {/* Right: cart */}
-      <aside className="flex min-h-0 flex-col border-t border-border bg-card lg:border-l lg:border-t-0">
+      <aside className="flex min-h-0 flex-col overflow-y-auto border-t border-border bg-card lg:max-h-[calc(100vh-3.5rem)] lg:border-l lg:border-t-0">
         <div className="flex items-center justify-between border-b border-border p-4">
           <h2 className="font-display text-lg">{isEditing ? "Edit Cart" : "Current Order"}</h2>
           {isEditing ? (
@@ -732,7 +732,7 @@ function POSPage() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="min-h-[160px] flex-none overflow-y-auto p-4 lg:max-h-[34vh]">
           {cart.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               <Receipt className="mx-auto mb-3 h-8 w-8 opacity-50" />
@@ -741,20 +741,20 @@ function POSPage() {
           ) : (
             <ul className="space-y-2">
               {cart.map((c) => (
-                <li key={c.uid} className="rounded-md border border-border p-2.5">
+                <li key={c.uid} className="rounded-md border border-border bg-background/25 p-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{c.name}</div>
+                      <div className="text-sm font-medium leading-snug break-words">{c.name}</div>
                       <div className="font-mono text-xs text-muted-foreground">
                         {formatMoney(c.unit_price, symbol)} each
                       </div>
                       {c.notes && expandedNoteUid !== c.uid && (
-                        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                        <div className="mt-0.5 text-xs leading-snug text-muted-foreground break-words">
                           Note: {c.notes}
                         </div>
                       )}
                     </div>
-                    <div className="font-mono text-sm">
+                    <div className="shrink-0 font-mono text-sm">
                       {formatMoney(c.unit_price * c.qty, symbol)}
                     </div>
                   </div>
