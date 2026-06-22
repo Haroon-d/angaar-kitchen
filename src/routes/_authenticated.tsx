@@ -97,6 +97,14 @@ function AuthedLayout() {
     }
   }, [roles, rolesLoading, router, nav]);
 
+  useEffect(() => {
+  const hostname = window.location.hostname;
+  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+  if (!isLocalhost && hostname !== 'pos.angaarkitchen.com') {
+    nav({ to: '/' });
+  }
+}, [nav]);
+  
   if (loading || rolesLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">

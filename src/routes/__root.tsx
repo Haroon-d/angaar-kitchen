@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/hooks/use-auth";
 import { ActiveBranchProvider } from "@/hooks/use-active-branch";
 import appCss from "../styles.css?url";
+import { useEffect } from "react";
 
 function NotFoundComponent() {
   return (
@@ -72,6 +73,14 @@ function RootShell({ children }: { children: React.ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  useEffect(() => {
+    const hostname = window.location.hostname;
+    const isPOSDomain = hostname === 'pos.angaarkitchen.com';
+    const isRootPath = window.location.pathname === '/';
+    if (isPOSDomain && isRootPath) {
+      window.location.href = '/login';
+    }
+  }, []);
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
