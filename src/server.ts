@@ -9,6 +9,8 @@ type ServerEntry = {
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
 
+const POS_HOSTNAMES = new Set(["pos.angaarkitchen.com"]);
+
 async function getServerEntry(): Promise<ServerEntry> {
   if (!serverEntryPromise) {
     serverEntryPromise = import("@tanstack/react-start/server-entry").then(
@@ -50,6 +52,16 @@ function isCatastrophicSsrErrorBody(body: string, responseStatus: number): boole
   );
 }
 
+function posRootRedirect(request: Request): Response | undefined {
+  const url = new URL(request.url);
+  if (!POS_HOSTNAMES.has(url.hostname.toLowerCase()) || url.pathname !== "/") {
+    return undefined;
+  }
+
+  url.pathname = "/pos";
+  return Response.redirect(url, 302);
+}
+
 // h3 swallows in-handler throws into a normal 500 Response with body
 // {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
 async function normalizeCatastrophicSsrResponse(response: Response): Promise<Response> {
@@ -69,6 +81,9 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const redirect = posRootRedirect(request);
+      if (redirect) return redirect;
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

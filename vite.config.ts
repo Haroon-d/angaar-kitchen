@@ -7,12 +7,14 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import { nitro } from "nitro/vite";
 
+const nitroPreset = process.env.NITRO_PRESET ?? "vercel";
+
 // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper)
-// and build with Nitro so Vercel receives Build Output API artifacts instead of
-// Cloudflare Worker/Wrangler output.
+// and build with Nitro. Vercel stays the default preset; Hostinger can set
+// NITRO_PRESET=node_server to produce a long-running Node.js server bundle.
 export default defineConfig({
   cloudflare: false,
-  plugins: [nitro({ preset: "vercel" })],
+  plugins: [nitro({ preset: nitroPreset })],
   tanstackStart: {
     server: { entry: "server" },
   },
