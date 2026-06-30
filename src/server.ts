@@ -52,14 +52,14 @@ function isCatastrophicSsrErrorBody(body: string, responseStatus: number): boole
   );
 }
 
-function posRootRedirect(request: Request): Response | undefined {
+function rewritePosRootRequest(request: Request): Request {
   const url = new URL(request.url);
   if (!POS_HOSTNAMES.has(url.hostname.toLowerCase()) || url.pathname !== "/") {
-    return undefined;
+    return request;
   }
 
   url.pathname = "/pos";
-  return Response.redirect(url, 302);
+  return new Request(url, request);
 }
 
 // h3 swallows in-handler throws into a normal 500 Response with body
@@ -81,8 +81,7 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
-      const redirect = posRootRedirect(request);
-      if (redirect) return redirect;
+      request = rewritePosRootRequest(request);
 
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
