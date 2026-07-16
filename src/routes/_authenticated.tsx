@@ -6,8 +6,10 @@ import {
   useRouterState,
   useNavigate,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Flame,
   LayoutDashboard,
   ChefHat,
@@ -26,9 +28,11 @@ import {
 } from "lucide-react";
 import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
 import { supabase } from "@/integrations/supabase/client";
+import { appDb } from "@/lib/app-db";
 import { useAuth, useMyRoles } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isPostgresAuthEnabled } from "@/lib/auth-backend";
+import { businessDateInputValue, formatMoney } from "@/lib/format";
 import {
   canAccessPath,
   firstAllowedPath,
@@ -52,6 +56,13 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -59,7 +70,35 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
+type DbError = { message: string };
+type DbResult<T = unknown> = { data: T | null; error: DbError | null };
+type DbQuery<T = unknown> = PromiseLike<DbResult<T>> & {
+  select(columns?: string): DbQuery<T>;
+  insert(values: unknown): DbQuery<unknown>;
+  eq(column: string, value: unknown): DbQuery<T>;
+  lt(column: string, value: unknown): DbQuery<T>;
+  order(column: string, options?: { ascending?: boolean }): DbQuery<T>;
+  limit(value: number): DbQuery<T>;
+  maybeSingle(): DbQuery<T>;
+};
+type DbClient = { from(table: string): DbQuery };
+
+const db = appDb as unknown as DbClient;
+
+type FinanceDayClosure = {
+  id: string;
+  branch_id: string;
+  business_date: string;
+  opening_cash: number | string;
+  opening_online: number | string;
+  closed_at: string | null;
+  notes: string | null;
+};
 
 export const Route = createFileRoute("/_authenticated")({
   beforeLoad: async () => {
@@ -132,6 +171,7 @@ function AuthedLayout() {
         <AppSidebar />
         <div className="flex-1 flex min-w-0 flex-col bg-[linear-gradient(180deg,oklch(0.17_0.014_250),oklch(0.145_0.012_250)_220px)]">
           <Topbar />
+          <ShiftOpeningGate />
           <main className="flex-1 min-w-0">
             <Outlet />
           </main>
@@ -139,6 +179,194 @@ function AuthedLayout() {
       </div>
     </SidebarProvider>
   );
+}
+
+function ShiftOpeningGate() {
+  const { branch, restaurant } = useActiveBranch();
+  const { data: roles } = useMyRoles();
+  const qc = useQueryClient();
+  const [openingCash, setOpeningCash] = useState("");
+  const [openingOnline, setOpeningOnline] = useState("0");
+  const [saving, setSaving] = useState(false);
+  const [dismissedDate, setDismissedDate] = useState<string | null>(null);
+  const businessDayStart = (
+    (branch as { business_day_start_time?: string } | null)?.business_day_start_time ?? "10:00"
+  ).slice(0, 5);
+  const businessDate = businessDateInputValue(businessDayStart);
+  const afterStart = isAfterBusinessStart(businessDayStart);
+  const canOpenShift = hasPermission(roles, "expenses:manage");
+  const symbol = restaurant?.currency_symbol ?? "Rs";
+
+  const todayClosureQ = useQuery({
+    queryKey: ["global-shift-closure", branch?.id, businessDate],
+    enabled: !!branch && afterStart,
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_day_closures")
+        .select("*")
+        .eq("branch_id", branch!.id)
+        .eq("business_date", businessDate)
+        .maybeSingle();
+      if (error) throw error;
+      return data as FinanceDayClosure | null;
+    },
+  });
+
+  const recentClosuresQ = useQuery({
+    queryKey: ["global-unclosed-shifts", branch?.id, businessDate],
+    enabled: !!branch && afterStart,
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_day_closures")
+        .select("*")
+        .eq("branch_id", branch!.id)
+        .lt("business_date", businessDate)
+        .order("business_date", { ascending: false })
+        .limit(14);
+      if (error) throw error;
+      return (data ?? []) as FinanceDayClosure[];
+    },
+  });
+
+  const unclosedShifts = useMemo(
+    () => (recentClosuresQ.data ?? []).filter((shift) => !shift.closed_at),
+    [recentClosuresQ.data],
+  );
+  const todayShiftOpen = Boolean(todayClosureQ.data);
+  const shouldPrompt =
+    Boolean(branch) && afterStart && !todayClosureQ.isLoading && !todayShiftOpen && canOpenShift;
+  const promptOpen = shouldPrompt && dismissedDate !== businessDate;
+
+  async function openShift(event: FormEvent) {
+    event.preventDefault();
+    const cash = Number(openingCash);
+    const online = Number(openingOnline || 0);
+    if (!Number.isFinite(cash) || cash < 0) {
+      return;
+    }
+    if (!Number.isFinite(online) || online < 0) {
+      return;
+    }
+
+    setSaving(true);
+    const { error } = await db.from("finance_day_closures").insert({
+      branch_id: branch!.id,
+      business_date: businessDate,
+      opening_cash: cash.toFixed(2),
+      opening_online: online.toFixed(2),
+      expected_cash: cash.toFixed(2),
+      expected_online: online.toFixed(2),
+      actual_cash: null,
+      actual_online: null,
+      cash_difference: "0.00",
+      online_difference: "0.00",
+      notes: "Opened from global shift prompt.",
+      closed_at: null,
+    });
+    setSaving(false);
+    if (error) {
+      await todayClosureQ.refetch();
+      return;
+    }
+    setOpeningCash("");
+    setOpeningOnline("0");
+    await Promise.all([
+      todayClosureQ.refetch(),
+      recentClosuresQ.refetch(),
+      qc.invalidateQueries({ queryKey: ["finance-day-closure"] }),
+      qc.invalidateQueries({ queryKey: ["finance-movements"] }),
+    ]);
+  }
+
+  if (!branch || !afterStart) return null;
+
+  return (
+    <>
+      {unclosedShifts.length > 0 && (
+        <div className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-100 sm:px-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            <span className="font-medium">
+              {unclosedShifts.length} earlier shift{unclosedShifts.length === 1 ? "" : "s"} still open.
+            </span>
+            <span className="text-amber-100/80">
+              They stay on their own dates and are not counted as today.
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {unclosedShifts.slice(0, 4).map((shift) => (
+                <Badge key={shift.id} variant="outline" className="border-amber-400/40 text-amber-100">
+                  {shift.business_date}
+                </Badge>
+              ))}
+            </div>
+            <Button asChild size="sm" variant="outline" className="ml-auto h-8">
+              <Link to="/expenses">Close in Finance</Link>
+            </Button>
+          </div>
+        </div>
+      )}
+      {!todayShiftOpen && !canOpenShift && (
+        <div className="border-b border-destructive/25 bg-destructive/10 px-4 py-2 text-sm text-destructive-foreground sm:px-6">
+          Today&apos;s shift is not opened yet. Ask a manager/admin to open Finance before taking
+          operational entries.
+        </div>
+      )}
+      <Dialog open={promptOpen} onOpenChange={(open) => !open && setDismissedDate(businessDate)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Open today&apos;s shift</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={openShift} className="space-y-4">
+            <div className="rounded-lg border border-primary/25 bg-primary/10 p-3 text-sm text-muted-foreground">
+              Business day started at {businessDayStart}. Open {businessDate} with the counter cash
+              before using operations so today&apos;s numbers stay separate.
+            </div>
+            <div className="space-y-1.5">
+              <Label>Opening counter cash ({symbol})</Label>
+              <Input
+                autoFocus
+                type="number"
+                min="0"
+                step="0.01"
+                value={openingCash}
+                onChange={(event) => setOpeningCash(event.target.value)}
+                placeholder="Required"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Opening online balance ({symbol})</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={openingOnline}
+                onChange={(event) => setOpeningOnline(event.target.value)}
+                placeholder="Optional, can stay 0"
+              />
+            </div>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={() => setDismissedDate(businessDate)}>
+                Remind later
+              </Button>
+              <Button type="submit" disabled={saving || openingCash.trim() === ""}>
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Open with {openingCash ? formatMoney(openingCash, symbol) : "cash"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function isAfterBusinessStart(businessDayStart: string) {
+  const [hours = 0, minutes = 0] = businessDayStart.split(":").map(Number);
+  const now = new Date();
+  const pakistanTime = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+  const nowMinutes = pakistanTime.getUTCHours() * 60 + pakistanTime.getUTCMinutes();
+  const startMinutes = (Number.isFinite(hours) ? hours : 10) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+  return nowMinutes >= startMinutes;
 }
 
 const NAV: Array<{
