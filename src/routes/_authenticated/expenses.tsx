@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftRight,
   Banknote,
   Calendar,
+  ClipboardCheck,
   FileText,
+  HandCoins,
   Loader2,
   Pencil,
   Plus,
   ReceiptText,
   RotateCcw,
   Search,
+  ShoppingCart,
   Tags,
   Trash2,
+  WalletCards,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
@@ -460,10 +464,10 @@ function ExpensesWorkspace({
     <div className="space-y-6 p-4 sm:p-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="font-display text-3xl">Expenses and cash flow</h1>
+          <h1 className="font-display text-3xl">Finance control</h1>
           <p className="text-sm text-muted-foreground">
-            Record business expenses, money movement between counter and online accounts, and
-            day-end cash checking.
+            Fast daily money control for purchases, expenses, transfers, shift closing, and owner
+            reporting.
           </p>
         </div>
         {manager && (
@@ -476,22 +480,22 @@ function ExpensesWorkspace({
               )}
               Finance PDF report
             </Button>
-            <FinanceTransferDialog
-              branchId={branchId}
-              restaurantId={restaurantId}
-              accounts={accounts}
-              businessDayStart={businessDayStart}
-              symbol={symbol}
-            />
-            <ExpenseDialog
-              branchId={branchId}
-              categories={categoriesQ.data ?? []}
-              accounts={accounts}
-              symbol={symbol}
-            />
           </div>
         )}
       </div>
+
+      {manager && (
+        <FinanceActionCenter
+          branchId={branchId}
+          restaurantId={restaurantId}
+          categories={categoriesQ.data ?? []}
+          accounts={accounts}
+          businessDayStart={businessDayStart}
+          symbol={symbol}
+          printingReport={printingReport}
+          onPrintReport={printFinanceReport}
+        />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat icon={Banknote} label="Selected period cost" value={formatMoney(total, symbol)} />
@@ -671,6 +675,153 @@ function ExpensesWorkspace({
         </div>
       </div>
     </div>
+  );
+}
+
+function FinanceActionCenter({
+  branchId,
+  restaurantId,
+  categories,
+  accounts,
+  businessDayStart,
+  symbol,
+  printingReport,
+  onPrintReport,
+}: {
+  branchId: string;
+  restaurantId: string;
+  categories: ExpenseCategory[];
+  accounts: FinanceAccount[];
+  businessDayStart: string;
+  symbol: string;
+  printingReport: boolean;
+  onPrintReport: () => void;
+}) {
+  function scrollToShift() {
+    document.getElementById("shift-closing-panel")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
+  return (
+    <Card className="border-primary/25 bg-card/75">
+      <CardHeader>
+        <CardTitle>What happened?</CardTitle>
+        <CardDescription>
+          Pick the closest action. The system will send you to the right form so entries are not
+          missed at closing time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <Button asChild variant="outline" className="h-auto justify-start gap-3 p-4 text-left">
+          <Link to="/inventory">
+            <ShoppingCart className="h-5 w-5 text-primary" />
+            <span>
+              <span className="block font-semibold">Bought stock / packaging</span>
+              <span className="block text-xs text-muted-foreground">
+                Record purchase, payment source, and stock quantity.
+              </span>
+            </span>
+          </Link>
+        </Button>
+        <ExpenseDialog
+          branchId={branchId}
+          categories={categories}
+          accounts={accounts}
+          symbol={symbol}
+          trigger={
+            <FinanceQuickAction
+              icon={ReceiptText}
+              title="Paid a business expense"
+              description="Bills, salary, repair, gas, rent, or other cost."
+            />
+          }
+        />
+        <FinanceTransferDialog
+          branchId={branchId}
+          restaurantId={restaurantId}
+          accounts={accounts}
+          businessDayStart={businessDayStart}
+          symbol={symbol}
+          trigger={
+            <FinanceQuickAction
+              icon={WalletCards}
+              title="Money moved"
+              description="Counter to online, online to counter, bank, wallet."
+            />
+          }
+        />
+        <FinanceTransferDialog
+          branchId={branchId}
+          restaurantId={restaurantId}
+          accounts={accounts}
+          businessDayStart={businessDayStart}
+          symbol={symbol}
+          initialPreset="owner_took_cash"
+          trigger={
+            <FinanceQuickAction
+              icon={HandCoins}
+              title="Owner/staff took or added money"
+              description="Pocket cash, owner withdrawal, or correction."
+            />
+          }
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="h-auto justify-start gap-3 p-4 text-left"
+          onClick={scrollToShift}
+        >
+          <ClipboardCheck className="h-5 w-5 text-primary" />
+          <span>
+            <span className="block font-semibold">Open or close shift</span>
+            <span className="block text-xs text-muted-foreground">
+              Set opening cash, refresh expected totals, and close day.
+            </span>
+          </span>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-auto justify-start gap-3 p-4 text-left"
+          onClick={onPrintReport}
+          disabled={printingReport}
+        >
+          {printingReport ? (
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          ) : (
+            <FileText className="h-5 w-5 text-primary" />
+          )}
+          <span>
+            <span className="block font-semibold">Send owner finance report</span>
+            <span className="block text-xs text-muted-foreground">
+              Print PDF and share WhatsApp summary.
+            </span>
+          </span>
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function FinanceQuickAction({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Button type="button" variant="outline" className="h-auto w-full justify-start gap-3 p-4 text-left">
+      <Icon className="h-5 w-5 text-primary" />
+      <span>
+        <span className="block font-semibold">{title}</span>
+        <span className="block text-xs text-muted-foreground">{description}</span>
+      </span>
+    </Button>
   );
 }
 
@@ -929,7 +1080,7 @@ function DayEndPanel({
   }
 
   return (
-    <Card className="border-primary/20 bg-card/70">
+    <Card id="shift-closing-panel" className="scroll-mt-24 border-primary/20 bg-card/70">
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -1204,12 +1355,16 @@ function FinanceTransferDialog({
   accounts,
   businessDayStart,
   symbol,
+  trigger,
+  initialPreset = "pocket_to_counter",
 }: {
   branchId: string;
   restaurantId: string;
   accounts: FinanceAccount[];
   businessDayStart: string;
   symbol: string;
+  trigger?: ReactNode;
+  initialPreset?: "pocket_to_counter" | "counter_to_online" | "owner_took_cash";
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -1234,6 +1389,13 @@ function FinanceTransferDialog({
     reference: "",
     notes: "",
   });
+
+  useEffect(() => {
+    if (!open) return;
+    applyPreset(initialPreset);
+    // The preset should be applied when a quick action opens the dialog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialPreset]);
 
   function applyPreset(preset: "pocket_to_counter" | "counter_to_online" | "owner_took_cash") {
     if (preset === "pocket_to_counter") {
@@ -1306,10 +1468,12 @@ function FinanceTransferDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline">
-          <ArrowLeftRight className="mr-2 h-4 w-4" />
-          Move / add money
-        </Button>
+        {trigger ?? (
+          <Button variant="outline">
+            <ArrowLeftRight className="mr-2 h-4 w-4" />
+            Move / add money
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
@@ -1467,12 +1631,14 @@ function ExpenseDialog({
   accounts,
   expense,
   symbol,
+  trigger,
 }: {
   branchId: string;
   categories: ExpenseCategory[];
   accounts: FinanceAccount[];
   expense?: Expense;
   symbol: string;
+  trigger?: ReactNode;
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -1525,7 +1691,9 @@ function ExpenseDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        {expense ? (
+        {trigger ? (
+          trigger
+        ) : expense ? (
           <Button variant="ghost" size="icon" aria-label="Edit expense">
             <Pencil className="h-4 w-4" />
           </Button>

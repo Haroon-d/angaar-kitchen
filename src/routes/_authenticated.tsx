@@ -155,7 +155,7 @@ const NAV: Array<{
   { label: "Hiring", to: "/hiring", icon: BriefcaseBusiness, permission: "staff:manage" },
   { label: "Menu", to: "/menu", icon: ChefHat, permission: "menu:manage" },
   { label: "Inventory", to: "/inventory", icon: Package, permission: "inventory:view" },
-  { label: "Expenses", to: "/expenses", icon: Banknote, permission: "expenses:view" },
+  { label: "Finance", to: "/expenses", icon: Banknote, permission: "expenses:view" },
   { label: "Staff", to: "/staff", icon: Users, permission: "staff:manage" },
   { label: "Branches", to: "/branches", icon: Store, permission: "branches:manage" },
   { label: "Settings", to: "/settings", icon: Settings, permission: "settings:manage" },
