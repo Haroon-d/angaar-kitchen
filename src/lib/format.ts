@@ -40,6 +40,39 @@ export function pakistanDateRangeUtcBounds(startDate: string, endDate: string) {
   };
 }
 
+function timeToMinutes(value: string | null | undefined) {
+  const [hours = 0, minutes = 0] = String(value || "00:00")
+    .slice(0, 5)
+    .split(":")
+    .map(Number);
+  return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+}
+
+export function businessDateInputValue(businessDayStartTime = "00:00", date = new Date()) {
+  const pakistanTime = new Date(date.getTime() + PAKISTAN_UTC_OFFSET_MINUTES * 60 * 1000);
+  const minutesNow = pakistanTime.getUTCHours() * 60 + pakistanTime.getUTCMinutes();
+  if (minutesNow < timeToMinutes(businessDayStartTime)) {
+    pakistanTime.setUTCDate(pakistanTime.getUTCDate() - 1);
+  }
+  return pakistanTime.toISOString().slice(0, 10);
+}
+
+export function businessDateRangeUtcBounds(
+  startDate: string,
+  endDate: string,
+  businessDayStartTime = "00:00",
+) {
+  const startMinutes = timeToMinutes(businessDayStartTime);
+  const startDay = pakistanDayUtcRange(startDate).start;
+  const endDay = pakistanDayUtcRange(endDate).start;
+  const startMs = new Date(startDay).getTime() + startMinutes * 60 * 1000;
+  const endMs = new Date(endDay).getTime() + startMinutes * 60 * 1000 + 24 * 60 * 60 * 1000;
+  return {
+    start: new Date(startMs).toISOString(),
+    end: new Date(endMs).toISOString(),
+  };
+}
+
 export function formatPakistanDateLabel(dateValue: string, options?: Intl.DateTimeFormatOptions) {
   const [year, month, day] = dateValue.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));

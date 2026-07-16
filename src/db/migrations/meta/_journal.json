@@ -43,6 +43,62 @@
       "when": 1781184600000,
       "tag": "0005_promotion_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783360800000,
+      "tag": "0006_inventory_measurement_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783519200000,
+      "tag": "0007_careers_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783940400000,
+      "tag": "0008_customer_dues_cutoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783965600000,
+      "tag": "0009_finance_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783972800000,
+      "tag": "0010_finance_day_closures",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784043600000,
+      "tag": "0011_inventory_control_architecture",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784055600000,
+      "tag": "0012_finance_transfers",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784059200000,
+      "tag": "0013_inventory_purchase_payment_source",
+      "breakpoints": true
     }
   ]
 }

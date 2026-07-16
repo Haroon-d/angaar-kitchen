@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2,
@@ -16,6 +16,7 @@ import {
   MessageCircle,
   StickyNote,
 } from "lucide-react";
+import { z } from "zod";
 import { toast } from "sonner";
 import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
@@ -29,11 +30,9 @@ import {
   formatMoney,
   formatDate,
   formatPakistanDateLabel,
-  pakistanDateInputValue,
-  pakistanDayUtcRange,
+  businessDateInputValue,
+  businessDateRangeUtcBounds,
 } from "@/lib/format";
-
-export const Route = createFileRoute("/_authenticated/orders")({ component: OrdersPage });
 
 type StatusFilter = "fulfillment" | "unpaid" | "paid" | "completed" | "all";
 type ChannelFilter = "all" | "website" | "pos";
@@ -49,6 +48,19 @@ type OrderStatus =
   | "voided"
   | "refunded";
 type OrderChannel = "website" | "pos";
+
+const OrdersSearchSchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  status: z.enum(["fulfillment", "unpaid", "paid", "completed", "all"]).optional(),
+  channel: z.enum(["all", "website", "pos"]).optional(),
+  q: z.string().optional(),
+});
+
+export const Route = createFileRoute("/_authenticated/orders")({
+  validateSearch: (search) => OrdersSearchSchema.parse(search),
+  component: OrdersPage,
+});
 type OrderRow = {
   id: string;
   order_no: string;
@@ -74,28 +86,48 @@ function OrdersPage() {
   const { branch, restaurant } = useActiveBranch();
   const symbol = restaurant?.currency_symbol ?? "Rs";
   const nav = useNavigate();
+  const searchParams = useSearch({ from: Route.id });
   const qc = useQueryClient();
-  const todayValue = pakistanDateInputValue();
-  const [selectedDate, setSelectedDate] = useState(todayValue);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("fulfillment");
-  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
-  const [search, setSearch] = useState("");
+  const businessDayStart =
+    ((branch as { business_day_start_time?: string } | null)?.business_day_start_time ?? "10:00").slice(0, 5);
+  const todayValue = businessDateInputValue(businessDayStart);
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+  const dateRange = normalizeOrderDateRange(searchParams.from, searchParams.to, todayValue);
+  const statusFilter = searchParams.status ?? "fulfillment";
+  const channelFilter = searchParams.channel ?? "all";
+  const search = searchParams.q ?? "";
+  const isToday = dateRange.from === todayValue && dateRange.to === todayValue;
+
+  function updateSearch(patch: Partial<z.infer<typeof OrdersSearchSchema>>) {
+    nav({
+      to: "/orders",
+      search: {
+        ...searchParams,
+        ...patch,
+      },
+      replace: true,
+    });
+  }
 
   const q = useQuery({
-    queryKey: ["orders-list", branch?.id, selectedDate],
+    queryKey: ["orders-list", branch?.id, dateRange.from, dateRange.to, businessDayStart],
     enabled: !!branch,
-    refetchInterval: 8000,
+    refetchInterval: isToday ? 12000 : false,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
-      const selectedDay = pakistanDayUtcRange(selectedDate);
+      const selectedPeriod = businessDateRangeUtcBounds(
+        dateRange.from,
+        dateRange.to,
+        businessDayStart,
+      );
       const { data, error } = await supabase
         .from("orders")
         .select(
           "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, created_by, customer_name, customer_phone, table_label, notes, kot_print_count, bill_print_count, receipt_print_count",
         )
         .eq("branch_id", branch!.id)
-        .gte("created_at", selectedDay.start)
-        .lt("created_at", selectedDay.end)
+        .gte("created_at", selectedPeriod.start)
+        .lt("created_at", selectedPeriod.end)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as OrderRow[];
@@ -176,8 +208,6 @@ function OrdersPage() {
     }),
     [orders],
   );
-  const isToday = selectedDate === todayValue;
-
   async function updateOrderStatus(order: OrderRow, status: OrderStatus) {
     setUpdatingOrderId(order.id);
     try {
@@ -205,7 +235,7 @@ function OrdersPage() {
           <h1 className="font-display text-3xl">Orders</h1>
           <p className="text-sm text-muted-foreground">
             {branch.name} · website and POS tickets ·{" "}
-            {formatPakistanDateLabel(selectedDate, { day: "numeric", month: "long" })}
+            {formatOrderPeriodLabel(dateRange.from, dateRange.to)}
           </p>
         </div>
         <Button asChild>
@@ -217,7 +247,10 @@ function OrdersPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={channelFilter} onValueChange={(v) => setChannelFilter(v as ChannelFilter)}>
+        <Tabs
+          value={channelFilter}
+          onValueChange={(value) => updateSearch({ channel: value as ChannelFilter })}
+        >
           <TabsList>
             <TabsTrigger value="all">
               All channels <CountChip n={channelCounts.all} />
@@ -230,7 +263,10 @@ function OrdersPage() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+        <Tabs
+          value={statusFilter}
+          onValueChange={(value) => updateSearch({ status: value as StatusFilter })}
+        >
           <TabsList>
             <TabsTrigger value="fulfillment">
               To fulfill <CountChip n={statusCounts.fulfillment} />
@@ -249,22 +285,50 @@ function OrdersPage() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           <div className="min-w-[170px]">
             <Label
-              htmlFor="orders-date"
+              htmlFor="orders-from-date"
               className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
             >
-              Date
+              From
             </Label>
             <div className="relative">
               <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                id="orders-date"
+                id="orders-from-date"
                 type="date"
-                value={selectedDate}
+                value={dateRange.from}
                 onChange={(e) => {
-                  if (e.target.value) setSelectedDate(e.target.value);
+                  if (!e.target.value) return;
+                  updateSearch({
+                    from: e.target.value,
+                    to: e.target.value > dateRange.to ? e.target.value : dateRange.to,
+                  });
+                }}
+                className="pl-9"
+              />
+            </div>
+          </div>
+          <div className="min-w-[170px]">
+            <Label
+              htmlFor="orders-to-date"
+              className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+            >
+              To
+            </Label>
+            <div className="relative">
+              <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="orders-to-date"
+                type="date"
+                value={dateRange.to}
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  updateSearch({
+                    from: e.target.value < dateRange.from ? e.target.value : dateRange.from,
+                    to: e.target.value,
+                  });
                 }}
                 className="pl-9"
               />
@@ -275,7 +339,7 @@ function OrdersPage() {
               type="button"
               variant="outline"
               size="icon"
-              onClick={() => setSelectedDate(todayValue)}
+              onClick={() => updateSearch({ from: todayValue, to: todayValue })}
               aria-label="Show today's orders"
               title="Show today's orders"
             >
@@ -289,7 +353,7 @@ function OrdersPage() {
             className="w-64 pl-9"
             placeholder="Search order # / customer / phone / table"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => updateSearch({ q: e.target.value || undefined })}
           />
         </div>
       </div>
@@ -462,6 +526,22 @@ function OrderQueueCard({
       </CardContent>
     </Card>
   );
+}
+
+function normalizeOrderDateRange(from: string | undefined, to: string | undefined, fallback: string) {
+  const start = isDateInputValue(from) ? from : fallback;
+  const end = isDateInputValue(to) ? to : start;
+  return start <= end ? { from: start, to: end } : { from: end, to: start };
+}
+
+function isDateInputValue(value: string | undefined): value is string {
+  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function formatOrderPeriodLabel(from: string, to: string) {
+  const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "long" };
+  if (from === to) return formatPakistanDateLabel(from, options);
+  return `${formatPakistanDateLabel(from, options)} to ${formatPakistanDateLabel(to, options)}`;
 }
 
 function OrderDetails({ details }: { details: { address: string; notes: string } }) {

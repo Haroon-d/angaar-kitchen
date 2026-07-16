@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   Clock,
+  CreditCard,
   Crown,
   Gift,
   History,
@@ -12,6 +14,7 @@ import {
   MessageCircle,
   Phone,
   Plus,
+  RefreshCcw,
   Search,
   ShieldAlert,
   Star,
@@ -38,10 +41,18 @@ import {
   DialogContent,
   DialogFooter,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Sheet,
   SheetContent,
@@ -95,8 +106,24 @@ type CustomerOrderRow = {
   status: string;
   payment_status: string;
   grand_total: number | string;
+  amount_paid: number | string;
   created_at: string;
 };
+
+type CustomerDueOrderRow = Pick<
+  CustomerOrderRow,
+  "id" | "status" | "payment_status" | "grand_total" | "amount_paid" | "created_at"
+> & {
+  customer_id: string | null;
+};
+
+type CustomerDue = {
+  amount: number;
+  orders: number;
+  lastOrderAt: string | null;
+};
+
+type PaymentMethod = "cash" | "card" | "upi" | "wallet" | "other";
 
 type CustomerEventRow = {
   id: string;
@@ -142,11 +169,14 @@ function CustomersPage() {
   const qc = useQueryClient();
   const symbol = restaurant?.currency_symbol ?? "Rs";
   const canManage = hasPermission(roles, "customers:manage");
+  const canSettlePayments = hasPermission(roles, "pos:use") || hasPermission(roles, "orders:manage");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [segment, setSegment] = useState<CustomerSegment>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<CustomerRow | null>(null);
+  const [refreshingRecords, setRefreshingRecords] = useState(false);
+  const [clearingDues, setClearingDues] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
@@ -180,7 +210,40 @@ function CustomersPage() {
     },
   });
 
+  const cutoffQ = useQuery({
+    queryKey: ["customer-dues-cutoff", branch?.id],
+    enabled: !!branch?.id,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("branches")
+        .select("id, customer_dues_cutoff_at")
+        .eq("id", branch!.id)
+        .single();
+      if (error) throw error;
+      return data as { id: string; customer_dues_cutoff_at: string | null };
+    },
+  });
+  const duesCutoffAt = cutoffQ.data?.customer_dues_cutoff_at ?? null;
+
+  const duesQ = useQuery({
+    queryKey: ["customer-dues", branch?.id, duesCutoffAt],
+    enabled: !!branch?.id,
+    refetchInterval: 20000,
+    queryFn: async () => {
+      let query = supabase
+        .from("orders")
+        .select("id, customer_id, status, payment_status, grand_total, amount_paid, created_at")
+        .eq("branch_id", branch!.id)
+        .in("payment_status", ["pending", "partial"]);
+      if (duesCutoffAt) query = query.gte("created_at", duesCutoffAt);
+      const { data, error } = await query.order("created_at", { ascending: false }).limit(1000);
+      if (error) throw error;
+      return (data ?? []) as CustomerDueOrderRow[];
+    },
+  });
+
   const customers = useMemo(() => q.data ?? [], [q.data]);
+  const duesByCustomer = useMemo(() => buildCustomerDues(duesQ.data ?? []), [duesQ.data]);
   const selectedCustomer = customers.find((customer) => customer.id === selectedId) ?? null;
   const segmentCounts = useMemo(() => buildSegmentCounts(customers), [customers]);
   const insights = useMemo(() => buildCustomerInsights(customers), [customers]);
@@ -216,8 +279,63 @@ function CustomersPage() {
           customer.last_order_at && new Date(customer.last_order_at).getTime() < inactiveSince,
       ).length,
       points: customers.reduce((sum, customer) => sum + getLoyaltySnapshot(customer).points, 0),
+      pendingDue: Array.from(duesByCustomer.values()).reduce((sum, due) => sum + due.amount, 0),
+      creditCustomers: duesByCustomer.size,
     };
-  }, [customers]);
+  }, [customers, duesByCustomer]);
+
+  async function refreshCustomerRecords() {
+    if (!branch?.id) {
+      toast.error("Select a branch first.");
+      return;
+    }
+    setRefreshingRecords(true);
+    try {
+      const { data, error } = await supabase.rpc("backfill_customer_records", {
+        _branch_id: branch.id,
+      });
+      if (error) throw new Error(error.message);
+      const raw = data as
+        | { linked?: number; customers?: number; data?: { linked?: number; customers?: number } }
+        | null;
+      const result = raw?.data ?? raw;
+      toast.success(
+        `Customer records refreshed: ${result?.linked ?? 0} order${result?.linked === 1 ? "" : "s"} linked.`,
+      );
+      qc.invalidateQueries({ queryKey: ["customers-list"] });
+      qc.invalidateQueries({ queryKey: ["customer-dues"] });
+      qc.invalidateQueries({ queryKey: ["customer-orders"] });
+      qc.invalidateQueries({ queryKey: ["customer-events"] });
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not refresh customer records."));
+    } finally {
+      setRefreshingRecords(false);
+    }
+  }
+
+  async function clearPendingDuesTillNow() {
+    if (!branch?.id) {
+      toast.error("Select a branch first.");
+      return;
+    }
+    setClearingDues(true);
+    try {
+      const { data, error } = await supabase.rpc("clear_customer_dues_cutoff", {
+        _branch_id: branch.id,
+      });
+      if (error) throw new Error(error.message);
+      const raw = data as { cutoffAt?: string; data?: { cutoffAt?: string } } | null;
+      const cutoffAt = raw?.data?.cutoffAt ?? raw?.cutoffAt;
+      toast.success(`Pending payments will now track from ${formatDate(cutoffAt ?? new Date().toISOString())}.`);
+      qc.invalidateQueries({ queryKey: ["customer-dues-cutoff"] });
+      qc.invalidateQueries({ queryKey: ["customer-dues"] });
+      qc.invalidateQueries({ queryKey: ["customer-orders"] });
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not clear pending dues."));
+    } finally {
+      setClearingDues(false);
+    }
+  }
 
   if (!restaurant) {
     return <div className="p-8 text-center text-muted-foreground">Select a restaurant first.</div>;
@@ -243,22 +361,47 @@ function CustomersPage() {
             />
           </div>
           {canManage && (
-            <CustomerCreateDialog
-              restaurantId={restaurant.id}
-              branchId={branch?.id ?? null}
-              onCreated={(customer) => {
-                qc.invalidateQueries({ queryKey: ["customers-list"] });
-                setSelectedId(customer.id);
-              }}
-            />
+            <>
+              <Button variant="outline" onClick={refreshCustomerRecords} disabled={refreshingRecords}>
+                <RefreshCcw
+                  className={`mr-2 h-4 w-4 ${refreshingRecords ? "animate-spin" : ""}`}
+                />
+                Refresh records
+              </Button>
+              <CustomerCreateDialog
+                restaurantId={restaurant.id}
+                branchId={branch?.id ?? null}
+                onCreated={(customer) => {
+                  qc.invalidateQueries({ queryKey: ["customers-list"] });
+                  setSelectedId(customer.id);
+                }}
+              />
+            </>
           )}
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/45 p-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Pending payment tracking
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {duesCutoffAt
+              ? `Showing pending customer payments from ${formatDate(duesCutoffAt)} onward.`
+              : "Showing all pending customer payments."}
+          </p>
+        </div>
+        <Button type="button" variant="outline" onClick={clearPendingDuesTillNow} disabled={clearingDues}>
+          {clearingDues && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Clear till now
+        </Button>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Total customers" value={summary.total} />
-        <Metric label="VIP guests" value={summary.vip} />
-        <Metric label="Reward points" value={summary.points} />
+        <Metric label="Credit customers" value={summary.creditCustomers} />
+        <Metric label="Pending dues" value={formatMoney(summary.pendingDue, symbol)} />
         <Metric label="Blocked" value={summary.blocked} />
       </div>
 
@@ -304,6 +447,7 @@ function CustomersPage() {
               key={customer.id}
               customer={customer}
               symbol={symbol}
+              due={duesByCustomer.get(customer.id)}
               onOpen={() => setSelectedId(customer.id)}
             />
           ))}
@@ -314,12 +458,17 @@ function CustomersPage() {
         customer={selectedCustomer}
         customers={customers}
         canManage={canManage}
+        canSettlePayments={canSettlePayments}
         symbol={symbol}
+        due={selectedCustomer ? duesByCustomer.get(selectedCustomer.id) : undefined}
+        duesCutoffAt={duesCutoffAt}
         open={!!selectedCustomer}
         onOpenChange={(open) => !open && setSelectedId(null)}
         onEdit={() => setEditing(selectedCustomer)}
         onChanged={() => {
           qc.invalidateQueries({ queryKey: ["customers-list"] });
+          qc.invalidateQueries({ queryKey: ["customer-dues"] });
+          qc.invalidateQueries({ queryKey: ["customer-pending-orders"] });
           qc.invalidateQueries({ queryKey: ["customer-addresses"] });
           qc.invalidateQueries({ queryKey: ["customer-orders"] });
           qc.invalidateQueries({ queryKey: ["customer-events"] });
@@ -432,10 +581,12 @@ function CustomerCreateDialog({
 function CustomerCard({
   customer,
   symbol,
+  due,
   onOpen,
 }: {
   customer: CustomerRow;
   symbol: string;
+  due?: CustomerDue;
   onOpen: () => void;
 }) {
   const loyalty = getLoyaltySnapshot(customer);
@@ -456,7 +607,7 @@ function CustomerCard({
           <div className="mt-2 flex flex-wrap gap-3 text-sm text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Phone className="h-3.5 w-3.5" />
-              {customer.primary_phone}
+              {customer.primary_phone || "No phone saved"}
             </span>
             {customer.email && (
               <span className="inline-flex items-center gap-1">
@@ -474,6 +625,11 @@ function CustomerCard({
             {Number(customer.total_orders)} order
             {Number(customer.total_orders) === 1 ? "" : "s"}
           </div>
+          {due && due.amount > 0 && (
+            <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-300">
+              Due {formatMoney(due.amount, symbol)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -675,7 +831,10 @@ function CustomerSheet({
   customer,
   customers,
   canManage,
+  canSettlePayments,
   symbol,
+  due,
+  duesCutoffAt,
   open,
   onOpenChange,
   onEdit,
@@ -684,22 +843,46 @@ function CustomerSheet({
   customer: CustomerRow | null;
   customers: CustomerRow[];
   canManage: boolean;
+  canSettlePayments: boolean;
   symbol: string;
+  due?: CustomerDue;
+  duesCutoffAt?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onEdit: () => void;
   onChanged: () => void;
 }) {
+  const [paymentOrder, setPaymentOrder] = useState<CustomerOrderRow | null>(null);
   const ordersQ = useQuery({
     queryKey: ["customer-orders", customer?.id],
     enabled: !!customer?.id,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("orders")
-        .select("id, order_no, dining_type, status, payment_status, grand_total, created_at")
+        .select(
+          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at",
+        )
         .eq("customer_id", customer!.id)
         .order("created_at", { ascending: false })
         .limit(20);
+      if (error) throw error;
+      return (data ?? []) as CustomerOrderRow[];
+    },
+  });
+
+  const pendingOrdersQ = useQuery({
+    queryKey: ["customer-pending-orders", customer?.id, duesCutoffAt],
+    enabled: !!customer?.id,
+    queryFn: async () => {
+      let query = supabase
+        .from("orders")
+        .select(
+          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at",
+        )
+        .eq("customer_id", customer!.id)
+        .in("payment_status", ["pending", "partial"]);
+      if (duesCutoffAt) query = query.gte("created_at", duesCutoffAt);
+      const { data, error } = await query.order("created_at", { ascending: false }).limit(100);
       if (error) throw error;
       return (data ?? []) as CustomerOrderRow[];
     },
@@ -735,6 +918,14 @@ function CustomerSheet({
     },
   });
 
+  const pendingOrders = useMemo(
+    () =>
+      (pendingOrdersQ.data ?? []).filter(
+        (order) => outstandingAmount(order) > 0 && isCollectibleOrder(order),
+      ),
+    [pendingOrdersQ.data],
+  );
+
   if (!customer) return null;
 
   return (
@@ -744,7 +935,7 @@ function CustomerSheet({
           <SheetTitle className="font-display text-2xl">
             {customer.name || "Unnamed customer"}
           </SheetTitle>
-          <SheetDescription>{customer.primary_phone}</SheetDescription>
+          <SheetDescription>{customer.primary_phone || "No phone saved"}</SheetDescription>
         </SheetHeader>
 
         <div className="space-y-5">
@@ -752,29 +943,31 @@ function CustomerSheet({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 space-y-2">
                 <CustomerBadges customer={customer} />
-                <InfoLine icon={Phone} text={customer.primary_phone} />
+                <InfoLine icon={Phone} text={customer.primary_phone || "No phone saved"} />
                 {customer.email && <InfoLine icon={Mail} text={customer.email} />}
                 {customer.default_address && <InfoLine icon={MapPin} text={customer.default_address} />}
               </div>
               {canManage && (
                 <div className="flex shrink-0 gap-2">
-                  <Button variant="outline" size="sm" asChild>
-                    <a
-                      href={whatsappUrl(customer)}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={() => {
-                        void recordCustomerEvent(customer, "whatsapp_opened", {
-                          phone: customer.phone_normalized || normalizePhone(customer.primary_phone),
-                        })
-                          .then(onChanged)
-                          .catch(() => undefined);
-                      }}
-                    >
-                      <MessageCircle className="mr-2 h-4 w-4" />
-                      WhatsApp
-                    </a>
-                  </Button>
+                  {normalizePhone(customer.primary_phone) && (
+                    <Button variant="outline" size="sm" asChild>
+                      <a
+                        href={whatsappUrl(customer)}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => {
+                          void recordCustomerEvent(customer, "whatsapp_opened", {
+                            phone: customer.phone_normalized || normalizePhone(customer.primary_phone),
+                          })
+                            .then(onChanged)
+                            .catch(() => undefined);
+                        }}
+                      >
+                        <MessageCircle className="mr-2 h-4 w-4" />
+                        WhatsApp
+                      </a>
+                    </Button>
+                  )}
                   <Button variant="outline" size="sm" onClick={onEdit}>
                     Edit
                   </Button>
@@ -790,10 +983,74 @@ function CustomerSheet({
             <div className="mt-4 grid grid-cols-2 gap-3">
               <MiniStat label="Orders" value={Number(customer.total_orders).toLocaleString()} />
               <MiniStat label="Spent" value={formatMoney(customer.total_spent, symbol)} />
+              <MiniStat label="Pending due" value={formatMoney(due?.amount ?? 0, symbol)} />
+              <MiniStat label="Credit orders" value={String(due?.orders ?? 0)} />
               <MiniStat label="First order" value={formatDate(customer.first_order_at)} />
               <MiniStat label="Last order" value={formatDate(customer.last_order_at)} />
             </div>
           </div>
+
+          <section className="space-y-3 rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="flex items-center gap-2 text-sm font-semibold">
+                <CreditCard className="h-4 w-4 text-amber-300" />
+                Pending payments
+              </h3>
+              <Badge variant={pendingOrders.length ? "outline" : "secondary"}>
+                {pendingOrders.length
+                  ? `${formatMoney(pendingOrders.reduce((sum, order) => sum + outstandingAmount(order), 0), symbol)} due`
+                  : "Clear"}
+              </Badge>
+            </div>
+            {pendingOrdersQ.isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            ) : pendingOrders.length ? (
+              <div className="space-y-2">
+                {pendingOrders.map((order) => (
+                  <div key={order.id} className="rounded-lg border border-border bg-background/45 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm">{order.order_no}</span>
+                          <Badge variant="outline" className="capitalize">
+                            {order.status}
+                          </Badge>
+                          <Badge variant="secondary" className="capitalize">
+                            {order.payment_status}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 text-xs capitalize text-muted-foreground">
+                          {order.dining_type.replace("_", " ")} - {formatDate(order.created_at)}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono text-sm text-amber-300">
+                          {formatMoney(outstandingAmount(order), symbol)}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          of {formatMoney(order.grand_total, symbol)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap justify-end gap-2">
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/receipt/${order.id}`}>Open receipt</a>
+                      </Button>
+                      {canSettlePayments && (
+                        <Button size="sm" onClick={() => setPaymentOrder(order)}>
+                          Record payment
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                No pending dues for this customer.
+              </div>
+            )}
+          </section>
 
           <LoyaltyPanel customer={customer} symbol={symbol} canManage={canManage} onChanged={onChanged} />
 
@@ -868,6 +1125,11 @@ function CustomerSheet({
                       <div className="mt-1 text-xs capitalize text-muted-foreground">
                         {order.dining_type.replace("_", " ")} - {formatDate(order.created_at)}
                       </div>
+                      {outstandingAmount(order) > 0 && isCollectibleOrder(order) && (
+                        <div className="mt-1 text-xs text-amber-300">
+                          Due {formatMoney(outstandingAmount(order), symbol)}
+                        </div>
+                      )}
                     </div>
                     <div className="font-mono text-sm text-primary">
                       {formatMoney(order.grand_total, symbol)}
@@ -912,6 +1174,18 @@ function CustomerSheet({
             )}
           </section>
         </div>
+        <CustomerPaymentDialog
+          order={paymentOrder}
+          symbol={symbol}
+          open={!!paymentOrder}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setPaymentOrder(null);
+          }}
+          onRecorded={() => {
+            setPaymentOrder(null);
+            onChanged();
+          }}
+        />
       </SheetContent>
     </Sheet>
   );
@@ -1229,6 +1503,150 @@ function CustomerFormFields({
   );
 }
 
+function CustomerPaymentDialog({
+  order,
+  symbol,
+  open,
+  onOpenChange,
+  onRecorded,
+}: {
+  order: CustomerOrderRow | null;
+  symbol: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRecorded: () => void;
+}) {
+  const remaining = order ? outstandingAmount(order) : 0;
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [amount, setAmount] = useState("");
+  const [reference, setReference] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open && order) {
+      setMethod("cash");
+      setAmount(outstandingAmount(order).toFixed(2));
+      setReference("");
+    }
+  }, [open, order]);
+
+  async function submit() {
+    if (!order) return;
+    const paymentAmount = Number(amount);
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      toast.error("Enter a valid payment amount.");
+      return;
+    }
+    if (paymentAmount > remaining) {
+      toast.error("Payment cannot be more than the pending balance from this profile.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.rpc("record_payment", {
+        _order_id: order.id,
+        _method: method,
+        _amount: paymentAmount,
+        _reference: reference || "Customer profile settlement",
+      });
+      if (error) throw new Error(error.message);
+      toast.success(`Payment recorded for ${order.order_no}`);
+      onRecorded();
+    } catch (error) {
+      toast.error(errorMessage(error, "Could not record payment."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Record customer payment</DialogTitle>
+          <DialogDescription>
+            This settles the payment balance for the selected order. Delivery and kitchen status stay unchanged.
+          </DialogDescription>
+        </DialogHeader>
+        {order && (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-background/40 p-3 text-sm">
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Order</span>
+                <span className="font-mono">{order.order_no}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Grand total</span>
+                <span className="font-mono">{formatMoney(order.grand_total, symbol)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Already paid</span>
+                <span className="font-mono">{formatMoney(order.amount_paid, symbol)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Pending</span>
+                <span className="font-mono text-amber-300">{formatMoney(remaining, symbol)}</span>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Method">
+                <Select value={method} onValueChange={(value: PaymentMethod) => setMethod(value)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="upi">UPI</SelectItem>
+                    <SelectItem value="wallet">Wallet</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Amount">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  className="font-mono"
+                />
+              </Field>
+            </div>
+
+            <Field label="Reference">
+              <Input
+                value={reference}
+                onChange={(event) => setReference(event.target.value)}
+                placeholder="Optional note, transaction ID, or staff note"
+              />
+            </Field>
+
+            {Number(amount) > remaining && (
+              <p className="flex items-center gap-2 text-sm text-amber-300">
+                <AlertCircle className="h-4 w-4" />
+                Use the receipt screen if you need to handle overpayment or change return.
+              </p>
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting || !order}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Record payment
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AddressDialog({ customer, onSaved }: { customer: CustomerRow; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1542,6 +1960,39 @@ function emptyCustomerForm(): CustomerForm {
   };
 }
 
+function buildCustomerDues(orders: CustomerDueOrderRow[]) {
+  const dues = new Map<string, CustomerDue>();
+  for (const order of orders) {
+    if (!order.customer_id || !isCollectibleOrder(order)) continue;
+    const amount = outstandingAmount(order);
+    if (amount <= 0) continue;
+    const current = dues.get(order.customer_id) ?? {
+      amount: 0,
+      orders: 0,
+      lastOrderAt: null,
+    };
+    current.amount += amount;
+    current.orders += 1;
+    if (
+      !current.lastOrderAt ||
+      new Date(order.created_at).getTime() > new Date(current.lastOrderAt).getTime()
+    ) {
+      current.lastOrderAt = order.created_at;
+    }
+    dues.set(order.customer_id, current);
+  }
+  return dues;
+}
+
+function outstandingAmount(order: Pick<CustomerOrderRow, "grand_total" | "amount_paid">) {
+  return Math.max(0, Number(order.grand_total || 0) - Number(order.amount_paid || 0));
+}
+
+function isCollectibleOrder(order: Pick<CustomerOrderRow, "status" | "payment_status">) {
+  if (order.payment_status === "paid" || order.payment_status === "refunded") return false;
+  return !["cancelled", "voided", "refunded"].includes(order.status);
+}
+
 function buildSegmentCounts(customers: CustomerRow[]) {
   return SEGMENTS.reduce(
     (counts, item) => {
@@ -1625,6 +2076,10 @@ function normalizePhone(value: string) {
 function nullable(value: string) {
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function duplicateCandidateScore(target: CustomerRow, candidate: CustomerRow) {

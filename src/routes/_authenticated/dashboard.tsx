@@ -29,8 +29,8 @@ import {
   formatMoney,
   formatDate,
   formatPakistanDateLabel,
-  pakistanDateInputValue,
-  pakistanDateRangeUtcBounds,
+  businessDateInputValue,
+  businessDateRangeUtcBounds,
 } from "@/lib/format";
 import { useState } from "react";
 
@@ -62,15 +62,17 @@ function DashboardPage() {
   const symbol = restaurant?.currency_symbol ?? "Rs";
   const nav = useNavigate();
 
-  const todayValue = pakistanDateInputValue();
+  const businessDayStart =
+    ((branch as { business_day_start_time?: string } | null)?.business_day_start_time ?? "10:00").slice(0, 5);
+  const todayValue = businessDateInputValue(businessDayStart);
   const [startDate, setStartDate] = useState<string>(todayValue);
   const [endDate, setEndDate] = useState<string>(todayValue);
 
   const todayQ = useQuery({
-    queryKey: ["dashboard-today", branch?.id, startDate, endDate],
+    queryKey: ["dashboard-today", branch?.id, startDate, endDate, businessDayStart],
     enabled: !!branch && (!postgresEnabled || !!session),
     queryFn: async () => {
-      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const bounds = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
       if (postgresEnabled) {
         return getDashboardSummaryPostgres({
           data: {
@@ -152,10 +154,10 @@ function DashboardPage() {
     },
   });
   const usageQ = useQuery({
-    queryKey: ["item-usage-report", branch?.id, startDate, endDate],
+    queryKey: ["item-usage-report", branch?.id, startDate, endDate, businessDayStart],
     enabled: !!branch && !postgresEnabled && (admin || manager),
     queryFn: async () => {
-      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const bounds = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
       const rpcCall = supabase.rpc.bind(supabase) as unknown as (
         fn: string,
         args: Record<string, unknown>,

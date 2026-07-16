@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  Calendar,
+  Banknote,
+  ClipboardCheck,
   ClipboardList,
   Eye,
+  LockKeyhole,
   Loader2,
   Package,
   Pencil,
@@ -52,12 +54,28 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  baseUnitLabel,
+  costFromBase as convertCostFromBase,
+  costToBase as convertCostToBase,
+  defaultOperationalUnit,
+  isPackagingUnit,
+  quantityFromBase as convertQuantityFromBase,
+  quantityToBase as convertQuantityToBase,
+  shortUnitLabel,
+  unitDefinition,
+  unitFactorToBase,
+  unitsForBase,
+  type InventoryBaseUnit,
+  type InventoryUnitCode,
+} from "@/lib/inventory-units";
 
 export const Route = createFileRoute("/_authenticated/inventory")({ component: InventoryPage });
 
-type BaseUnit = "g" | "ml" | "piece";
-type EntryUnit = "g" | "kg" | "ml" | "l" | "piece";
-type PurchaseUnit = "g" | "kg" | "ml" | "l" | "piece" | "pack";
+type BaseUnit = InventoryBaseUnit;
+type EntryUnit = InventoryUnitCode;
+type PurchaseUnit = InventoryUnitCode;
+type RecipeMode = "per_item" | "batch";
 type MovementType = "adjustment" | "waste" | "correction" | "staff_meal" | "damage";
 type AdjustmentReason = "waste" | "damage" | "correction" | "staff_meal" | "other";
 
@@ -73,7 +91,7 @@ function InventoryPage() {
   }
 
   return (
-    <div className="p-4 sm:p-8 space-y-6">
+    <div className="min-w-0 space-y-6 overflow-x-hidden p-4 sm:p-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-3xl">Inventory</h1>
@@ -101,6 +119,18 @@ function InventoryPage() {
             <Scale className="mr-2 h-4 w-4" />
             Adjustments
           </TabsTrigger>
+          <TabsTrigger value="counts">
+            <ClipboardCheck className="mr-2 h-4 w-4" />
+            Counts
+          </TabsTrigger>
+          <TabsTrigger value="suppliers">
+            <Banknote className="mr-2 h-4 w-4" />
+            Suppliers
+          </TabsTrigger>
+          <TabsTrigger value="control">
+            <LockKeyhole className="mr-2 h-4 w-4" />
+            Control
+          </TabsTrigger>
           <TabsTrigger value="reports">
             <ClipboardList className="mr-2 h-4 w-4" />
             Reports
@@ -122,6 +152,20 @@ function InventoryPage() {
         </TabsContent>
         <TabsContent value="adjustments" className="mt-6">
           <AdjustmentsTab branchId={branch.id} manager={manager} />
+        </TabsContent>
+        <TabsContent value="counts" className="mt-6">
+          <CountsTab branchId={branch.id} manager={manager} symbol={restaurant.currency_symbol} />
+        </TabsContent>
+        <TabsContent value="suppliers" className="mt-6">
+          <SupplierLedgerTab
+            branchId={branch.id}
+            restaurantId={restaurant.id}
+            manager={manager}
+            symbol={restaurant.currency_symbol}
+          />
+        </TabsContent>
+        <TabsContent value="control" className="mt-6">
+          <InventoryControlTab branchId={branch.id} manager={manager} />
         </TabsContent>
         <TabsContent value="reports" className="mt-6">
           <ReportsTab branchId={branch.id} symbol={restaurant.currency_symbol} />
@@ -145,56 +189,106 @@ function useInventoryItems(branchId: string, activeOnly = false) {
 }
 
 function unitLabel(unit: BaseUnit) {
-  if (unit === "g") return "g";
-  if (unit === "ml") return "ml";
-  return "pc";
+  return baseUnitLabel(unit);
 }
 
 function preferredEntryUnit(unit: BaseUnit): EntryUnit {
-  if (unit === "g") return "kg";
-  if (unit === "ml") return "l";
-  return "piece";
+  return defaultOperationalUnit(unit);
 }
 
 function entryUnitsForBase(unit: BaseUnit): EntryUnit[] {
-  if (unit === "g") return ["kg", "g"];
-  if (unit === "ml") return ["l", "ml"];
-  return ["piece"];
+  return unitsForBase(unit).map((entry) => entry.code);
 }
 
-function quantityFromBase(qty: number | string, unit: BaseUnit, entryUnit: EntryUnit) {
+function unitOptionLabel(unit: EntryUnit) {
+  return unitDefinition(unit)?.label ?? unit;
+}
+
+function factorForUnit(
+  baseUnit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  return unitFactorToBase(baseUnit, entryUnit, factor);
+}
+
+function factorInputValue(
+  baseUnit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  if (isPackagingUnit(entryUnit)) {
+    const n = Number(factor);
+    return Number.isFinite(n) && n > 0 ? String(n) : "";
+  }
+  return String(factorForUnit(baseUnit, entryUnit));
+}
+
+function displayUnitForItem(item: any): EntryUnit {
+  return (item?.display_unit || preferredEntryUnit(item?.base_unit ?? "g")) as EntryUnit;
+}
+
+function displayFactorForItem(item: any, unit = displayUnitForItem(item)) {
+  return item?.display_unit_factor ?? factorInputValue(item?.base_unit ?? "g", unit);
+}
+
+function quantityFromBase(
+  qty: number | string,
+  unit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  return convertQuantityFromBase(qty, unit, entryUnit, factor);
+}
+
+function quantityToBase(
+  qty: number,
+  unit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  return convertQuantityToBase(qty, unit, entryUnit, factor);
+}
+
+function costFromBase(
+  cost: number | string,
+  unit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  return convertCostFromBase(cost, unit, entryUnit, factor);
+}
+
+function costToBase(
+  cost: number,
+  unit: BaseUnit,
+  entryUnit: EntryUnit,
+  factor?: number | string | null,
+) {
+  return convertCostToBase(cost, unit, entryUnit, factor);
+}
+
+function costLabel(
+  cost: number | string,
+  unit: BaseUnit,
+  symbol: string,
+  displayUnit?: EntryUnit | null,
+  displayFactor?: number | string | null,
+) {
+  const entryUnit = displayUnit ?? preferredEntryUnit(unit);
+  return `${formatMoney(costFromBase(cost, unit, entryUnit, displayFactor), symbol)} / ${shortUnitLabel(entryUnit)}`;
+}
+
+function qtyLabel(
+  qty: number | string,
+  unit: BaseUnit,
+  displayUnit?: EntryUnit | null,
+  displayFactor?: number | string | null,
+) {
   const n = Number(qty || 0);
-  if (unit === "g" && entryUnit === "kg") return n / 1000;
-  if (unit === "ml" && entryUnit === "l") return n / 1000;
-  return n;
-}
-
-function quantityToBase(qty: number, unit: BaseUnit, entryUnit: EntryUnit) {
-  if (unit === "g" && entryUnit === "kg") return qty * 1000;
-  if (unit === "ml" && entryUnit === "l") return qty * 1000;
-  return qty;
-}
-
-function costFromBase(cost: number | string, unit: BaseUnit, entryUnit: EntryUnit) {
-  const n = Number(cost || 0);
-  if (unit === "g" && entryUnit === "kg") return n * 1000;
-  if (unit === "ml" && entryUnit === "l") return n * 1000;
-  return n;
-}
-
-function costToBase(cost: number, unit: BaseUnit, entryUnit: EntryUnit) {
-  if (unit === "g" && entryUnit === "kg") return cost / 1000;
-  if (unit === "ml" && entryUnit === "l") return cost / 1000;
-  return cost;
-}
-
-function costLabel(cost: number | string, unit: BaseUnit, symbol: string) {
-  const entryUnit = preferredEntryUnit(unit);
-  return `${formatMoney(costFromBase(cost, unit, entryUnit), symbol)} / ${entryUnit === "l" ? "L" : entryUnit}`;
-}
-
-function qtyLabel(qty: number | string, unit: BaseUnit) {
-  const n = Number(qty || 0);
+  if (displayUnit) {
+    return `${quantityFromBase(n, unit, displayUnit, displayFactor).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(displayUnit)}`;
+  }
   if (unit === "g" && Math.abs(n) >= 1000)
     return `${(n / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} kg`;
   if (unit === "ml" && Math.abs(n) >= 1000)
@@ -327,13 +421,29 @@ function StockTab({
                           </div>
                         </td>
                         <td className="pr-4 font-mono">
-                          {qtyLabel(item.current_qty, item.base_unit)}
+                          {qtyLabel(
+                            item.current_qty,
+                            item.base_unit,
+                            item.display_unit,
+                            item.display_unit_factor,
+                          )}
                         </td>
                         <td className="pr-4 font-mono">
-                          {qtyLabel(item.reorder_level, item.base_unit)}
+                          {qtyLabel(
+                            item.reorder_level,
+                            item.base_unit,
+                            item.display_unit,
+                            item.display_unit_factor,
+                          )}
                         </td>
                         <td className="pr-4 font-mono">
-                          {costLabel(item.average_cost, item.base_unit, symbol)}
+                          {costLabel(
+                            item.average_cost,
+                            item.base_unit,
+                            symbol,
+                            item.display_unit,
+                            item.display_unit_factor,
+                          )}
                         </td>
                         <td className="pr-4 font-mono">
                           {formatMoney(
@@ -388,6 +498,8 @@ const IngredientSchema = z.object({
   name: z.string().min(1).max(100),
   category: z.string().max(80).optional().nullable(),
   base_unit: z.enum(["g", "ml", "piece"]),
+  display_unit: z.string().min(1).max(30),
+  display_unit_factor: z.number().positive(),
   current_qty: z.number(),
   reorder_level: z.number().min(0),
   average_cost: z.number().min(0),
@@ -399,20 +511,22 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const initialBaseUnit = (item?.base_unit ?? "g") as BaseUnit;
-  const initialEntryUnit = preferredEntryUnit(initialBaseUnit);
+  const initialEntryUnit = item ? displayUnitForItem(item) : preferredEntryUnit(initialBaseUnit);
+  const initialFactor = displayFactorForItem(item, initialEntryUnit);
   const [f, setF] = useState({
     name: item?.name ?? "",
     category: item?.category ?? "",
     base_unit: initialBaseUnit,
     entry_unit: initialEntryUnit,
+    conversion_factor: initialFactor,
     current_qty: String(
-      quantityFromBase(item?.current_qty ?? "0", initialBaseUnit, initialEntryUnit),
+      quantityFromBase(item?.current_qty ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
     ),
     reorder_level: String(
-      quantityFromBase(item?.reorder_level ?? "0", initialBaseUnit, initialEntryUnit),
+      quantityFromBase(item?.reorder_level ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
     ),
     average_cost: String(
-      costFromBase(item?.average_cost ?? "0", initialBaseUnit, initialEntryUnit),
+      costFromBase(item?.average_cost ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
     ),
     is_active: item?.is_active ?? true,
   });
@@ -422,9 +536,26 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
     const parsed = IngredientSchema.safeParse({
       ...f,
       category: f.category || null,
-      current_qty: quantityToBase(Number(f.current_qty), f.base_unit, f.entry_unit),
-      reorder_level: quantityToBase(Number(f.reorder_level), f.base_unit, f.entry_unit),
-      average_cost: costToBase(Number(f.average_cost), f.base_unit, f.entry_unit),
+      display_unit: f.entry_unit,
+      display_unit_factor: factorForUnit(f.base_unit, f.entry_unit, f.conversion_factor),
+      current_qty: quantityToBase(
+        Number(f.current_qty),
+        f.base_unit,
+        f.entry_unit,
+        f.conversion_factor,
+      ),
+      reorder_level: quantityToBase(
+        Number(f.reorder_level),
+        f.base_unit,
+        f.entry_unit,
+        f.conversion_factor,
+      ),
+      average_cost: costToBase(
+        Number(f.average_cost),
+        f.base_unit,
+        f.entry_unit,
+        f.conversion_factor,
+      ),
     });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0].message);
@@ -487,10 +618,12 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
                 value={f.base_unit}
                 onValueChange={(v: BaseUnit) => {
                   const entryUnit = preferredEntryUnit(v);
+                  const conversionFactor = factorInputValue(v, entryUnit);
                   setF({
                     ...f,
                     base_unit: v,
                     entry_unit: entryUnit,
+                    conversion_factor: conversionFactor,
                     current_qty: "0",
                     reorder_level: "0",
                     average_cost: "0",
@@ -514,28 +647,34 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
                 value={f.entry_unit}
                 onValueChange={(v: EntryUnit) => {
                   const oldUnit = f.entry_unit;
+                  const oldFactor = f.conversion_factor;
+                  const newFactor = factorInputValue(f.base_unit, v, oldFactor);
                   setF({
                     ...f,
                     entry_unit: v,
+                    conversion_factor: newFactor,
                     current_qty: String(
                       quantityFromBase(
-                        quantityToBase(Number(f.current_qty), f.base_unit, oldUnit),
+                        quantityToBase(Number(f.current_qty), f.base_unit, oldUnit, oldFactor),
                         f.base_unit,
                         v,
+                        newFactor,
                       ),
                     ),
                     reorder_level: String(
                       quantityFromBase(
-                        quantityToBase(Number(f.reorder_level), f.base_unit, oldUnit),
+                        quantityToBase(Number(f.reorder_level), f.base_unit, oldUnit, oldFactor),
                         f.base_unit,
                         v,
+                        newFactor,
                       ),
                     ),
                     average_cost: String(
                       costFromBase(
-                        costToBase(Number(f.average_cost), f.base_unit, oldUnit),
+                        costToBase(Number(f.average_cost), f.base_unit, oldUnit, oldFactor),
                         f.base_unit,
                         v,
+                        newFactor,
                       ),
                     ),
                   });
@@ -547,22 +686,29 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
                 <SelectContent>
                   {entryUnitsForBase(f.base_unit).map((u) => (
                     <SelectItem key={u} value={u}>
-                      {u === "l"
-                        ? "Liters (L)"
-                        : u === "kg"
-                          ? "Kilograms (kg)"
-                          : u === "g"
-                            ? "Grams (g)"
-                            : u === "ml"
-                              ? "Milliliters (ml)"
-                              : "Pieces"}
+                      {unitOptionLabel(u)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+            {isPackagingUnit(f.entry_unit) && (
+              <div className="space-y-1.5">
+                <Label>
+                  1 {shortUnitLabel(f.entry_unit)} contains ({unitLabel(f.base_unit)})
+                </Label>
+                <Input
+                  type="number"
+                  step="0.001"
+                  min="0.001"
+                  value={f.conversion_factor}
+                  onChange={(e) => setF({ ...f, conversion_factor: e.target.value })}
+                  placeholder={`e.g. 5000 ${unitLabel(f.base_unit)}`}
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
-              <Label>Current qty ({f.entry_unit === "l" ? "L" : f.entry_unit})</Label>
+              <Label>Current qty ({shortUnitLabel(f.entry_unit)})</Label>
               <Input
                 type="number"
                 step="0.001"
@@ -571,7 +717,7 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Reorder level ({f.entry_unit === "l" ? "L" : f.entry_unit})</Label>
+              <Label>Reorder level ({shortUnitLabel(f.entry_unit)})</Label>
               <Input
                 type="number"
                 step="0.001"
@@ -580,7 +726,7 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Avg cost / {f.entry_unit === "l" ? "L" : f.entry_unit}</Label>
+              <Label>Avg cost / {shortUnitLabel(f.entry_unit)}</Label>
               <Input
                 type="number"
                 step="0.000001"
@@ -630,12 +776,26 @@ function PurchasesTab({
       return data ?? [];
     },
   });
+  const financeAccountsQ = useQuery({
+    queryKey: ["finance-accounts", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_accounts")
+        .select("*")
+        .eq("branch_id", branchId)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("name", { ascending: true });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
   const purchasesQ = useQuery({
     queryKey: ["inventory-purchases", branchId],
     queryFn: async () => {
       const { data, error } = await db
         .from("inventory_purchases")
-        .select("*, suppliers(name)")
+        .select("*, suppliers(name), finance_accounts(name)")
         .eq("branch_id", branchId)
         .order("purchase_date", { ascending: false })
         .limit(40);
@@ -658,78 +818,12 @@ function PurchasesTab({
     qc.invalidateQueries({ queryKey: ["inventory-purchases"] });
     qc.invalidateQueries({ queryKey: ["inventory-movements"] });
     qc.invalidateQueries({ queryKey: ["inventory-reports"] });
+    qc.invalidateQueries({ queryKey: ["finance-movements"] });
   }
 
   async function deletePurchase(id: string) {
-    if (
-      !window.confirm(
-        "Delete this purchase? Stock will be reversed and the ledger will keep a correction entry.",
-      )
-    )
-      return;
-
-    try {
-      // Fetch the purchase and its lines
-      const { data: purchase, error: purchaseError } = await db
-        .from("inventory_purchases")
-        .select("*")
-        .eq("id", id)
-        .single();
-
-      if (purchaseError || !purchase) {
-        toast.error("Purchase not found");
-        return;
-      }
-
-      const { data: lines, error: linesError } = await db
-        .from("inventory_purchase_lines")
-        .select("*")
-        .eq("purchase_id", id);
-
-      if (linesError) throw linesError;
-
-      // Reverse stock for each line
-      for (const line of lines || []) {
-        const { data: item } = await db
-          .from("inventory_items")
-          .select("current_qty")
-          .eq("id", line.inventory_item_id)
-          .single();
-
-        if (item) {
-          const newQty = Number(item.current_qty) - Number(line.base_quantity);
-
-          // Update inventory
-          await db
-            .from("inventory_items")
-            .update({ current_qty: newQty })
-            .eq("id", line.inventory_item_id);
-
-          // Create correction movement
-          await db.from("inventory_movements").insert({
-            branch_id: purchase.branch_id,
-            inventory_item_id: line.inventory_item_id,
-            movement_type: "correction",
-            reason: "correction",
-            quantity_delta: -line.base_quantity,
-            before_qty: item.current_qty,
-            after_qty: newQty,
-            unit_cost: line.unit_cost,
-            related_purchase_id: id,
-            note: `Purchase deleted: ${purchase.invoice_no || ""}`,
-          });
-        }
-      }
-
-      // Delete the purchase lines and purchase
-      await db.from("inventory_purchase_lines").delete().eq("purchase_id", id);
-      await db.from("inventory_purchases").delete().eq("id", id);
-
-      toast.success("Purchase deleted and stock reversed");
-      refreshPurchases();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete purchase");
-    }
+    void id;
+    toast.error("Purchases are ledger history. Use Adjustments or Physical Counts to correct stock.");
   }
 
   return (
@@ -755,6 +849,7 @@ function PurchasesTab({
                     symbol={symbol}
                     items={itemsQ.data ?? []}
                     suppliers={suppliersQ.data ?? []}
+                    financeAccounts={financeAccountsQ.data ?? []}
                     onSaved={refreshPurchases}
                     onDelete={() => deletePurchase(p.id)}
                     trigger={
@@ -766,6 +861,12 @@ function PurchasesTab({
                           <div className="truncate font-medium">{p.invoice_no || "Purchase"}</div>
                           <div className="truncate text-xs text-muted-foreground">
                             {p.suppliers?.name || "No supplier"} - {formatDate(p.purchase_date)}
+                          </div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            Paid from{" "}
+                            {financeAccountsQ.data?.find(
+                              (account: any) => account.id === p.finance_account_id,
+                            )?.name || "Unpaid / supplier credit"}
                           </div>
                         </div>
                         <div className="shrink-0 whitespace-nowrap font-mono text-primary">
@@ -815,6 +916,7 @@ function PurchasesTab({
               branchId={branchId}
               items={itemsQ.data ?? []}
               suppliers={suppliersQ.data ?? []}
+              financeAccounts={financeAccountsQ.data ?? []}
               onAddSupplier={addSupplier}
               onSaved={refreshPurchases}
             />
@@ -844,7 +946,9 @@ function usePurchaseDetails(purchaseId: string, enabled = true) {
     queryFn: async () => {
       const { data, error } = await db
         .from("inventory_purchases")
-        .select("*, suppliers(name), inventory_purchase_lines(*, inventory_items(name, base_unit))")
+        .select(
+          "*, suppliers(name), finance_accounts(name), inventory_purchase_lines(*, inventory_items(name, base_unit, display_unit, display_unit_factor))",
+        )
         .eq("id", purchaseId)
         .single();
       if (error) throw error;
@@ -859,6 +963,7 @@ function PurchaseDetailsDialog(props: {
   symbol: string;
   items: any[];
   suppliers: any[];
+  financeAccounts: any[];
   trigger: React.ReactNode;
   onSaved: () => void;
   onDelete: () => Promise<void> | void;
@@ -898,6 +1003,14 @@ function PurchaseDetailsDialog(props: {
                   {formatMoney(purchase.total, props.symbol)}
                 </div>
               </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Payment source</div>
+                <div className="font-medium">
+                  {props.financeAccounts.find(
+                    (account: any) => account.id === purchase.finance_account_id,
+                  )?.name || "Unpaid / supplier credit"}
+                </div>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="min-w-[720px] w-full text-sm">
@@ -915,7 +1028,7 @@ function PurchaseDetailsDialog(props: {
                     <tr key={line.id} className="border-t border-border">
                       <td className="py-2 pr-4">{line.inventory_items?.name}</td>
                       <td className="pr-4 font-mono">
-                        {Number(line.quantity).toLocaleString()} {line.unit}
+                        {Number(line.quantity).toLocaleString()} {shortUnitLabel(line.unit)}
                       </td>
                       <td className="pr-4 font-mono">
                         {qtyLabel(line.base_quantity, line.inventory_items?.base_unit)}
@@ -982,45 +1095,25 @@ function PurchaseEditDialog(props: {
   onSaved: () => void;
   trigger?: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const q = usePurchaseDetails(props.purchaseId, open);
-
+  const explainLockedPurchase = () =>
+    toast.error("Purchases are locked ledger history. Correct stock through Counts or Adjustments.");
+  if (props.trigger) {
+    return (
+      <span className="inline-flex" onClick={explainLockedPurchase}>
+        {props.trigger}
+      </span>
+    );
+  }
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        {props.trigger ?? (
-          <Button type="button" variant="ghost" size="icon" aria-label="Edit purchase">
-            <Pencil className="h-4 w-4" />
-          </Button>
-        )}
-      </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-3xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit purchase</DialogTitle>
-        </DialogHeader>
-        {q.isLoading ? (
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-        ) : q.data ? (
-          <PurchaseForm
-            key={q.data.id}
-            branchId={q.data.branch_id}
-            items={props.items}
-            suppliers={props.suppliers}
-            purchase={q.data}
-            onAddSupplier={async () =>
-              toast.error("Add new suppliers from the record purchase form")
-            }
-            onSaved={() => {
-              props.onSaved();
-              q.refetch();
-              setOpen(false);
-            }}
-          />
-        ) : (
-          <div className="py-10 text-center text-muted-foreground">Purchase not found.</div>
-        )}
-      </DialogContent>
-    </Dialog>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      onClick={explainLockedPurchase}
+      aria-label="Purchase editing is locked"
+    >
+      <Pencil className="h-4 w-4" />
+    </Button>
   );
 }
 
@@ -1028,6 +1121,7 @@ function PurchaseForm(props: {
   branchId: string;
   items: any[];
   suppliers: any[];
+  financeAccounts: any[];
   onAddSupplier: (name: string) => Promise<void>;
   onSaved: () => void;
   purchase?: any;
@@ -1037,21 +1131,43 @@ function PurchaseForm(props: {
   const [newSupplier, setNewSupplier] = useState("");
   const [invoice, setInvoice] = useState(props.purchase?.invoice_no ?? "");
   const [date, setDate] = useState(props.purchase?.purchase_date ?? pakistanDateInputValue());
+  const [financeAccount, setFinanceAccount] = useState(
+    props.purchase?.finance_account_id ??
+      props.financeAccounts.find((account) => account.account_type === "counter_cash")?.id ??
+      "none",
+  );
   const [notes, setNotes] = useState(props.purchase?.notes ?? "");
   const [lines, setLines] = useState<PurchaseLine[]>(
     purchaseLines.length
       ? purchaseLines.map((line: any) => ({
           inventory_item_id: line.inventory_item_id,
           quantity: String(line.quantity ?? "1"),
-          unit: line.unit,
-          pack_size: String(line.pack_size ?? ""),
+          unit: (line.unit || "kg") as PurchaseUnit,
+          pack_size: String(line.conversion_factor ?? line.pack_size ?? ""),
           unit_cost: String(line.unit_cost ?? "0"),
         }))
       : [{ inventory_item_id: "", quantity: "1", unit: "kg", pack_size: "", unit_cost: "0" }],
   );
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (props.purchase || financeAccount !== "none") return;
+    const counterAccount = props.financeAccounts.find(
+      (account) => account.account_type === "counter_cash",
+    );
+    if (counterAccount) setFinanceAccount(counterAccount.id);
+  }, [financeAccount, props.financeAccounts, props.purchase]);
+
   const itemMap = new Map(props.items.map((i) => [i.id, i]));
+  function purchaseUnitForItem(item: any): PurchaseUnit {
+    return displayUnitForItem(item) as PurchaseUnit;
+  }
+  function purchaseFactorForItem(item: any, unit: PurchaseUnit) {
+    return factorInputValue(item.base_unit, unit, item.display_unit_factor);
+  }
+  function purchaseBaseQty(item: any, line: PurchaseLine) {
+    return quantityToBase(Number(line.quantity), item.base_unit, line.unit, line.pack_size);
+  }
   function addLine() {
     setLines((ls) => [
       ...ls,
@@ -1067,6 +1183,10 @@ function PurchaseForm(props: {
     const clean = lines.filter((l) => l.inventory_item_id && Number(l.quantity) > 0);
     if (clean.length === 0) {
       toast.error("Add at least one purchase line");
+      return;
+    }
+    if (financeAccount === "none") {
+      toast.error("Select where this purchase was paid from.");
       return;
     }
     setLoading(true);
@@ -1109,6 +1229,7 @@ function PurchaseForm(props: {
         // Update purchase header
         const payload = {
           supplier_id: supplier === "none" ? null : supplier,
+          finance_account_id: financeAccount,
           invoice_no: invoice || null,
           purchase_date: date,
           notes: notes || null,
@@ -1122,13 +1243,8 @@ function PurchaseForm(props: {
           const item = props.items.find((i: any) => i.id === line.inventory_item_id);
           if (!item) continue;
 
-          const baseQty = (() => {
-            const qty = Number(line.quantity);
-            if (line.unit === "kg" && item.base_unit === "g") return qty * 1000;
-            if (line.unit === "l" && item.base_unit === "ml") return qty * 1000;
-            if (line.unit === "pack") return qty * (Number(line.pack_size) || 1);
-            return qty;
-          })();
+          const conversionFactor = factorForUnit(item.base_unit, line.unit, line.pack_size);
+          const baseQty = purchaseBaseQty(item, line);
 
           const lineTotal = Number(line.quantity) * Number(line.unit_cost);
           runningTotal += lineTotal;
@@ -1138,7 +1254,8 @@ function PurchaseForm(props: {
             inventory_item_id: line.inventory_item_id,
             quantity: Number(line.quantity),
             unit: line.unit,
-            pack_size: line.pack_size ? Number(line.pack_size) : null,
+            pack_size: isPackagingUnit(line.unit) ? Number(line.pack_size) : null,
+            conversion_factor: conversionFactor,
             base_quantity: baseQty,
             unit_cost: Number(line.unit_cost),
             line_total: lineTotal,
@@ -1173,6 +1290,9 @@ function PurchaseForm(props: {
               before_qty: currentItem.current_qty,
               after_qty: newQty,
               unit_cost: Number(line.unit_cost),
+              entered_quantity: Number(line.quantity),
+              entered_unit: line.unit,
+              conversion_factor: conversionFactor,
               related_purchase_id: props.purchase.id,
               note: notes || null,
             });
@@ -1188,16 +1308,22 @@ function PurchaseForm(props: {
       } else {
         const payload = {
           _supplier: supplier === "none" ? null : supplier,
+          _finance_account: financeAccount,
           _invoice_no: invoice,
           _purchase_date: date,
           _notes: notes,
-          _lines: clean.map((l) => ({
-            inventory_item_id: l.inventory_item_id,
-            quantity: Number(l.quantity),
-            unit: l.unit,
-            pack_size: l.pack_size ? Number(l.pack_size) : null,
-            unit_cost: Number(l.unit_cost) || 0,
-          })),
+          _lines: clean.map((l) => {
+            const item = itemMap.get(l.inventory_item_id);
+            if (!item) throw new Error("Purchase line ingredient was not found.");
+            return {
+              inventory_item_id: l.inventory_item_id,
+              quantity: Number(l.quantity),
+              unit: l.unit,
+              pack_size: isPackagingUnit(l.unit) ? Number(l.pack_size) : null,
+              conversion_factor: factorForUnit(item.base_unit, l.unit, l.pack_size),
+              unit_cost: Number(l.unit_cost) || 0,
+            };
+          }),
         };
         const { error } = await db.rpc("record_inventory_purchase", {
           _branch: props.branchId,
@@ -1206,6 +1332,10 @@ function PurchaseForm(props: {
         if (error) throw error;
         toast.success("Purchase recorded");
         setInvoice("");
+        setFinanceAccount(
+          props.financeAccounts.find((account) => account.account_type === "counter_cash")?.id ??
+            "none",
+        );
         setNotes("");
         setLines([
           { inventory_item_id: "", quantity: "1", unit: "kg", pack_size: "", unit_cost: "0" },
@@ -1258,7 +1388,7 @@ function PurchaseForm(props: {
           </Button>
         </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-1.5">
           <Label>Invoice no.</Label>
           <Input value={invoice} onChange={(e) => setInvoice(e.target.value)} />
@@ -1266,6 +1396,22 @@ function PurchaseForm(props: {
         <div className="space-y-1.5">
           <Label>Date</Label>
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Paid from</Label>
+          <Select value={financeAccount} onValueChange={setFinanceAccount}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Unpaid / supplier credit</SelectItem>
+              {props.financeAccounts.map((account) => (
+                <SelectItem key={account.id} value={account.id}>
+                  {account.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <div className="space-y-2">
@@ -1275,7 +1421,7 @@ function PurchaseForm(props: {
             <div>Ingredient</div>
             <div>Qty</div>
             <div>Unit</div>
-            <div>Pack size</div>
+            <div>Contains</div>
             <div>Unit cost</div>
             <div className="text-right">Action</div>
           </div>
@@ -1287,17 +1433,15 @@ function PurchaseForm(props: {
               <div className="grid min-w-[600px] grid-cols-[minmax(0,2.2fr)_72px_82px_82px_86px_36px] gap-2 p-3">
                 <Select
                   value={line.inventory_item_id}
-                  onValueChange={(v) =>
+                  onValueChange={(v) => {
+                    const nextItem = itemMap.get(v);
+                    const nextUnit = nextItem ? purchaseUnitForItem(nextItem) : "kg";
                     patchLine(idx, {
                       inventory_item_id: v,
-                      unit:
-                        itemMap.get(v)?.base_unit === "ml"
-                          ? "l"
-                          : itemMap.get(v)?.base_unit === "piece"
-                            ? "piece"
-                            : "kg",
-                    })
-                  }
+                      unit: nextUnit,
+                      pack_size: nextItem ? purchaseFactorForItem(nextItem, nextUnit) : "",
+                    });
+                  }}
                 >
                   <SelectTrigger className="min-w-0 w-full">
                     <SelectValue placeholder="Ingredient" />
@@ -1320,20 +1464,20 @@ function PurchaseForm(props: {
                 />
                 <Select
                   value={line.unit}
-                  onValueChange={(v: PurchaseUnit) => patchLine(idx, { unit: v })}
+                  onValueChange={(v: PurchaseUnit) =>
+                    patchLine(idx, {
+                      unit: v,
+                      pack_size: item ? factorInputValue(item.base_unit, v, line.pack_size) : "",
+                    })
+                  }
                 >
                   <SelectTrigger className="min-w-0 w-full">
                     <SelectValue placeholder="Unit" />
                   </SelectTrigger>
                   <SelectContent>
-                    {(item?.base_unit === "g"
-                      ? ["kg", "g", "pack"]
-                      : item?.base_unit === "ml"
-                        ? ["l", "ml", "pack"]
-                        : ["piece", "pack"]
-                    ).map((u) => (
+                    {(item ? entryUnitsForBase(item.base_unit) : ["kg", "g", "pack"]).map((u) => (
                       <SelectItem key={u} value={u}>
-                        {u}
+                        {shortUnitLabel(u)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1342,8 +1486,8 @@ function PurchaseForm(props: {
                   className="min-w-0 w-full"
                   type="number"
                   step="0.001"
-                  disabled={line.unit !== "pack"}
-                  placeholder="Pack size"
+                  disabled={!isPackagingUnit(line.unit)}
+                  placeholder={isPackagingUnit(line.unit) && item ? `per ${unitLabel(item.base_unit)}` : "Auto"}
                   value={line.pack_size}
                   onChange={(e) => patchLine(idx, { pack_size: e.target.value })}
                 />
@@ -1415,7 +1559,7 @@ function RecipesTab({
     queryFn: async () => {
       const { data, error } = await db
         .from("inventory_recipes")
-        .select("*, inventory_items(name, base_unit, average_cost)")
+        .select("*, inventory_items(name, base_unit, average_cost, display_unit, display_unit_factor)")
         .eq("menu_item_id", selected)
         .order("created_at");
       if (error) throw error;
@@ -1423,31 +1567,55 @@ function RecipesTab({
     },
   });
   const [ingredient, setIngredient] = useState("");
+  const [recipeMode, setRecipeMode] = useState<RecipeMode>("per_item");
   const [entryUnit, setEntryUnit] = useState<EntryUnit>("g");
-  const [qty, setQty] = useState("0");
+  const [conversionFactor, setConversionFactor] = useState("");
+  const [qty, setQty] = useState("");
+  const [batchYield, setBatchYield] = useState("");
   const [editingRecipeId, setEditingRecipeId] = useState<string | null>(null);
 
-  const selectedIngredient = itemsQ.data?.find((i: any) => i.id === ingredient);
+  const inventoryItemsById = useMemo(
+    () => new Map((itemsQ.data ?? []).map((item: any) => [item.id, item])),
+    [itemsQ.data],
+  );
+  const activeIngredients = useMemo(
+    () => (itemsQ.data ?? []).filter((item: any) => item.is_active),
+    [itemsQ.data],
+  );
+  const selectedIngredient = inventoryItemsById.get(ingredient);
 
   async function addRecipe(e: React.FormEvent) {
     e.preventDefault();
     const rawQty = Number(qty);
+    const yieldQty = recipeMode === "batch" ? Number(batchYield) : 1;
     if (
       !selected ||
       !ingredient ||
       !selectedIngredient ||
       !Number.isFinite(rawQty) ||
-      rawQty <= 0
+      rawQty <= 0 ||
+      !Number.isFinite(yieldQty) ||
+      yieldQty <= 0
     ) {
-      toast.error("Select item and enter a positive quantity");
+      toast.error("Select item and enter positive quantity and batch yield");
       return;
     }
-    const baseQty = quantityToBase(rawQty, selectedIngredient.base_unit, entryUnit);
+    const factor = factorForUnit(selectedIngredient.base_unit, entryUnit, conversionFactor);
+    const batchBaseQty = quantityToBase(rawQty, selectedIngredient.base_unit, entryUnit, conversionFactor);
+    const perItemBaseQty = batchBaseQty / yieldQty;
+    const perItemEntryQty = rawQty / yieldQty;
     const { error } = await db.from("inventory_recipes").upsert(
       {
         menu_item_id: selected,
         inventory_item_id: ingredient,
-        quantity: baseQty,
+        quantity: perItemBaseQty,
+        recipe_mode: recipeMode,
+        entry_quantity: perItemEntryQty,
+        entry_unit: entryUnit,
+        conversion_factor: factor,
+        batch_yield: yieldQty,
+        batch_entry_quantity: rawQty,
+        batch_entry_unit: entryUnit,
         standard_source: "manual",
         learning_enabled: false,
       },
@@ -1482,18 +1650,32 @@ function RecipesTab({
 
   function resetRecipeForm() {
     setIngredient("");
+    setRecipeMode("per_item");
     setEntryUnit("g");
-    setQty("0");
+    setConversionFactor("");
+    setQty("");
+    setBatchYield("");
     setEditingRecipeId(null);
   }
 
   function editRecipe(row: any) {
     const unit = row.inventory_items?.base_unit as BaseUnit;
-    const preferred = preferredEntryUnit(unit);
+    const preferred = (row.entry_unit || preferredEntryUnit(unit)) as EntryUnit;
+    const factor = row.conversion_factor ?? factorInputValue(unit, preferred);
+    const mode = (row.recipe_mode === "batch" ? "batch" : "per_item") as RecipeMode;
     setEditingRecipeId(row.id);
     setIngredient(row.inventory_item_id);
+    setRecipeMode(mode);
     setEntryUnit(preferred);
-    setQty(String(quantityFromBase(row.quantity, unit, preferred)));
+    setConversionFactor(String(factor));
+    setBatchYield(String(row.batch_yield ?? 1));
+    setQty(
+      String(
+        mode === "batch"
+          ? (row.batch_entry_quantity ?? Number(row.entry_quantity ?? 0) * Number(row.batch_yield ?? 1))
+          : (row.entry_quantity ?? quantityFromBase(row.quantity, unit, preferred, factor)),
+      ),
+    );
   }
 
   const selectedMenu = menuQ.data?.find((i: any) => i.id === selected);
@@ -1505,14 +1687,38 @@ function RecipesTab({
   const foodCostPercent = selectedMenu?.base_price
     ? (recipeCost / Number(selectedMenu.base_price)) * 100
     : 0;
+  const recipePreview = useMemo(() => {
+    if (!selectedIngredient) return null;
+    const rawQty = Number(qty);
+    const yieldQty = recipeMode === "batch" ? Number(batchYield) : 1;
+    if (!Number.isFinite(rawQty) || rawQty <= 0 || !Number.isFinite(yieldQty) || yieldQty <= 0) {
+      return null;
+    }
+    try {
+      const batchBaseQty = quantityToBase(
+        rawQty,
+        selectedIngredient.base_unit,
+        entryUnit,
+        conversionFactor,
+      );
+      const perItemBaseQty = batchBaseQty / yieldQty;
+      return {
+        batchLabel: `${rawQty.toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(entryUnit)}`,
+        perItemLabel: qtyLabel(perItemBaseQty, selectedIngredient.base_unit),
+        yieldQty,
+      };
+    } catch {
+      return null;
+    }
+  }, [batchYield, conversionFactor, entryUnit, qty, recipeMode, selectedIngredient]);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-      <Card>
+    <div className="grid min-w-0 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Menu item</CardTitle>
           <CardDescription>
-            Choose a menu item and maintain its ingredient standards.
+            Choose one sale item, then add the ingredients it consumes.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -1558,65 +1764,160 @@ function RecipesTab({
           )}
         </CardContent>
       </Card>
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Recipe</CardTitle>
-          <CardDescription>Standard ingredient usage per one sold item.</CardDescription>
+          <CardDescription>
+            Use batch recipes when you cook once and sell many portions. Example: 2 kg rice makes
+            16 plates, so the system deducts 125 g on each sale.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {manager && selected && (
             <form
               onSubmit={addRecipe}
-              className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[1fr_120px_110px_auto]"
+              className="grid min-w-0 gap-3 rounded-lg border border-border p-3 sm:grid-cols-2 lg:grid-cols-3"
             >
-              <Select
-                value={ingredient}
-                onValueChange={(value) => {
-                  setIngredient(value);
-                  const item = itemsQ.data?.find((i: any) => i.id === value);
-                  if (item) setEntryUnit(preferredEntryUnit(item.base_unit));
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Ingredient" />
-                </SelectTrigger>
-                <SelectContent>
-                  {itemsQ.data?.map((i: any) => (
-                    <SelectItem key={i.id} value={i.id}>
-                      {i.name} ({unitLabel(i.base_unit)})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                type="number"
-                step="0.001"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                placeholder="Quantity"
-              />
-              <Select value={entryUnit} onValueChange={(value) => setEntryUnit(value as EntryUnit)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {selectedIngredient ? (
-                    entryUnitsForBase(selectedIngredient.base_unit).map((u) => (
-                      <SelectItem key={u} value={u}>
-                        {u === "l" ? "L" : u === "piece" ? "pc" : u}
+              <div className="space-y-1.5">
+                <Label>Recipe type</Label>
+                <Select
+                  value={recipeMode}
+                  onValueChange={(value) => {
+                    const nextMode = value as RecipeMode;
+                    setRecipeMode(nextMode);
+                    if (nextMode === "per_item") setBatchYield("");
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="per_item">Per sale item</SelectItem>
+                    <SelectItem value="batch">Batch yield</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1.5">
+                <Label>Ingredient</Label>
+                <Select
+                  value={ingredient}
+                  onValueChange={(value) => {
+                    setIngredient(value);
+                    const item = inventoryItemsById.get(value);
+                    if (item) {
+                      const nextUnit = displayUnitForItem(item);
+                      setEntryUnit(nextUnit);
+                      setConversionFactor(
+                        factorInputValue(item.base_unit, nextUnit, item.display_unit_factor),
+                      );
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Ingredient" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activeIngredients.map((i: any) => (
+                      <SelectItem key={i.id} value={i.id}>
+                        {i.name} ({unitLabel(i.base_unit)})
                       </SelectItem>
-                    ))
-                  ) : (
-                    <SelectItem value={entryUnit}>{entryUnit}</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-              <Button type="submit">
-                {editingRecipeId ? <SaveIcon /> : <Plus className="mr-2 h-4 w-4" />}
-                {editingRecipeId ? "Update" : "Add"}
-              </Button>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>{recipeMode === "batch" ? "Ingredient quantity" : "Qty per sale item"}</Label>
+                <Input
+                  type="number"
+                  step="0.001"
+                  min="0.001"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                  placeholder={recipeMode === "batch" ? "e.g. 2" : "e.g. 0.125"}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Unit</Label>
+                <Select
+                  value={entryUnit}
+                  onValueChange={(value) => {
+                    const nextUnit = value as EntryUnit;
+                    setEntryUnit(nextUnit);
+                    if (selectedIngredient) {
+                      setConversionFactor(
+                        factorInputValue(
+                          selectedIngredient.base_unit,
+                          nextUnit,
+                          selectedIngredient.display_unit_factor,
+                        ),
+                      );
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedIngredient ? (
+                      entryUnitsForBase(selectedIngredient.base_unit).map((u) => (
+                        <SelectItem key={u} value={u}>
+                          {shortUnitLabel(u)}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value={entryUnit}>{entryUnit}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Pack conversion</Label>
+                {selectedIngredient && isPackagingUnit(entryUnit) ? (
+                  <Input
+                    type="number"
+                    step="0.001"
+                    min="0.001"
+                    value={conversionFactor}
+                    onChange={(e) => setConversionFactor(e.target.value)}
+                    placeholder={`1 ${shortUnitLabel(entryUnit)} = ${unitLabel(selectedIngredient.base_unit)}`}
+                  />
+                ) : (
+                  <div className="flex h-10 items-center rounded-md border border-border bg-muted/25 px-3 text-sm text-muted-foreground">
+                    Auto
+                  </div>
+                )}
+              </div>
+              <div className={recipeMode === "batch" ? "space-y-1.5" : "hidden"}>
+                <Label>How many sale items?</Label>
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={batchYield}
+                  onChange={(e) => setBatchYield(e.target.value)}
+                  placeholder="e.g. 16"
+                />
+              </div>
+              <div className="flex items-end sm:col-span-2 lg:col-span-3">
+                <Button type="submit" className="w-full sm:w-auto">
+                  {editingRecipeId ? <SaveIcon /> : <Plus className="mr-2 h-4 w-4" />}
+                  {editingRecipeId ? "Update ingredient" : "Add ingredient"}
+                </Button>
+              </div>
+              {recipePreview && (
+                <div className="rounded-md border border-border bg-background/40 p-3 text-sm text-muted-foreground sm:col-span-2 lg:col-span-3">
+                  {recipeMode === "batch"
+                    ? `${recipePreview.batchLabel} makes ${recipePreview.yieldQty.toLocaleString()} sale items. Stock will reduce ${recipePreview.perItemLabel} for each sale.`
+                    : `Each sold item uses ${recipePreview.perItemLabel}.`}
+                </div>
+              )}
               {editingRecipeId && (
-                <Button type="button" variant="ghost" onClick={resetRecipeForm}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={resetRecipeForm}
+                  className="sm:col-span-2 lg:col-span-3"
+                >
                   Cancel
                 </Button>
               )}
@@ -1628,38 +1929,68 @@ function RecipesTab({
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : (
             <div className="space-y-2">
-              {recipesQ.data?.map((r: any) => (
+              {recipesQ.data?.map((r: any) => {
+                const fallbackItem = inventoryItemsById.get(r.inventory_item_id);
+                const rowBase = (r.inventory_items?.base_unit ?? fallbackItem?.base_unit ?? "g") as BaseUnit;
+                const rowUnit = (r.entry_unit || preferredEntryUnit(rowBase)) as EntryUnit;
+                const rowFactor = r.conversion_factor ?? factorInputValue(rowBase, rowUnit);
+                const rowMode = r.recipe_mode === "batch" ? "batch" : "per_item";
+                const batchQty = Number(r.batch_entry_quantity ?? r.entry_quantity ?? 0);
+                const batchYieldValue = Number(r.batch_yield ?? 1);
+                const batchUnit = (r.batch_entry_unit || rowUnit) as EntryUnit;
+                const ingredientName = r.inventory_items?.name ?? fallbackItem?.name ?? "Deleted ingredient";
+                const averageCost = Number(r.inventory_items?.average_cost ?? fallbackItem?.average_cost ?? 0);
+                return (
                 <div
                   key={r.id}
-                  className="flex items-center gap-3 rounded-lg border border-border p-3"
+                  className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto]"
                 >
-                  <div className="flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="font-medium">{r.inventory_items?.name}</div>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Cost{" "}
-                      {formatMoney(
-                        Number(r.quantity) * Number(r.inventory_items?.average_cost ?? 0),
-                        symbol,
+                  <div className="min-w-0 space-y-1">
+                    <div className="truncate text-base font-semibold">{ingredientName}</div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        Cost {formatMoney(Number(r.quantity) * averageCost, symbol)} per sale item
+                      </span>
+                      <span>Stock reduces {qtyLabel(r.quantity, rowBase)} per sale</span>
+                      {rowMode === "batch" && (
+                        <span>
+                          Batch: {batchQty.toLocaleString(undefined, { maximumFractionDigits: 3 })}{" "}
+                          {shortUnitLabel(batchUnit)} makes{" "}
+                          {batchYieldValue.toLocaleString(undefined, {
+                            maximumFractionDigits: 3,
+                          })}{" "}
+                          sale items
+                        </span>
                       )}
                     </div>
                   </div>
-                  <div className="font-mono">
-                    {qtyLabel(r.quantity, r.inventory_items?.base_unit)}
-                  </div>
-                  {manager && (
-                    <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => editRecipe(r)}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <div className="text-right">
+                      <div className="font-mono text-lg font-semibold">
+                        {rowMode === "batch"
+                          ? `${Number(r.entry_quantity ?? 0).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
+                          : r.entry_quantity
+                          ? `${Number(r.entry_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
+                          : qtyLabel(r.quantity, r.inventory_items?.base_unit, rowUnit, rowFactor)}
+                      </div>
+                      {rowMode === "batch" && (
+                        <div className="text-xs text-muted-foreground">per item</div>
+                      )}
                     </div>
-                  )}
+                    {manager && (
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => editRecipe(r)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ))}
+              );
+              })}
               {recipesQ.data?.length === 0 && (
                 <div className="py-12 text-center text-muted-foreground">
                   No recipe yet. POS will warn but still allow sale.
@@ -1679,9 +2010,11 @@ function SaveIcon() {
 
 function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: boolean }) {
   const qc = useQueryClient();
-  const itemsQ = useInventoryItems(branchId, true);
+  const itemsQ = useInventoryItems(branchId, false);
   const [item, setItem] = useState("");
   const [type, setType] = useState<MovementType>("waste");
+  const [entryUnit, setEntryUnit] = useState<EntryUnit>("kg");
+  const [conversionFactor, setConversionFactor] = useState("");
   const [qty, setQty] = useState("0");
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1696,7 +2029,8 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
       return;
     }
     const negativeTypes = new Set(["waste", "damage", "staff_meal"]);
-    const delta = negativeTypes.has(type) ? -Math.abs(raw) : raw;
+    const enteredQty = negativeTypes.has(type) ? -Math.abs(raw) : raw;
+    const factor = selected ? factorForUnit(selected.base_unit, entryUnit, conversionFactor) : 1;
     const reason: AdjustmentReason =
       type === "adjustment" ? "other" : type === "correction" ? "correction" : type;
     setLoading(true);
@@ -1705,7 +2039,9 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
         _item: item,
         _movement_type: type,
         _reason: reason,
-        _quantity_delta: delta,
+        _entered_quantity: enteredQty,
+        _unit: entryUnit,
+        _conversion_factor: factor,
         _note: note,
       });
       if (error) throw error;
@@ -1732,18 +2068,32 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
         {manager ? (
           <form
             onSubmit={save}
-            className="grid gap-4 lg:grid-cols-[1fr_180px_160px_1fr_auto] lg:items-end"
+            className="grid gap-4 xl:grid-cols-[1fr_170px_130px_160px_1fr_auto] xl:items-end"
           >
             <div className="space-y-1.5">
               <Label>Ingredient</Label>
-              <Select value={item} onValueChange={setItem}>
+              <Select
+                value={item}
+                onValueChange={(value) => {
+                  setItem(value);
+                  const nextItem = itemsQ.data?.find((i: any) => i.id === value);
+                  if (nextItem) {
+                    const nextUnit = displayUnitForItem(nextItem);
+                    setEntryUnit(nextUnit);
+                    setConversionFactor(
+                      factorInputValue(nextItem.base_unit, nextUnit, nextItem.display_unit_factor),
+                    );
+                  }
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select ingredient" />
                 </SelectTrigger>
                 <SelectContent>
                   {itemsQ.data?.map((i: any) => (
                     <SelectItem key={i.id} value={i.id}>
-                      {i.name} · {qtyLabel(i.current_qty, i.base_unit)}
+                      {i.name} -{" "}
+                      {qtyLabel(i.current_qty, i.base_unit, i.display_unit, i.display_unit_factor)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1765,7 +2115,7 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Qty {selected ? `(${unitLabel(selected.base_unit)})` : ""}</Label>
+              <Label>Qty</Label>
               <Input
                 type="number"
                 step="0.001"
@@ -1773,6 +2123,46 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
                 onChange={(e) => setQty(e.target.value)}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label>Unit</Label>
+              <Select
+                value={entryUnit}
+                onValueChange={(value) => {
+                  const nextUnit = value as EntryUnit;
+                  setEntryUnit(nextUnit);
+                  if (selected) {
+                    setConversionFactor(
+                      factorInputValue(selected.base_unit, nextUnit, selected.display_unit_factor),
+                    );
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(selected ? entryUnitsForBase(selected.base_unit) : ["kg", "g", "pack"]).map(
+                    (u) => (
+                      <SelectItem key={u} value={u}>
+                        {unitOptionLabel(u)}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            {selected && isPackagingUnit(entryUnit) && (
+              <div className="space-y-1.5">
+                <Label>Contains ({unitLabel(selected.base_unit)})</Label>
+                <Input
+                  type="number"
+                  step="0.001"
+                  min="0.001"
+                  value={conversionFactor}
+                  onChange={(e) => setConversionFactor(e.target.value)}
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>Note</Label>
               <Input value={note} onChange={(e) => setNote(e.target.value)} />
@@ -1785,6 +2175,580 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
           <p className="text-sm text-muted-foreground">
             Only managers and owners can adjust stock.
           </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+type CountLine = {
+  inventory_item_id: string;
+  counted_quantity: string;
+  counted_unit: EntryUnit;
+  conversion_factor: string;
+};
+
+function CountsTab({
+  branchId,
+  manager,
+  symbol,
+}: {
+  branchId: string;
+  manager: boolean;
+  symbol: string;
+}) {
+  const qc = useQueryClient();
+  const itemsQ = useInventoryItems(branchId, true);
+  const countsQ = useQuery({
+    queryKey: ["inventory-counts", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("inventory_counts")
+        .select("*")
+        .eq("branch_id", branchId)
+        .order("count_date", { ascending: false })
+        .limit(20);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+  const [countDate, setCountDate] = useState(pakistanDateInputValue());
+  const [notes, setNotes] = useState("");
+  const [lines, setLines] = useState<CountLine[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const itemMap = new Map((itemsQ.data ?? []).map((item: any) => [item.id, item]));
+  const totalVarianceValue = lines.reduce((sum, line) => {
+    const item = itemMap.get(line.inventory_item_id);
+    if (!item) return sum;
+    try {
+      const countedBase = quantityToBase(
+        Number(line.counted_quantity || 0),
+        item.base_unit,
+        line.counted_unit,
+        line.conversion_factor,
+      );
+      return sum + Math.abs(countedBase - Number(item.current_qty || 0)) * Number(item.average_cost || 0);
+    } catch {
+      return sum;
+    }
+  }, 0);
+
+  function addLine(item?: any) {
+    const target = item ?? itemsQ.data?.find((entry: any) => !lines.some((line) => line.inventory_item_id === entry.id));
+    const unit = target ? displayUnitForItem(target) : "kg";
+    setLines((current) => [
+      ...current,
+      {
+        inventory_item_id: target?.id ?? "",
+        counted_quantity: target
+          ? String(quantityFromBase(target.current_qty, target.base_unit, unit, target.display_unit_factor))
+          : "0",
+        counted_unit: unit,
+        conversion_factor: target ? factorInputValue(target.base_unit, unit, target.display_unit_factor) : "",
+      },
+    ]);
+  }
+
+  function loadAllCurrentStock() {
+    setLines(
+      (itemsQ.data ?? []).map((item: any) => {
+        const unit = displayUnitForItem(item);
+        return {
+          inventory_item_id: item.id,
+          counted_quantity: String(
+            quantityFromBase(item.current_qty, item.base_unit, unit, item.display_unit_factor),
+          ),
+          counted_unit: unit,
+          conversion_factor: factorInputValue(item.base_unit, unit, item.display_unit_factor),
+        };
+      }),
+    );
+  }
+
+  function patchLine(index: number, patch: Partial<CountLine>) {
+    setLines((current) => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+  }
+
+  async function applyCount(e: React.FormEvent) {
+    e.preventDefault();
+    if (!manager) return;
+    const clean = lines.filter((line) => line.inventory_item_id && Number(line.counted_quantity) >= 0);
+    if (!clean.length) {
+      toast.error("Add at least one counted ingredient");
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await db.rpc("apply_inventory_count", {
+        _branch: branchId,
+        _count_date: countDate,
+        _notes: notes,
+        _lines: clean.map((line) => {
+          const item = itemMap.get(line.inventory_item_id);
+          if (!item) throw new Error("Counted ingredient was not found.");
+          return {
+            inventory_item_id: line.inventory_item_id,
+            counted_quantity: Number(line.counted_quantity),
+            counted_unit: line.counted_unit,
+            conversion_factor: factorForUnit(item.base_unit, line.counted_unit, line.conversion_factor),
+          };
+        }),
+      });
+      if (error) throw error;
+      toast.success("Physical count applied");
+      setLines([]);
+      setNotes("");
+      qc.invalidateQueries({ queryKey: ["inventory-items"] });
+      qc.invalidateQueries({ queryKey: ["inventory-counts"] });
+      qc.invalidateQueries({ queryKey: ["inventory-movements"] });
+      qc.invalidateQueries({ queryKey: ["inventory-reports"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to apply count");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <Card className="min-w-0">
+        <CardHeader>
+          <CardTitle>Physical stock count</CardTitle>
+          <CardDescription>
+            Enter actual stock. Variance is posted as correction movements and stays auditable.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {manager ? (
+            <form onSubmit={applyCount} className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto_auto] sm:items-end">
+                <div className="space-y-1.5">
+                  <Label>Count date</Label>
+                  <Input type="date" value={countDate} onChange={(e) => setCountDate(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </div>
+                <Button type="button" variant="outline" onClick={loadAllCurrentStock}>
+                  Load stock
+                </Button>
+                <Button type="button" variant="outline" onClick={() => addLine()}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Line
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                {lines.map((line, index) => {
+                  const item = itemMap.get(line.inventory_item_id);
+                  const countedBase = item
+                    ? (() => {
+                        try {
+                          return quantityToBase(
+                            Number(line.counted_quantity || 0),
+                            item.base_unit,
+                            line.counted_unit,
+                            line.conversion_factor,
+                          );
+                        } catch {
+                          return Number.NaN;
+                        }
+                      })()
+                    : 0;
+                  const variance = item && Number.isFinite(countedBase) ? countedBase - Number(item.current_qty || 0) : 0;
+                  return (
+                    <div key={index} className="rounded-lg border border-border p-3">
+                      <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,2fr)_120px_120px_120px_42px]">
+                        <Select
+                          value={line.inventory_item_id}
+                          onValueChange={(value) => {
+                            const nextItem = itemMap.get(value);
+                            const unit = nextItem ? displayUnitForItem(nextItem) : line.counted_unit;
+                            patchLine(index, {
+                              inventory_item_id: value,
+                              counted_unit: unit,
+                              counted_quantity: nextItem
+                                ? String(quantityFromBase(nextItem.current_qty, nextItem.base_unit, unit, nextItem.display_unit_factor))
+                                : line.counted_quantity,
+                              conversion_factor: nextItem
+                                ? factorInputValue(nextItem.base_unit, unit, nextItem.display_unit_factor)
+                                : line.conversion_factor,
+                            });
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Ingredient" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(itemsQ.data ?? []).map((entry: any) => (
+                              <SelectItem key={entry.id} value={entry.id}>
+                                {entry.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={line.counted_quantity}
+                          onChange={(e) => patchLine(index, { counted_quantity: e.target.value })}
+                        />
+                        <Select
+                          value={line.counted_unit}
+                          onValueChange={(value: EntryUnit) => {
+                            patchLine(index, {
+                              counted_unit: value,
+                              conversion_factor: item ? factorInputValue(item.base_unit, value, item.display_unit_factor) : "",
+                            });
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(item ? entryUnitsForBase(item.base_unit) : ["kg", "g", "pack"]).map((unit) => (
+                              <SelectItem key={unit} value={unit}>
+                                {shortUnitLabel(unit)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="number"
+                          step="0.001"
+                          disabled={!isPackagingUnit(line.counted_unit)}
+                          placeholder={isPackagingUnit(line.counted_unit) && item ? `per ${unitLabel(item.base_unit)}` : "Auto"}
+                          value={line.conversion_factor}
+                          onChange={(e) => patchLine(index, { conversion_factor: e.target.value })}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setLines((current) => current.filter((_, i) => i !== index))}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      {item && (
+                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                          <span>System: {qtyLabel(item.current_qty, item.base_unit, item.display_unit, item.display_unit_factor)}</span>
+                          <span className={variance < 0 ? "text-destructive" : variance > 0 ? "text-success" : ""}>
+                            Variance: {qtyLabel(variance, item.base_unit)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {lines.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-border py-12 text-center text-muted-foreground">
+                    Load stock or add counted lines.
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-muted-foreground">
+                  Estimated variance value:{" "}
+                  <span className="font-mono text-foreground">{formatMoney(totalVarianceValue, symbol)}</span>
+                </div>
+                <Button type="submit" disabled={loading || lines.length === 0}>
+                  {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Apply count
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <p className="text-sm text-muted-foreground">Only managers and owners can apply stock counts.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="min-w-0">
+        <CardHeader>
+          <CardTitle>Recent counts</CardTitle>
+          <CardDescription>Applied physical audits.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {countsQ.data?.map((count: any) => (
+            <div key={count.id} className="rounded-lg border border-border p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-medium">{formatDate(count.count_date)}</div>
+                <Badge variant="outline" className="capitalize">
+                  {count.status}
+                </Badge>
+              </div>
+              {count.notes && <div className="mt-1 text-muted-foreground">{count.notes}</div>}
+            </div>
+          ))}
+          {countsQ.data?.length === 0 && <div className="py-10 text-center text-muted-foreground">No counts yet.</div>}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function SupplierLedgerTab({
+  branchId,
+  restaurantId,
+  manager,
+  symbol,
+}: {
+  branchId: string;
+  restaurantId: string;
+  manager: boolean;
+  symbol: string;
+}) {
+  const qc = useQueryClient();
+  const suppliersQ = useQuery({
+    queryKey: ["inventory-suppliers", restaurantId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("suppliers")
+        .select("*")
+        .eq("restaurant_id", restaurantId)
+        .eq("is_active", true)
+        .order("name");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+  const ledgerQ = useQuery({
+    queryKey: ["supplier-ledger", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("supplier_ledger_entries")
+        .select("*")
+        .eq("branch_id", branchId)
+        .order("occurred_on", { ascending: false })
+        .limit(300);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+  const [supplier, setSupplier] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(pakistanDateInputValue());
+  const [reference, setReference] = useState("");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const supplierById = new Map((suppliersQ.data ?? []).map((entry: any) => [entry.id, entry]));
+  const balances = new Map<string, number>();
+  for (const entry of ledgerQ.data ?? []) {
+    balances.set(entry.supplier_id, (balances.get(entry.supplier_id) ?? 0) + Number(entry.amount || 0));
+  }
+  const selectedEntries = supplier
+    ? (ledgerQ.data ?? []).filter((entry: any) => entry.supplier_id === supplier)
+    : (ledgerQ.data ?? []);
+
+  async function recordPayment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!manager) return;
+    setLoading(true);
+    try {
+      const { error } = await db.rpc("record_supplier_payment", {
+        _branch: branchId,
+        _supplier: supplier,
+        _amount: Number(amount),
+        _date: date,
+        _reference: reference,
+        _notes: notes,
+      });
+      if (error) throw error;
+      toast.success("Supplier payment recorded");
+      setAmount("");
+      setReference("");
+      setNotes("");
+      qc.invalidateQueries({ queryKey: ["supplier-ledger"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to record supplier payment");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="grid min-w-0 gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+      <Card>
+        <CardHeader>
+          <CardTitle>Supplier balances</CardTitle>
+          <CardDescription>Purchases add payable balance; payments reduce it.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Select value={supplier} onValueChange={setSupplier}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select supplier" />
+            </SelectTrigger>
+            <SelectContent>
+              {(suppliersQ.data ?? []).map((entry: any) => (
+                <SelectItem key={entry.id} value={entry.id}>
+                  {entry.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="space-y-2">
+            {(suppliersQ.data ?? []).map((entry: any) => (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => setSupplier(entry.id)}
+                className={`flex w-full items-center justify-between rounded-lg border p-3 text-left text-sm ${
+                  supplier === entry.id ? "border-primary bg-primary/10" : "border-border"
+                }`}
+              >
+                <span className="font-medium">{entry.name}</span>
+                <span className="font-mono">{formatMoney(balances.get(entry.id) ?? 0, symbol)}</span>
+              </button>
+            ))}
+            {suppliersQ.data?.length === 0 && (
+              <div className="py-10 text-center text-muted-foreground">No suppliers yet.</div>
+            )}
+          </div>
+          {manager && (
+            <form onSubmit={recordPayment} className="space-y-3 rounded-lg border border-border p-3">
+              <div className="font-medium">Record payment</div>
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                placeholder="Amount paid"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <Input placeholder="Reference" value={reference} onChange={(e) => setReference(e.target.value)} />
+              <Textarea rows={2} placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <Button type="submit" disabled={loading || !supplier || Number(amount) <= 0}>
+                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Save payment
+              </Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="min-w-0">
+        <CardHeader>
+          <CardTitle>Supplier ledger</CardTitle>
+          <CardDescription>Immutable payable movement history.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="min-w-[760px] w-full text-sm">
+              <thead className="text-left text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="pr-4">Supplier</th>
+                  <th className="pr-4">Type</th>
+                  <th className="pr-4">Reference</th>
+                  <th className="text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedEntries.map((entry: any) => (
+                  <tr key={entry.id} className="border-t border-border">
+                    <td className="py-2 pr-4">{formatDate(entry.occurred_on)}</td>
+                    <td className="pr-4">{supplierById.get(entry.supplier_id)?.name ?? "Supplier"}</td>
+                    <td className="pr-4 capitalize">{entry.entry_type}</td>
+                    <td className="pr-4 text-muted-foreground">{entry.reference_no || "-"}</td>
+                    <td className={`text-right font-mono ${Number(entry.amount) < 0 ? "text-success" : "text-primary"}`}>
+                      {formatMoney(entry.amount, symbol)}
+                    </td>
+                  </tr>
+                ))}
+                {selectedEntries.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-10 text-center text-muted-foreground">
+                      No supplier ledger entries.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function InventoryControlTab({ branchId, manager }: { branchId: string; manager: boolean }) {
+  const qc = useQueryClient();
+  const branchQ = useQuery({
+    queryKey: ["inventory-control-branch", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("branches")
+        .select("id, inventory_locked_before")
+        .eq("id", branchId)
+        .single();
+      if (error) throw error;
+      return data;
+    },
+  });
+  const existing = branchQ.data?.inventory_locked_before
+    ? String(branchQ.data.inventory_locked_before).slice(0, 10)
+    : "";
+  const [lockDate, setLockDate] = useState(existing);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    setLockDate(existing);
+  }, [existing]);
+
+  async function saveLock(e: React.FormEvent) {
+    e.preventDefault();
+    if (!manager) return;
+    setLoading(true);
+    try {
+      const lockedBefore = lockDate ? `${lockDate}T00:00:00+05:00` : null;
+      const { error } = await db.rpc("set_inventory_lock", {
+        _branch: branchId,
+        _locked_before: lockedBefore,
+      });
+      if (error) throw error;
+      toast.success(lockDate ? "Inventory lock updated" : "Inventory lock cleared");
+      qc.invalidateQueries({ queryKey: ["inventory-control-branch"] });
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to update inventory lock");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Inventory controls</CardTitle>
+        <CardDescription>
+          Lock old periods after audit so staff cannot backdate purchases, waste, or order inventory reversals.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {manager ? (
+          <form onSubmit={saveLock} className="max-w-xl space-y-4">
+            <div className="space-y-1.5">
+              <Label>Lock inventory before</Label>
+              <Input type="date" value={lockDate} onChange={(e) => setLockDate(e.target.value)} />
+              <p className="text-sm text-muted-foreground">
+                Example: choose today after closing yesterday. Any inventory transaction before this date must be corrected in the current period.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" disabled={loading}>
+                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Save lock
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setLockDate("")}>
+                Clear
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <p className="text-sm text-muted-foreground">Only managers and owners can change inventory locks.</p>
         )}
       </CardContent>
     </Card>
@@ -1836,9 +2800,118 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
       return data ?? [];
     },
   });
+  const performanceQ = useQuery({
+    queryKey: ["inventory-reports", "performance", branchId, startDate, endDate],
+    queryFn: async () => {
+      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const { data, error } = await db
+        .from("inventory_menu_performance")
+        .select("*")
+        .eq("branch_id", branchId)
+        .gte("created_at", bounds.start)
+        .lt("created_at", bounds.end)
+        .order("gross_profit", { ascending: false })
+        .limit(12);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const movements = movementsQ.data ?? [];
+  const movementCost = (movement: any) =>
+    Math.abs(Number(movement.quantity_delta || 0)) * Number(movement.unit_cost || 0);
+  const purchasedValue = movements
+    .filter((movement: any) => movement.movement_type === "purchase")
+    .reduce((sum: number, movement: any) => sum + movementCost(movement), 0);
+  const salesRecipeCost = movements
+    .filter((movement: any) => movement.movement_type === "sale")
+    .reduce((sum: number, movement: any) => sum + movementCost(movement), 0);
+  const wasteValue = movements
+    .filter((movement: any) => ["waste", "damage", "staff_meal"].includes(movement.movement_type))
+    .reduce((sum: number, movement: any) => sum + movementCost(movement), 0);
+  const missingRecipeCount = (costsQ.data ?? []).filter(
+    (item: any) => Number(item.recipe_cost || 0) <= 0,
+  ).length;
+  const periodLabel =
+    startDate === endDate
+      ? formatPakistanDateLabel(startDate)
+      : `${formatPakistanDateLabel(startDate)} to ${formatPakistanDateLabel(endDate)}`;
 
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
+    <div className="min-w-0 space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Food control period</CardTitle>
+          <CardDescription>
+            Reports below use the selected period for stock movement, waste, and dish performance.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[180px] flex-1">
+              <Label
+                htmlFor="inventory-report-start-date"
+                className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                From
+              </Label>
+              <Input
+                id="inventory-report-start-date"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                max={endDate}
+              />
+            </div>
+            <div className="min-w-[180px] flex-1">
+              <Label
+                htmlFor="inventory-report-end-date"
+                className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                To
+              </Label>
+              <Input
+                id="inventory-report-end-date"
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                min={startDate}
+              />
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => {
+                const dateStr = pakistanDateInputValue();
+                setStartDate(dateStr);
+                setEndDate(dateStr);
+              }}
+              className="gap-2"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Today
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Stat label="Purchased" value={formatMoney(purchasedValue, symbol)} icon={ReceiptText} />
+        <Stat label="Recipe usage" value={formatMoney(salesRecipeCost, symbol)} icon={Utensils} />
+        <Stat
+          label="Waste / damage"
+          value={formatMoney(wasteValue, symbol)}
+          icon={AlertTriangle}
+          highlight={wasteValue > 0}
+        />
+        <Stat
+          label="Missing recipes"
+          value={String(missingRecipeCount)}
+          icon={ClipboardList}
+          highlight={missingRecipeCount > 0}
+        />
+      </div>
+
+      <div className="grid min-w-0 gap-6 xl:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>Low stock</CardTitle>
@@ -1855,7 +2928,7 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
                 <div className="text-xs text-muted-foreground">{i.category || i.base_unit}</div>
               </div>
               <div className="text-right font-mono text-amber-300">
-                {qtyLabel(i.current_qty, i.base_unit)}
+                {qtyLabel(i.current_qty, i.base_unit, i.display_unit, i.display_unit_factor)}
               </div>
             </div>
           ))}
@@ -1889,65 +2962,71 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
       </Card>
       <Card className="xl:col-span-2">
         <CardHeader>
+          <CardTitle>Dish performance</CardTitle>
+          <CardDescription>
+            Sales, estimated recipe cost, and gross profit by dish for {periodLabel}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {performanceQ.isLoading ? (
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-[820px] w-full text-sm">
+                <thead className="text-left text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="py-2 pr-4">Dish</th>
+                    <th className="pr-4 text-right">Sold</th>
+                    <th className="pr-4 text-right">Revenue</th>
+                    <th className="pr-4 text-right">Food cost</th>
+                    <th className="pr-4 text-right">Profit</th>
+                    <th className="text-right">Margin</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performanceQ.data?.map((dish: any) => (
+                    <tr key={dish.menu_item_id} className="border-t border-border">
+                      <td className="py-2 pr-4 font-medium">{dish.name}</td>
+                      <td className="pr-4 text-right font-mono">
+                        {Number(dish.qty_sold || 0).toLocaleString(undefined, {
+                          maximumFractionDigits: 2,
+                        })}
+                      </td>
+                      <td className="pr-4 text-right font-mono">
+                        {formatMoney(dish.revenue, symbol)}
+                      </td>
+                      <td className="pr-4 text-right font-mono">
+                        {formatMoney(dish.theoretical_food_cost, symbol)}
+                      </td>
+                      <td className="pr-4 text-right font-mono text-primary">
+                        {formatMoney(dish.gross_profit, symbol)}
+                      </td>
+                      <td className="text-right font-mono">
+                        {Number(dish.gross_margin_percent || 0).toFixed(1)}%
+                      </td>
+                    </tr>
+                  ))}
+                  {performanceQ.data?.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="py-10 text-center text-muted-foreground">
+                        No sales performance yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <Card className="xl:col-span-2">
+        <CardHeader>
           <CardTitle>Movement ledger</CardTitle>
           <CardDescription>
             Stock changes from purchases, POS sales, and adjustments in the selected period.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-surface/50 p-3">
-            <div className="flex-1 min-w-[200px]">
-              <Label
-                htmlFor="movement-start-date"
-                className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-              >
-                From
-              </Label>
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-muted-foreground" />
-                <Input
-                  id="movement-start-date"
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  max={endDate}
-                  className="flex-1"
-                />
-              </div>
-            </div>
-            <div className="flex-1 min-w-[200px]">
-              <Label
-                htmlFor="movement-end-date"
-                className="mb-2 block text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-              >
-                To
-              </Label>
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-muted-foreground" />
-                <Input
-                  id="movement-end-date"
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  min={startDate}
-                  className="flex-1"
-                />
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                const dateStr = pakistanDateInputValue();
-                setStartDate(dateStr);
-                setEndDate(dateStr);
-              }}
-              className="gap-2"
-            >
-              <RotateCcw className="h-4 w-4" />
-              Today
-            </Button>
-          </div>
+        <CardContent>
           {movementsQ.isLoading ? (
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : (
@@ -1977,7 +3056,9 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
                       <td
                         className={`pr-4 font-mono ${Number(m.quantity_delta) < 0 ? "text-destructive" : "text-success"}`}
                       >
-                        {qtyLabel(m.quantity_delta, m.inventory_items?.base_unit)}
+                        {m.entered_quantity && m.entered_unit
+                          ? `${Number(m.entered_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(m.entered_unit)}`
+                          : qtyLabel(m.quantity_delta, m.inventory_items?.base_unit)}
                       </td>
                       <td className="pr-4 font-mono">
                         {qtyLabel(m.after_qty, m.inventory_items?.base_unit)}
@@ -2019,6 +3100,7 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

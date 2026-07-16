@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as CareersRouteImport } from './routes/careers'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedStaffRouteImport } from './routes/_authenticated/staff'
@@ -21,6 +22,7 @@ import { Route as AuthenticatedOrdersRouteImport } from './routes/_authenticated
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
 import { Route as AuthenticatedMenuRouteImport } from './routes/_authenticated/menu'
 import { Route as AuthenticatedInventoryRouteImport } from './routes/_authenticated/inventory'
+import { Route as AuthenticatedHiringRouteImport } from './routes/_authenticated/hiring'
 import { Route as AuthenticatedExpensesRouteImport } from './routes/_authenticated/expenses'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedCustomersRouteImport } from './routes/_authenticated/customers'
@@ -35,6 +37,11 @@ const SignupRoute = SignupRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CareersRoute = CareersRouteImport.update({
+  id: '/careers',
+  path: '/careers',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedRoute = AuthenticatedRouteImport.update({
@@ -86,6 +93,11 @@ const AuthenticatedInventoryRoute = AuthenticatedInventoryRouteImport.update({
   path: '/inventory',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedHiringRoute = AuthenticatedHiringRouteImport.update({
+  id: '/hiring',
+  path: '/hiring',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 const AuthenticatedExpensesRoute = AuthenticatedExpensesRouteImport.update({
   id: '/expenses',
   path: '/expenses',
@@ -115,12 +127,14 @@ const AuthenticatedReceiptOrderIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/customers': typeof AuthenticatedCustomersRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/expenses': typeof AuthenticatedExpensesRoute
+  '/hiring': typeof AuthenticatedHiringRoute
   '/inventory': typeof AuthenticatedInventoryRoute
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
@@ -133,12 +147,14 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/customers': typeof AuthenticatedCustomersRoute
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/expenses': typeof AuthenticatedExpensesRoute
+  '/hiring': typeof AuthenticatedHiringRoute
   '/inventory': typeof AuthenticatedInventoryRoute
   '/menu': typeof AuthenticatedMenuRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
@@ -153,12 +169,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteWithChildren
+  '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/_authenticated/branches': typeof AuthenticatedBranchesRoute
   '/_authenticated/customers': typeof AuthenticatedCustomersRoute
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/expenses': typeof AuthenticatedExpensesRoute
+  '/_authenticated/hiring': typeof AuthenticatedHiringRoute
   '/_authenticated/inventory': typeof AuthenticatedInventoryRoute
   '/_authenticated/menu': typeof AuthenticatedMenuRoute
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
@@ -173,12 +191,14 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/careers'
     | '/login'
     | '/signup'
     | '/branches'
     | '/customers'
     | '/dashboard'
     | '/expenses'
+    | '/hiring'
     | '/inventory'
     | '/menu'
     | '/onboarding'
@@ -191,12 +211,14 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/careers'
     | '/login'
     | '/signup'
     | '/branches'
     | '/customers'
     | '/dashboard'
     | '/expenses'
+    | '/hiring'
     | '/inventory'
     | '/menu'
     | '/onboarding'
@@ -210,12 +232,14 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/_authenticated'
+    | '/careers'
     | '/login'
     | '/signup'
     | '/_authenticated/branches'
     | '/_authenticated/customers'
     | '/_authenticated/dashboard'
     | '/_authenticated/expenses'
+    | '/_authenticated/hiring'
     | '/_authenticated/inventory'
     | '/_authenticated/menu'
     | '/_authenticated/onboarding'
@@ -230,6 +254,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
+  CareersRoute: typeof CareersRoute
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
 }
@@ -248,6 +273,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/careers': {
+      id: '/careers'
+      path: '/careers'
+      fullPath: '/careers'
+      preLoaderRoute: typeof CareersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated': {
@@ -320,6 +352,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedInventoryRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/hiring': {
+      id: '/_authenticated/hiring'
+      path: '/hiring'
+      fullPath: '/hiring'
+      preLoaderRoute: typeof AuthenticatedHiringRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/expenses': {
       id: '/_authenticated/expenses'
       path: '/expenses'
@@ -363,6 +402,7 @@ interface AuthenticatedRouteChildren {
   AuthenticatedCustomersRoute: typeof AuthenticatedCustomersRoute
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedExpensesRoute: typeof AuthenticatedExpensesRoute
+  AuthenticatedHiringRoute: typeof AuthenticatedHiringRoute
   AuthenticatedInventoryRoute: typeof AuthenticatedInventoryRoute
   AuthenticatedMenuRoute: typeof AuthenticatedMenuRoute
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
@@ -379,6 +419,7 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedCustomersRoute: AuthenticatedCustomersRoute,
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedExpensesRoute: AuthenticatedExpensesRoute,
+  AuthenticatedHiringRoute: AuthenticatedHiringRoute,
   AuthenticatedInventoryRoute: AuthenticatedInventoryRoute,
   AuthenticatedMenuRoute: AuthenticatedMenuRoute,
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
@@ -397,6 +438,7 @@ const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  CareersRoute: CareersRoute,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
 }

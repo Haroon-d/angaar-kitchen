@@ -7,6 +7,7 @@ import { AuthorizationError, getUserRoles } from "@/services/authorization.servi
 import { recalculateCustomerStats } from "@/services/customer-stats.service.server";
 import { recordCouponRedemption, validateCoupon } from "@/services/coupon.service.server";
 import { hasAnyPermission, type AppPermission } from "@/lib/rbac";
+import { unitFactorToBase, type InventoryBaseUnit } from "@/lib/inventory-units";
 
 const TABLES = new Set([
   "restaurants",
@@ -19,12 +20,18 @@ const TABLES = new Set([
   "order_items",
   "order_taxes",
   "payments",
+  "finance_accounts",
+  "finance_day_closures",
+  "finance_transfers",
+  "finance_movements",
   "customers",
   "customer_addresses",
   "customer_events",
   "coupon_campaigns",
   "coupon_redemptions",
   "homepage_promotions",
+  "job_posts",
+  "job_applications",
   "customer_reviews",
   "product_analytics_events",
   "profiles",
@@ -33,13 +40,20 @@ const TABLES = new Set([
   "inventory_movements",
   "inventory_purchases",
   "inventory_purchase_lines",
+  "inventory_unit_conversions",
   "inventory_recipes",
+  "inventory_cost_layers",
+  "inventory_fifo_consumptions",
+  "inventory_counts",
+  "inventory_count_lines",
+  "supplier_ledger_entries",
   "suppliers",
   "operational_expenses",
   "operational_expense_categories",
   "branch_printer_settings",
   "inventory_low_stock",
   "inventory_food_cost_by_menu_item",
+  "inventory_menu_performance",
 ]);
 
 type DataOperation = "read" | "write" | "delete";
@@ -92,6 +106,24 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
     read: ["orders:view", "receipts:view"],
     write: ["pos:use", "orders:manage"],
   },
+  finance_accounts: {
+    read: ["dashboard:view", "expenses:view", "orders:view", "pos:use", "settings:manage"],
+    write: ["expenses:manage", "settings:manage"],
+    delete: ["settings:manage"],
+  },
+  finance_day_closures: {
+    read: ["dashboard:view", "expenses:view"],
+    write: ["expenses:manage"],
+    delete: ["expenses:manage"],
+  },
+  finance_transfers: {
+    read: ["dashboard:view", "expenses:view"],
+    write: ["expenses:manage"],
+    delete: ["expenses:manage"],
+  },
+  finance_movements: {
+    read: ["dashboard:view", "expenses:view"],
+  },
   customers: {
     read: ["customers:view", "pos:use"],
     write: ["customers:manage", "pos:use", "orders:manage"],
@@ -118,6 +150,16 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
     read: ["customers:view", "orders:view", "pos:use", "menu:manage"],
     write: ["customers:manage", "menu:manage"],
     delete: ["customers:manage", "menu:manage"],
+  },
+  job_posts: {
+    read: ["staff:manage"],
+    write: ["staff:manage"],
+    delete: ["staff:manage"],
+  },
+  job_applications: {
+    read: ["staff:manage"],
+    write: ["staff:manage"],
+    delete: ["staff:manage"],
   },
   customer_reviews: {
     read: ["customers:view", "orders:view"],
@@ -148,10 +190,34 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
     write: ["inventory:manage"],
     delete: ["inventory:manage"],
   },
+  inventory_unit_conversions: {
+    read: ["inventory:view"],
+    write: ["inventory:manage"],
+    delete: ["inventory:manage"],
+  },
   inventory_recipes: {
     read: ["inventory:view", "menu:manage"],
     write: ["inventory:manage"],
     delete: ["inventory:manage"],
+  },
+  inventory_cost_layers: {
+    read: ["inventory:view"],
+  },
+  inventory_fifo_consumptions: {
+    read: ["inventory:view"],
+  },
+  inventory_counts: {
+    read: ["inventory:view"],
+    write: ["inventory:manage"],
+    delete: ["inventory:manage"],
+  },
+  inventory_count_lines: {
+    read: ["inventory:view"],
+    write: ["inventory:manage"],
+    delete: ["inventory:manage"],
+  },
+  supplier_ledger_entries: {
+    read: ["inventory:view", "expenses:view"],
   },
   suppliers: {
     read: ["inventory:view"],
@@ -160,6 +226,7 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
   },
   inventory_low_stock: { read: ["dashboard:view", "inventory:view"] },
   inventory_food_cost_by_menu_item: { read: ["inventory:view", "menu:manage"] },
+  inventory_menu_performance: { read: ["dashboard:view", "inventory:view", "orders:view"] },
 
   operational_expenses: {
     read: ["dashboard:view", "expenses:view"],
@@ -192,6 +259,13 @@ const RPC_POLICIES: Record<string, readonly AppPermission[]> = {
   refund_order: ["orders:adjust"],
   update_order_status: ["orders:manage"],
   recalculate_customer_stats: ["customers:manage"],
+  backfill_customer_records: ["customers:manage", "orders:manage"],
+  clear_customer_dues_cutoff: ["customers:manage", "orders:manage"],
+  record_inventory_purchase: ["inventory:manage"],
+  record_inventory_adjustment: ["inventory:manage"],
+  apply_inventory_count: ["inventory:manage"],
+  record_supplier_payment: ["inventory:manage", "expenses:manage"],
+  set_inventory_lock: ["inventory:manage", "settings:manage"],
 };
 
 const FilterSchema = z.object({
@@ -320,6 +394,8 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       select
         mi.id as menu_item_id,
         mi.branch_id,
+        mi.name,
+        mi.base_price,
         coalesce(sum(ir.quantity * ii.average_cost), 0)::numeric as recipe_cost,
         case when mi.base_price::numeric > 0
           then (coalesce(sum(ir.quantity * ii.average_cost), 0) / mi.base_price::numeric) * 100
@@ -329,6 +405,107 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       left join inventory_recipes ir on ir.menu_item_id = mi.id
       left join inventory_items ii on ii.id = ir.inventory_item_id
       group by mi.id, mi.branch_id, mi.base_price
+      `,
+      input,
+    );
+  }
+
+  if (input.table === "inventory_menu_performance") {
+    return selectInventoryMenuPerformance(input);
+  }
+
+  if (input.table === "finance_movements") {
+    return selectVirtualRows(
+      `
+      select
+        p.id,
+        o.branch_id,
+        p.paid_at as occurred_at,
+        p.finance_account_id,
+        coalesce(fa.name, case when p.method = 'cash' then 'Counter Cash' else 'Online' end) as account_name,
+        coalesce(fa.account_type::text, case when p.method = 'cash' then 'counter_cash' else 'online' end) as account_type,
+        coalesce(fa.is_cash, p.method = 'cash') as is_cash,
+        'order_payment'::text as movement_type,
+        o.order_no as title,
+        p.method::text as payment_method,
+        p.kind::text as payment_kind,
+        p.amount::numeric as amount,
+        p.reference
+      from payments p
+      join orders o on o.id = p.order_id
+      left join finance_accounts fa on fa.id = p.finance_account_id
+      union all
+      select
+        e.id,
+        e.branch_id,
+        ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+        e.finance_account_id,
+        coalesce(fa.name, 'Not set') as account_name,
+        coalesce(fa.account_type::text, 'other') as account_type,
+        coalesce(fa.is_cash, e.payment_method = 'cash') as is_cash,
+        'expense'::text as movement_type,
+        e.title,
+        e.payment_method::text as payment_method,
+        e.status::text as payment_kind,
+        (-e.amount)::numeric as amount,
+        e.reference_no as reference
+      from operational_expenses e
+      left join finance_accounts fa on fa.id = e.finance_account_id
+      where e.status = 'paid'
+      union all
+      select
+        ip.id,
+        ip.branch_id,
+        ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+        ip.finance_account_id,
+        coalesce(fa.name, 'Not set') as account_name,
+        coalesce(fa.account_type::text, 'other') as account_type,
+        coalesce(fa.is_cash, false) as is_cash,
+        'purchase_payment'::text as movement_type,
+        coalesce(ip.invoice_no, 'Inventory purchase') as title,
+        null::text as payment_method,
+        'paid_purchase'::text as payment_kind,
+        (-ip.total)::numeric as amount,
+        ip.invoice_no as reference
+      from inventory_purchases ip
+      left join finance_accounts fa on fa.id = ip.finance_account_id
+      where ip.finance_account_id is not null
+      union all
+      select
+        t.id,
+        t.branch_id,
+        t.occurred_at,
+        t.from_account_id as finance_account_id,
+        coalesce(fa.name, 'Outside pocket') as account_name,
+        coalesce(fa.account_type::text, 'other') as account_type,
+        coalesce(fa.is_cash, false) as is_cash,
+        'transfer_out'::text as movement_type,
+        t.title,
+        null::text as payment_method,
+        t.transfer_type as payment_kind,
+        (-t.amount)::numeric as amount,
+        t.reference
+      from finance_transfers t
+      left join finance_accounts fa on fa.id = t.from_account_id
+      where t.from_account_id is not null
+      union all
+      select
+        t.id,
+        t.branch_id,
+        t.occurred_at,
+        t.to_account_id as finance_account_id,
+        coalesce(fa.name, 'Outside pocket') as account_name,
+        coalesce(fa.account_type::text, 'other') as account_type,
+        coalesce(fa.is_cash, false) as is_cash,
+        'transfer_in'::text as movement_type,
+        t.title,
+        null::text as payment_method,
+        t.transfer_type as payment_kind,
+        t.amount::numeric as amount,
+        t.reference
+      from finance_transfers t
+      left join finance_accounts fa on fa.id = t.to_account_id
+      where t.to_account_id is not null
       `,
       input,
     );
@@ -358,8 +535,12 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
   return { data: rows };
 }
 
-async function selectVirtualRows(baseSql: string, input: z.infer<typeof SelectSchema>) {
-  const params: unknown[] = [];
+async function selectVirtualRows(
+  baseSql: string,
+  input: z.infer<typeof SelectSchema>,
+  initialParams: unknown[] = [],
+) {
+  const params: unknown[] = [...initialParams];
   const { where, params: filterParams } = buildWhere(input.filters, params.length);
   params.push(...filterParams);
   const order = buildOrder(input.orders);
@@ -369,6 +550,74 @@ async function selectVirtualRows(baseSql: string, input: z.infer<typeof SelectSc
   const result = await pgPool.query(sql, params);
   if (input.count) return { data: input.head ? null : [], count: result.rows[0]?.count ?? 0 };
   return { data: input.single || input.maybeSingle ? (result.rows[0] ?? null) : result.rows };
+}
+
+async function selectInventoryMenuPerformance(input: z.infer<typeof SelectSchema>) {
+  const params: unknown[] = [];
+  const salesWhere = ["o.status not in ('cancelled', 'voided', 'refunded')"];
+  const filters = input.filters.filter((filter) => {
+    if (filter.column !== "created_at") return true;
+    const opMap = { gte: ">=", lte: "<=", lt: "<", gt: ">" } as const;
+    const op = opMap[filter.op as keyof typeof opMap];
+    if (!op) return true;
+    params.push(normalizeValue(filter.value));
+    salesWhere.push(`o.created_at ${op} $${params.length}`);
+    return false;
+  });
+
+  const branchFilter = filters.find((filter) => filter.column === "branch_id");
+  if (branchFilter?.op === "eq") {
+    params.push(normalizeValue(branchFilter.value));
+    salesWhere.push(`o.branch_id = $${params.length}`);
+  }
+
+  return selectVirtualRows(
+    `
+    with recipe_costs as (
+      select
+        ir.menu_item_id,
+        coalesce(sum(ir.quantity::numeric * ii.average_cost::numeric), 0)::numeric as recipe_cost
+      from inventory_recipes ir
+      join inventory_items ii on ii.id = ir.inventory_item_id
+      group by ir.menu_item_id
+    ),
+    sales as (
+      select
+        oi.item_id as menu_item_id,
+        count(distinct o.id)::int as order_count,
+        coalesce(sum(oi.qty::numeric), 0)::numeric as qty_sold,
+        coalesce(sum(oi.line_subtotal::numeric), 0)::numeric as revenue
+      from order_items oi
+      join orders o on o.id = oi.order_id
+      where ${salesWhere.join(" and ")}
+      group by oi.item_id
+    )
+    select
+      mi.id as menu_item_id,
+      mi.branch_id,
+      mi.name,
+      mi.base_price,
+      coalesce(rc.recipe_cost, 0)::numeric as recipe_cost,
+      coalesce(s.order_count, 0)::int as order_count,
+      coalesce(s.qty_sold, 0)::numeric as qty_sold,
+      coalesce(s.revenue, 0)::numeric as revenue,
+      (coalesce(rc.recipe_cost, 0) * coalesce(s.qty_sold, 0))::numeric as theoretical_food_cost,
+      (coalesce(s.revenue, 0) - (coalesce(rc.recipe_cost, 0) * coalesce(s.qty_sold, 0)))::numeric as gross_profit,
+      case when mi.base_price::numeric > 0
+        then (coalesce(rc.recipe_cost, 0) / mi.base_price::numeric) * 100
+        else 0
+      end::numeric as food_cost_percent,
+      case when coalesce(s.revenue, 0)::numeric > 0
+        then ((coalesce(s.revenue, 0) - (coalesce(rc.recipe_cost, 0) * coalesce(s.qty_sold, 0))) / coalesce(s.revenue, 0)) * 100
+        else 0
+      end::numeric as gross_margin_percent
+    from menu_items mi
+    left join recipe_costs rc on rc.menu_item_id = mi.id
+    left join sales s on s.menu_item_id = mi.id
+    `,
+    { ...input, filters },
+    params,
+  );
 }
 
 async function runInsert(input: z.infer<typeof InsertSchema>) {
@@ -468,6 +717,20 @@ async function runRpc(fn: string, args: Record<string, unknown>, actorId: string
       return updateOrderStatus(args, actorId, String(args._status ?? ""));
     case "recalculate_customer_stats":
       return recalculateCustomerStats(String(args._customer_id ?? ""));
+    case "backfill_customer_records":
+      return backfillCustomerRecords(args, actorId);
+    case "clear_customer_dues_cutoff":
+      return clearCustomerDuesCutoff(args, actorId);
+    case "record_inventory_purchase":
+      return recordInventoryPurchase(args, actorId);
+    case "record_inventory_adjustment":
+      return recordInventoryAdjustment(args, actorId);
+    case "apply_inventory_count":
+      return applyInventoryCount(args, actorId);
+    case "record_supplier_payment":
+      return recordSupplierPayment(args, actorId);
+    case "set_inventory_lock":
+      return setInventoryLock(args, actorId);
     default:
       throw new Error(`PostgreSQL RPC is not wired yet: ${fn}`);
   }
@@ -491,6 +754,34 @@ async function recordPrint(args: Record<string, unknown>) {
   return { data: null };
 }
 
+async function resolveFinanceAccountId(
+  client: PoolClient,
+  branchId: string,
+  method: string,
+  requestedAccountId: unknown,
+) {
+  const requested = typeof requestedAccountId === "string" ? requestedAccountId.trim() : "";
+  if (requested) {
+    const check = await client.query(
+      `select id from finance_accounts where id = $1 and branch_id = $2 and is_active = true`,
+      [requested, branchId],
+    );
+    if (!check.rowCount) throw new Error("Payment source is not available for this branch.");
+    return requested;
+  }
+
+  const targetType = method === "cash" ? "counter_cash" : method === "other" ? "other" : "online";
+  const result = await client.query(
+    `select id
+       from finance_accounts
+      where branch_id = $1 and account_type = $2 and is_active = true
+      order by sort_order asc, created_at asc
+      limit 1`,
+    [branchId, targetType],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
 async function recordPayment(args: Record<string, unknown>, actorId: string) {
   const client = await pgPool.connect();
   const orderId = String(args._order_id ?? "");
@@ -501,10 +792,21 @@ async function recordPayment(args: Record<string, unknown>, actorId: string) {
 
   await client.query("begin");
   try {
+    const orderScope = await client.query(`select branch_id from orders where id = $1 for update`, [
+      orderId,
+    ]);
+    const branchId = orderScope.rows[0]?.branch_id;
+    if (!branchId) throw new Error("Order was not found.");
+    const financeAccountId = await resolveFinanceAccountId(
+      client,
+      String(branchId),
+      method,
+      args._finance_account_id,
+    );
     await client.query(
-      `insert into payments (order_id, method, kind, amount, reference, received_by)
-       values ($1, $2, 'payment', $3, $4, $5)`,
-      [orderId, method, amount.toFixed(2), reference, actorId],
+      `insert into payments (order_id, method, kind, finance_account_id, amount, reference, received_by)
+       values ($1, $2, 'payment', $3, $4, $5, $6)`,
+      [orderId, method, financeAccountId, amount.toFixed(2), reference, actorId],
     );
     const result = await client.query(
       `update orders
@@ -538,6 +840,787 @@ async function recordPayment(args: Record<string, unknown>, actorId: string) {
   } finally {
     client.release();
   }
+}
+
+async function backfillCustomerRecords(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch_id ?? "");
+  if (!branchId) throw new Error("Branch is required.");
+
+  const client = await pgPool.connect();
+  const touchedCustomerIds = new Set<string>();
+  let linked = 0;
+
+  try {
+    await client.query("begin");
+    const branchResult = await client.query<{
+      id: string;
+      restaurant_id: string;
+    }>(
+      `
+      select b.id, b.restaurant_id
+      from branches b
+      where b.id = $1
+        and exists (
+          select 1
+          from user_roles ur
+          where ur.user_id = $2
+            and ur.restaurant_id = b.restaurant_id
+            and (ur.branch_id is null or ur.branch_id = b.id)
+        )
+      `,
+      [branchId, actorId],
+    );
+    const branch = branchResult.rows[0];
+    if (!branch) throw new Error("Branch was not found or you do not have access.");
+
+    const ordersResult = await client.query<{
+      id: string;
+      order_no: string;
+      customer_name: string | null;
+      customer_phone: string | null;
+      notes: string | null;
+      grand_total: string | number;
+    }>(
+      `
+      select id, order_no, customer_name, customer_phone, notes, grand_total
+      from orders
+      where branch_id = $1
+        and customer_id is null
+        and nullif(trim(coalesce(customer_name, '')), '') is not null
+      order by created_at asc
+      limit 2000
+      for update
+      `,
+      [branchId],
+    );
+
+    for (const order of ordersResult.rows) {
+      const customer = await findOrCreateOrderCustomer(client, {
+        restaurantId: branch.restaurant_id,
+        branchId,
+        name: order.customer_name,
+        phone: order.customer_phone,
+        notes: order.notes,
+      });
+      if (!customer) continue;
+
+      await client.query("update orders set customer_id = $2 where id = $1", [
+        order.id,
+        customer.id,
+      ]);
+      await client.query(
+        `
+        insert into customer_events (customer_id, restaurant_id, branch_id, order_id, event_type, meta)
+        select $1, $2, $3, $4, 'order_placed', jsonb_build_object('order_no', $5::text, 'grand_total', $6::numeric)
+        where not exists (
+          select 1
+          from customer_events
+          where customer_id = $1
+            and order_id = $4
+            and event_type = 'order_placed'
+        )
+        `,
+        [
+          customer.id,
+          branch.restaurant_id,
+          branchId,
+          order.id,
+          order.order_no,
+          moneyString(Number(order.grand_total || 0)),
+        ],
+      );
+      touchedCustomerIds.add(customer.id);
+      linked += 1;
+    }
+
+    for (const customerId of touchedCustomerIds) {
+      await recalculateCustomerStats(customerId, client);
+    }
+
+    await client.query("commit");
+    return { data: { linked, customers: touchedCustomerIds.size } };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function clearCustomerDuesCutoff(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch_id ?? "");
+  if (!branchId) throw new Error("Branch is required.");
+
+  const result = await pgPool.query<{ customer_dues_cutoff_at: Date }>(
+    `
+    update branches b
+    set customer_dues_cutoff_at = now(),
+        updated_at = now()
+    where b.id = $1
+      and exists (
+        select 1
+        from user_roles ur
+        where ur.user_id = $2
+          and ur.restaurant_id = b.restaurant_id
+          and (ur.branch_id is null or ur.branch_id = b.id)
+      )
+    returning customer_dues_cutoff_at
+    `,
+    [branchId, actorId],
+  );
+  const cutoffAt = result.rows[0]?.customer_dues_cutoff_at;
+  if (!cutoffAt) throw new Error("Branch was not found or you do not have access.");
+  return { data: { cutoffAt: cutoffAt.toISOString() } };
+}
+
+async function assertInventoryPeriodOpen(
+  client: PoolClient,
+  branchId: string,
+  occurredAt: string | Date,
+) {
+  const date =
+    typeof occurredAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(occurredAt)
+      ? new Date(`${occurredAt}T00:00:00+05:00`)
+      : new Date(occurredAt);
+  if (Number.isNaN(date.getTime())) throw new Error("Invalid inventory date.");
+
+  const result = await client.query(
+    "select inventory_locked_before from branches where id = $1",
+    [branchId],
+  );
+  const lockedBefore = result.rows[0]?.inventory_locked_before;
+  if (lockedBefore && date < new Date(lockedBefore)) {
+    throw new Error("This inventory period is locked. Post a current correction instead.");
+  }
+}
+
+async function createInventoryCostLayer(
+  client: PoolClient,
+  input: {
+    branchId: string;
+    itemId: string;
+    sourcePurchaseLineId?: string | null;
+    sourceMovementId?: string | null;
+    receivedAt?: string | Date;
+    quantity: number;
+    unitCost: number;
+  },
+) {
+  if (input.quantity <= 0) return;
+  await client.query(
+    `insert into inventory_cost_layers
+       (branch_id, inventory_item_id, source_purchase_line_id, source_movement_id,
+        received_at, quantity_received, quantity_remaining, unit_cost)
+     values ($1, $2, $3, $4, $5, $6, $6, $7)`,
+    [
+      input.branchId,
+      input.itemId,
+      input.sourcePurchaseLineId ?? null,
+      input.sourceMovementId ?? null,
+      input.receivedAt ?? new Date(),
+      baseQuantityString(input.quantity),
+      Number.isFinite(input.unitCost) ? input.unitCost.toFixed(6) : "0",
+    ],
+  );
+}
+
+async function reserveFifoConsumption(
+  client: PoolClient,
+  input: { branchId: string; itemId: string; quantity: number; fallbackUnitCost: number },
+) {
+  let remaining = roundQuantity(input.quantity);
+  let totalCost = 0;
+  const rows: Array<{ layerId: string | null; quantity: number; unitCost: number; totalCost: number }> =
+    [];
+  const layers = await client.query(
+    `select id, quantity_remaining, unit_cost
+       from inventory_cost_layers
+      where branch_id = $1
+        and inventory_item_id = $2
+        and quantity_remaining::numeric > 0
+      order by received_at asc, created_at asc, id asc
+      for update`,
+    [input.branchId, input.itemId],
+  );
+
+  for (const layer of layers.rows) {
+    if (remaining <= 0) break;
+    const available = Number(layer.quantity_remaining);
+    const consume = roundQuantity(Math.min(available, remaining));
+    if (consume <= 0) continue;
+    const after = roundQuantity(available - consume);
+    const unitCost = Number(layer.unit_cost || 0);
+    const lineTotal = roundMoney(consume * unitCost);
+    await client.query("update inventory_cost_layers set quantity_remaining = $2 where id = $1", [
+      layer.id,
+      baseQuantityString(after),
+    ]);
+    rows.push({ layerId: layer.id, quantity: consume, unitCost, totalCost: lineTotal });
+    totalCost += lineTotal;
+    remaining = roundQuantity(remaining - consume);
+  }
+
+  if (remaining > 0) {
+    const unitCost = Number.isFinite(input.fallbackUnitCost) ? input.fallbackUnitCost : 0;
+    const lineTotal = roundMoney(remaining * unitCost);
+    rows.push({ layerId: null, quantity: remaining, unitCost, totalCost: lineTotal });
+    totalCost += lineTotal;
+  }
+
+  return {
+    unitCost: input.quantity > 0 ? totalCost / input.quantity : 0,
+    totalCost,
+    rows,
+  };
+}
+
+async function insertFifoConsumptionRows(
+  client: PoolClient,
+  input: {
+    branchId: string;
+    itemId: string;
+    movementId: string;
+    rows: Array<{ layerId: string | null; quantity: number; unitCost: number; totalCost: number }>;
+  },
+) {
+  for (const row of input.rows) {
+    await client.query(
+      `insert into inventory_fifo_consumptions
+         (branch_id, inventory_item_id, movement_id, cost_layer_id, quantity, unit_cost, total_cost)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.branchId,
+        input.itemId,
+        input.movementId,
+        row.layerId,
+        baseQuantityString(row.quantity),
+        row.unitCost.toFixed(6),
+        moneyString(row.totalCost),
+      ],
+    );
+  }
+}
+
+async function recordInventoryPurchase(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch ?? "");
+  const supplierId = nullableText(args._supplier);
+  const financeAccountId = nullableText(args._finance_account);
+  const invoiceNo = nullableText(args._invoice_no);
+  const purchaseDate = nullableText(args._purchase_date) ?? new Date().toISOString().slice(0, 10);
+  const note = nullableText(args._notes);
+  const lines = Array.isArray(args._lines) ? (args._lines as Array<Record<string, unknown>>) : [];
+  if (!branchId || lines.length === 0) throw new Error("Purchase needs at least one line.");
+  if (!financeAccountId) throw new Error("Select the payment source for this purchase.");
+
+  const client = await pgPool.connect();
+  try {
+    await client.query("begin");
+    const branchResult = await client.query(
+      "select id, restaurant_id from branches where id = $1",
+      [branchId],
+    );
+    const branch = branchResult.rows[0];
+    if (!branch) throw new Error("Branch was not found.");
+    await assertInventoryPeriodOpen(client, branchId, purchaseDate);
+    if (supplierId) {
+      const supplier = await client.query(
+        "select id from suppliers where id = $1 and restaurant_id = $2 and is_active = true",
+        [supplierId, branch.restaurant_id],
+      );
+      if (!supplier.rowCount) throw new Error("Supplier was not found.");
+    }
+    if (financeAccountId) {
+      const source = await client.query(
+        "select id from finance_accounts where id = $1 and branch_id = $2 and is_active = true",
+        [financeAccountId, branchId],
+      );
+      if (!source.rowCount) throw new Error("Payment source is not available for this branch.");
+    }
+
+    const purchaseResult = await client.query(
+      `insert into inventory_purchases
+         (branch_id, supplier_id, finance_account_id, invoice_no, purchase_date, notes, total, created_by)
+       values ($1, $2, $3, $4, $5, $6, 0, $7)
+       returning id`,
+      [branchId, supplierId, financeAccountId, invoiceNo, purchaseDate, note, actorId],
+    );
+    const purchaseId = String(purchaseResult.rows[0].id);
+    let total = 0;
+
+    for (const line of lines) {
+      const itemId = String(line.inventory_item_id ?? "");
+      const quantity = Number(line.quantity ?? 0);
+      const unit = String(line.unit ?? "");
+      const conversionInput = line.conversion_factor ?? line.pack_size ?? null;
+      const unitCost = Number(line.unit_cost ?? 0);
+      if (!itemId || !Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error("Every purchase line needs a valid ingredient and positive quantity.");
+      }
+      if (!Number.isFinite(unitCost) || unitCost < 0) throw new Error("Unit cost cannot be negative.");
+
+      const itemResult = await client.query(
+        `select id, base_unit, current_qty, average_cost
+         from inventory_items
+         where id = $1 and branch_id = $2 and is_active = true
+         for update`,
+        [itemId, branchId],
+      );
+      const item = itemResult.rows[0];
+      if (!item) throw new Error("Inventory item was not found in this branch.");
+      const baseUnit = String(item.base_unit) as InventoryBaseUnit;
+      const factor = unitFactorToBase(baseUnit, unit, conversionInput as number | string | null);
+      const baseQuantity = roundQuantity(quantity * factor);
+      const lineTotal = roundMoney(quantity * unitCost);
+      const beforeQty = Number(item.current_qty);
+      const afterQty = roundQuantity(beforeQty + baseQuantity);
+      const currentValue = Math.max(0, beforeQty) * Number(item.average_cost);
+      const averageCost = afterQty > 0 ? (currentValue + lineTotal) / afterQty : Number(item.average_cost);
+
+      const purchaseLineResult = await client.query(
+        `insert into inventory_purchase_lines
+         (purchase_id, inventory_item_id, quantity, unit, pack_size, conversion_factor,
+            base_quantity, unit_cost, line_total)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         returning id`,
+        [
+          purchaseId,
+          itemId,
+          quantity,
+          unit,
+          line.pack_size ?? null,
+          factor,
+          baseQuantity,
+          unitCost,
+          moneyString(lineTotal),
+        ],
+      );
+      await client.query(
+        `update inventory_items
+         set current_qty = $2, average_cost = $3, updated_at = now()
+         where id = $1`,
+        [itemId, baseQuantityString(afterQty), averageCost.toFixed(6)],
+      );
+      const movementResult = await client.query(
+        `insert into inventory_movements
+           (branch_id, inventory_item_id, movement_type, reason, quantity_delta,
+            before_qty, after_qty, unit_cost, entered_quantity, entered_unit, conversion_factor,
+            related_purchase_id, actor_id, note)
+         values ($1, $2, 'purchase', 'purchase', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         returning id`,
+        [
+          branchId,
+          itemId,
+          baseQuantityString(baseQuantity),
+          baseQuantityString(beforeQty),
+          baseQuantityString(afterQty),
+          baseQuantity > 0 ? (lineTotal / baseQuantity).toFixed(6) : "0",
+          quantity,
+          unit,
+          factor,
+          purchaseId,
+          actorId,
+          note,
+        ],
+      );
+      await createInventoryCostLayer(client, {
+        branchId,
+        itemId,
+        sourcePurchaseLineId: purchaseLineResult.rows[0].id,
+        sourceMovementId: movementResult.rows[0].id,
+        receivedAt: purchaseDate,
+        quantity: baseQuantity,
+        unitCost: baseQuantity > 0 ? lineTotal / baseQuantity : 0,
+      });
+      total += lineTotal;
+    }
+
+    await client.query("update inventory_purchases set total = $2 where id = $1", [
+      purchaseId,
+      moneyString(total),
+    ]);
+    await client.query(
+      `insert into audit_log
+         (restaurant_id, branch_id, actor_id, entity, entity_id, action, meta)
+       values ($1, $2, $3, 'inventory_purchase', $4, 'recorded', jsonb_build_object('total', $5::numeric))`,
+      [branch.restaurant_id, branchId, actorId, purchaseId, moneyString(total)],
+    );
+    if (supplierId && total > 0) {
+      await client.query(
+        `insert into supplier_ledger_entries
+           (restaurant_id, branch_id, supplier_id, entry_type, purchase_id, amount,
+            reference_no, occurred_on, notes, created_by)
+         values ($1, $2, $3, 'purchase', $4, $5, $6, $7, $8, $9)`,
+        [
+          branch.restaurant_id,
+          branchId,
+          supplierId,
+          purchaseId,
+          moneyString(total),
+          invoiceNo,
+          purchaseDate,
+          note,
+          actorId,
+        ],
+      );
+      if (financeAccountId) {
+        await client.query(
+          `insert into supplier_ledger_entries
+             (restaurant_id, branch_id, supplier_id, entry_type, purchase_id, amount,
+              reference_no, occurred_on, notes, created_by)
+           values ($1, $2, $3, 'payment', $4, $5, $6, $7, $8, $9)`,
+          [
+            branch.restaurant_id,
+            branchId,
+            supplierId,
+            purchaseId,
+            moneyString(-total),
+            invoiceNo,
+            purchaseDate,
+            note ? `Paid purchase. ${note}` : "Paid purchase",
+            actorId,
+          ],
+        );
+      }
+    }
+    await client.query("commit");
+    return [{ purchase_id: purchaseId, total: moneyString(total) }];
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function recordInventoryAdjustment(args: Record<string, unknown>, actorId: string) {
+  const itemId = String(args._item ?? "");
+  const movementType = String(args._movement_type ?? "adjustment");
+  const reason = String(args._reason ?? "other");
+  const enteredQuantity = Number(args._entered_quantity ?? args._quantity_delta ?? 0);
+  const enteredUnit = nullableText(args._unit);
+  const conversionInput = args._conversion_factor ?? null;
+  const note = nullableText(args._note);
+  const validTypes = new Set(["adjustment", "waste", "correction", "staff_meal", "damage"]);
+  const validReasons = new Set(["waste", "damage", "correction", "staff_meal", "other"]);
+  if (!itemId || !validTypes.has(movementType) || !validReasons.has(reason)) {
+    throw new Error("Invalid inventory adjustment.");
+  }
+  if (!Number.isFinite(enteredQuantity) || enteredQuantity === 0) {
+    throw new Error("Quantity adjustment cannot be zero.");
+  }
+
+  const client = await pgPool.connect();
+  try {
+    await client.query("begin");
+    const itemResult = await client.query(
+      `select ii.*, b.restaurant_id
+       from inventory_items ii join branches b on b.id = ii.branch_id
+       where ii.id = $1 for update`,
+      [itemId],
+    );
+    const item = itemResult.rows[0];
+    if (!item) throw new Error("Inventory item was not found.");
+    await assertInventoryPeriodOpen(client, item.branch_id, new Date());
+    const baseUnit = String(item.base_unit) as InventoryBaseUnit;
+    const unit = enteredUnit ?? baseUnit;
+    const factor = unitFactorToBase(baseUnit, unit, conversionInput as number | string | null);
+    const delta = roundQuantity(enteredQuantity * factor);
+    if (delta === 0) throw new Error("Adjustment is too small for the stock precision.");
+    const beforeQty = Number(item.current_qty);
+    const afterQty = roundQuantity(beforeQty + delta);
+    const fifo =
+      delta < 0
+        ? await reserveFifoConsumption(client, {
+            branchId: item.branch_id,
+            itemId,
+            quantity: Math.abs(delta),
+            fallbackUnitCost: Number(item.average_cost || 0),
+          })
+        : null;
+    const unitCost = fifo ? fifo.unitCost : Number(item.average_cost || 0);
+    const movementResult = await client.query(
+      `insert into inventory_movements
+         (branch_id, inventory_item_id, movement_type, reason, quantity_delta,
+          before_qty, after_qty, unit_cost, entered_quantity, entered_unit, conversion_factor,
+          actor_id, note)
+       values ($1, $2, $3::inventory_movement_type, $4::inventory_adjustment_reason,
+               $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       returning id`,
+      [
+        item.branch_id,
+        itemId,
+        movementType,
+        reason,
+        baseQuantityString(delta),
+        baseQuantityString(beforeQty),
+        baseQuantityString(afterQty),
+        unitCost.toFixed(6),
+        enteredQuantity,
+        unit,
+        factor,
+        actorId,
+        note,
+      ],
+    );
+    const movementId = String(movementResult.rows[0].id);
+    if (fifo) {
+      await insertFifoConsumptionRows(client, {
+        branchId: item.branch_id,
+        itemId,
+        movementId,
+        rows: fifo.rows,
+      });
+    } else if (delta > 0) {
+      await createInventoryCostLayer(client, {
+        branchId: item.branch_id,
+        itemId,
+        sourceMovementId: movementId,
+        quantity: delta,
+        unitCost,
+      });
+    }
+    await client.query(
+      "update inventory_items set current_qty = $2, updated_at = now() where id = $1",
+      [itemId, baseQuantityString(afterQty)],
+    );
+    await client.query(
+      `insert into audit_log
+         (restaurant_id, branch_id, actor_id, entity, entity_id, action, meta)
+       values ($1, $2, $3, 'inventory', $4, 'adjusted',
+               jsonb_build_object('delta', $5::numeric, 'entered_quantity', $6::numeric, 'unit', $7::text, 'reason', $8::text))`,
+      [
+        item.restaurant_id,
+        item.branch_id,
+        actorId,
+        itemId,
+        baseQuantityString(delta),
+        enteredQuantity,
+        unit,
+        reason,
+      ],
+    );
+    await client.query("commit");
+    return [{ movement_id: movementResult.rows[0].id, new_quantity: afterQty }];
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function applyInventoryCount(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch ?? "");
+  const countDate = nullableText(args._count_date) ?? new Date().toISOString().slice(0, 10);
+  const notes = nullableText(args._notes);
+  const lines = Array.isArray(args._lines) ? (args._lines as Array<Record<string, unknown>>) : [];
+  if (!branchId || !lines.length) throw new Error("Physical count needs at least one line.");
+
+  const client = await pgPool.connect();
+  try {
+    await client.query("begin");
+    await assertInventoryPeriodOpen(client, branchId, countDate);
+    const countResult = await client.query(
+      `insert into inventory_counts
+         (branch_id, count_date, status, notes, created_by, applied_by, applied_at)
+       values ($1, $2, 'applied', $3, $4, $4, now())
+       returning id`,
+      [branchId, countDate, notes, actorId],
+    );
+    const countId = String(countResult.rows[0].id);
+    let adjustedLines = 0;
+
+    for (const line of lines) {
+      const itemId = String(line.inventory_item_id ?? "");
+      const countedQuantity = Number(line.counted_quantity ?? 0);
+      const countedUnit = String(line.counted_unit ?? "");
+      const conversionInput = line.conversion_factor ?? null;
+      if (!itemId || !Number.isFinite(countedQuantity) || countedQuantity < 0 || !countedUnit) {
+        throw new Error("Every count line needs an ingredient, quantity, and unit.");
+      }
+
+      const itemResult = await client.query(
+        `select id, branch_id, base_unit, current_qty, average_cost
+         from inventory_items
+         where id = $1 and branch_id = $2 and is_active = true
+         for update`,
+        [itemId, branchId],
+      );
+      const item = itemResult.rows[0];
+      if (!item) throw new Error("Inventory item was not found in this branch.");
+      const factor = unitFactorToBase(
+        String(item.base_unit) as InventoryBaseUnit,
+        countedUnit,
+        conversionInput as number | string | null,
+      );
+      const countedBaseQty = roundQuantity(countedQuantity * factor);
+      const systemQty = Number(item.current_qty);
+      const varianceQty = roundQuantity(countedBaseQty - systemQty);
+      const unitCost = Number(item.average_cost || 0);
+      let adjustmentMovementId: string | null = null;
+      let varianceUnitCost = unitCost;
+
+      if (varianceQty !== 0) {
+        const fifo =
+          varianceQty < 0
+            ? await reserveFifoConsumption(client, {
+                branchId,
+                itemId,
+                quantity: Math.abs(varianceQty),
+                fallbackUnitCost: unitCost,
+              })
+            : null;
+        varianceUnitCost = fifo ? fifo.unitCost : unitCost;
+        const movementResult = await client.query(
+          `insert into inventory_movements
+             (branch_id, inventory_item_id, movement_type, reason, quantity_delta,
+              before_qty, after_qty, unit_cost, entered_quantity, entered_unit, conversion_factor,
+              actor_id, note)
+           values ($1, $2, 'correction', 'correction', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           returning id`,
+          [
+            branchId,
+            itemId,
+            baseQuantityString(varianceQty),
+            baseQuantityString(systemQty),
+            baseQuantityString(countedBaseQty),
+            varianceUnitCost.toFixed(6),
+            countedQuantity,
+            countedUnit,
+            factor,
+            actorId,
+            notes ?? `Physical count ${countDate}`,
+          ],
+        );
+        adjustmentMovementId = String(movementResult.rows[0].id);
+        if (fifo) {
+          await insertFifoConsumptionRows(client, {
+            branchId,
+            itemId,
+            movementId: adjustmentMovementId,
+            rows: fifo.rows,
+          });
+        } else if (varianceQty > 0) {
+          await createInventoryCostLayer(client, {
+            branchId,
+            itemId,
+            sourceMovementId: adjustmentMovementId,
+            quantity: varianceQty,
+            unitCost: varianceUnitCost,
+          });
+        }
+        await client.query(
+          "update inventory_items set current_qty = $2, updated_at = now() where id = $1",
+          [itemId, baseQuantityString(countedBaseQty)],
+        );
+        adjustedLines += 1;
+      }
+
+      await client.query(
+        `insert into inventory_count_lines
+           (count_id, inventory_item_id, system_qty, counted_quantity, counted_unit,
+            conversion_factor, counted_base_qty, variance_qty, unit_cost, variance_value,
+            adjustment_movement_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          countId,
+          itemId,
+          baseQuantityString(systemQty),
+          countedQuantity,
+          countedUnit,
+          factor,
+          baseQuantityString(countedBaseQty),
+          baseQuantityString(varianceQty),
+          varianceUnitCost.toFixed(6),
+          moneyString(Math.abs(varianceQty) * varianceUnitCost),
+          adjustmentMovementId,
+        ],
+      );
+    }
+
+    await client.query("commit");
+    return [{ count_id: countId, adjusted_lines: adjustedLines }];
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function recordSupplierPayment(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch ?? "");
+  const supplierId = String(args._supplier ?? "");
+  const amount = Number(args._amount ?? 0);
+  const occurredOn = nullableText(args._date) ?? new Date().toISOString().slice(0, 10);
+  const reference = nullableText(args._reference);
+  const notes = nullableText(args._notes);
+  if (!branchId || !supplierId || !Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Supplier payment needs supplier, branch, and positive amount.");
+  }
+
+  const client = await pgPool.connect();
+  try {
+    await client.query("begin");
+    const branchResult = await client.query(
+      "select id, restaurant_id from branches where id = $1",
+      [branchId],
+    );
+    const branch = branchResult.rows[0];
+    if (!branch) throw new Error("Branch was not found.");
+    const supplier = await client.query(
+      "select id from suppliers where id = $1 and restaurant_id = $2 and is_active = true",
+      [supplierId, branch.restaurant_id],
+    );
+    if (!supplier.rowCount) throw new Error("Supplier was not found.");
+
+    const result = await client.query(
+      `insert into supplier_ledger_entries
+         (restaurant_id, branch_id, supplier_id, entry_type, amount, reference_no,
+          occurred_on, notes, created_by)
+       values ($1, $2, $3, 'payment', $4, $5, $6, $7, $8)
+       returning id`,
+      [
+        branch.restaurant_id,
+        branchId,
+        supplierId,
+        moneyString(-amount),
+        reference,
+        occurredOn,
+        notes,
+        actorId,
+      ],
+    );
+    await client.query("commit");
+    return [{ ledger_entry_id: result.rows[0].id }];
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function setInventoryLock(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch ?? "");
+  const lockedBefore = nullableText(args._locked_before);
+  if (!branchId) throw new Error("Branch is required.");
+  const result = await pgPool.query(
+    `update branches b
+     set inventory_locked_before = $2,
+         updated_at = now()
+     where b.id = $1
+       and exists (
+         select 1 from user_roles ur
+         where ur.user_id = $3
+           and ur.restaurant_id = b.restaurant_id
+           and (ur.branch_id is null or ur.branch_id = b.id)
+       )
+     returning inventory_locked_before`,
+    [branchId, lockedBefore, actorId],
+  );
+  if (!result.rowCount) throw new Error("Branch was not found or you do not have access.");
+  return { data: { lockedBefore: result.rows[0].inventory_locked_before } };
 }
 
 async function getMenuItemStockStatus(args: Record<string, unknown>) {
@@ -604,6 +1687,8 @@ async function updatePosOrder(args: Record<string, unknown>, actorId: string) {
     if (!previousOrder) throw new Error("Order was not found.");
     if (Number(previousOrder.amount_paid ?? 0) > 0)
       throw new Error("Paid orders cannot be edited.");
+    await assertInventoryPeriodOpen(client, previousOrder.branch_id, previousOrder.created_at);
+    await restoreOrderInventory(client, orderId, actorId, "Order edited - previous recipe restored");
     await client.query("delete from order_taxes where order_id = $1", [orderId]);
     await client.query("delete from order_items where order_id = $1", [orderId]);
     await client.query("delete from coupon_redemptions where order_id = $1", [orderId]);
@@ -795,6 +1880,12 @@ async function writePosOrder(
       ],
     );
   }
+  await deductOrderInventory(client, {
+    orderId: order.id,
+    branchId: input.branch.id,
+    actorId: input.actorId,
+    orderNo: order.order_no,
+  });
   for (const tax of taxRows) {
     await client.query(
       `insert into order_taxes (order_id, tax_id, name_snapshot, rate_snapshot, amount)
@@ -803,6 +1894,143 @@ async function writePosOrder(
     );
   }
   return order;
+}
+
+export async function deductOrderInventoryForOrderTx(
+  client: PoolClient,
+  input: { orderId: string; branchId: string; actorId: string | null; orderNo: string },
+) {
+  await deductOrderInventory(client, input);
+}
+
+async function deductOrderInventory(
+  client: PoolClient,
+  input: { orderId: string; branchId: string; actorId: string | null; orderNo: string },
+) {
+  const usage = await client.query(
+    `select ir.inventory_item_id, sum(ir.quantity::numeric * oi.qty::numeric) as quantity
+     from order_items oi
+     join inventory_recipes ir on ir.menu_item_id = oi.item_id
+     where oi.order_id = $1
+     group by ir.inventory_item_id
+     order by ir.inventory_item_id`,
+    [input.orderId],
+  );
+
+  for (const row of usage.rows) {
+    const quantity = roundQuantity(Number(row.quantity));
+    if (quantity <= 0) continue;
+    const itemResult = await client.query(
+      `select id, branch_id, base_unit, current_qty, average_cost
+       from inventory_items where id = $1 for update`,
+      [row.inventory_item_id],
+    );
+    const item = itemResult.rows[0];
+    if (!item) throw new Error("A recipe ingredient no longer exists.");
+    if (String(item.branch_id) !== input.branchId) {
+      throw new Error("A recipe uses an ingredient from another branch.");
+    }
+    const beforeQty = Number(item.current_qty);
+    const afterQty = roundQuantity(beforeQty - quantity);
+    const fifo = await reserveFifoConsumption(client, {
+      branchId: input.branchId,
+      itemId: item.id,
+      quantity,
+      fallbackUnitCost: Number(item.average_cost || 0),
+    });
+    await client.query(
+      "update inventory_items set current_qty = $2, updated_at = now() where id = $1",
+      [item.id, baseQuantityString(afterQty)],
+    );
+    const movementResult = await client.query(
+      `insert into inventory_movements
+         (branch_id, inventory_item_id, movement_type, reason, quantity_delta,
+          before_qty, after_qty, unit_cost, entered_quantity, entered_unit, conversion_factor,
+          related_order_id, actor_id, note)
+       values ($1, $2, 'sale', 'sale', $3, $4, $5, $6, $7, $8, 1, $9, $10, $11)
+       returning id`,
+      [
+        input.branchId,
+        item.id,
+        baseQuantityString(-quantity),
+        baseQuantityString(beforeQty),
+        baseQuantityString(afterQty),
+        fifo.unitCost.toFixed(6),
+        -quantity,
+        item.base_unit,
+        input.orderId,
+        input.actorId,
+        input.orderNo,
+      ],
+    );
+    await insertFifoConsumptionRows(client, {
+      branchId: input.branchId,
+      itemId: item.id,
+      movementId: String(movementResult.rows[0].id),
+      rows: fifo.rows,
+    });
+  }
+}
+
+async function restoreOrderInventory(
+  client: PoolClient,
+  orderId: string,
+  actorId: string,
+  note: string,
+) {
+  const netUsage = await client.query(
+    `select inventory_item_id, branch_id, sum(quantity_delta::numeric) as net_delta
+     from inventory_movements
+     where related_order_id = $1
+     group by inventory_item_id, branch_id
+     having sum(quantity_delta::numeric) < 0
+     order by inventory_item_id`,
+    [orderId],
+  );
+  for (const row of netUsage.rows) {
+    const restoreQuantity = roundQuantity(-Number(row.net_delta));
+    if (restoreQuantity <= 0) continue;
+    const itemResult = await client.query(
+      "select id, base_unit, current_qty, average_cost from inventory_items where id = $1 for update",
+      [row.inventory_item_id],
+    );
+    const item = itemResult.rows[0];
+    if (!item) continue;
+    const beforeQty = Number(item.current_qty);
+    const afterQty = roundQuantity(beforeQty + restoreQuantity);
+    await client.query(
+      "update inventory_items set current_qty = $2, updated_at = now() where id = $1",
+      [item.id, baseQuantityString(afterQty)],
+    );
+    const movementResult = await client.query(
+      `insert into inventory_movements
+         (branch_id, inventory_item_id, movement_type, reason, quantity_delta,
+          before_qty, after_qty, unit_cost, entered_quantity, entered_unit, conversion_factor,
+          related_order_id, actor_id, note)
+       values ($1, $2, 'correction', 'correction', $3, $4, $5, $6, $7, $8, 1, $9, $10, $11)
+       returning id`,
+      [
+        row.branch_id,
+        item.id,
+        baseQuantityString(restoreQuantity),
+        baseQuantityString(beforeQty),
+        baseQuantityString(afterQty),
+        item.average_cost,
+        restoreQuantity,
+        item.base_unit,
+        orderId,
+        actorId,
+        note,
+      ],
+    );
+    await createInventoryCostLayer(client, {
+      branchId: row.branch_id,
+      itemId: item.id,
+      sourceMovementId: String(movementResult.rows[0].id),
+      quantity: restoreQuantity,
+      unitCost: Number(item.average_cost || 0),
+    });
+  }
 }
 
 async function findOrCreateOrderCustomer(
@@ -817,7 +2045,9 @@ async function findOrCreateOrderCustomer(
 ) {
   const phone = input.phone?.trim();
   const phoneNormalized = normalizePhone(phone);
-  if (!phone || !phoneNormalized) return null;
+  const name = nullableText(input.name);
+  const identityKey = phoneNormalized || nameIdentityKey(name);
+  if (!identityKey) return null;
 
   const context = parseCustomerContext(input.notes);
   const result = await client.query(
@@ -827,7 +2057,10 @@ async function findOrCreateOrderCustomer(
      on conflict (restaurant_id, phone_normalized) do update
        set branch_id = excluded.branch_id,
            name = coalesce(excluded.name, customers.name),
-           primary_phone = excluded.primary_phone,
+           primary_phone = case
+             when excluded.primary_phone <> '' then excluded.primary_phone
+             else customers.primary_phone
+           end,
            default_address = coalesce(customers.default_address, excluded.default_address),
            notes = coalesce(customers.notes, excluded.notes),
            updated_at = now()
@@ -835,9 +2068,9 @@ async function findOrCreateOrderCustomer(
     [
       input.restaurantId,
       input.branchId,
-      nullableText(input.name),
-      phone,
-      phoneNormalized,
+      name,
+      phone ?? "",
+      identityKey,
       context.address,
       context.preferenceNote,
     ],
@@ -907,6 +2140,15 @@ async function updateOrderStatus(args: Record<string, unknown>, actorId: string,
   const client = await pgPool.connect();
   try {
     await client.query("begin");
+    const existing = await client.query(
+      "select status, branch_id, created_at from orders where id = $1 for update",
+      [orderId],
+    );
+    if (!existing.rowCount) throw new Error("Order was not found.");
+    if (status === "cancelled" && existing.rows[0].status !== "cancelled") {
+      await assertInventoryPeriodOpen(client, existing.rows[0].branch_id, existing.rows[0].created_at);
+      await restoreOrderInventory(client, orderId, actorId, "Order cancelled - recipe restored");
+    }
     const result = await client.query(
       `update orders
        set status = $2::order_status,
@@ -998,17 +2240,32 @@ async function voidOrder(args: Record<string, unknown>, actorId: string) {
     const existing = await client.query("select * from orders where id = $1 for update", [orderId]);
     const order = existing.rows[0];
     if (!order) throw new Error("Order was not found.");
+    await assertInventoryPeriodOpen(client, order.branch_id, order.created_at);
+    const financeAccountId = await resolveFinanceAccountId(
+      client,
+      String(order.branch_id),
+      method,
+      args._finance_account_id,
+    );
     if (Number(order.amount_paid) > 0) {
       await client.query(
-        `insert into payments (order_id, method, kind, amount, reference, received_by)
-         values ($1, $2, 'void_adjustment', $3, $4, $5)`,
-        [orderId, method, `-${Number(order.amount_paid).toFixed(2)}`, reference, actorId],
+        `insert into payments (order_id, method, kind, finance_account_id, amount, reference, received_by)
+         values ($1, $2, 'void_adjustment', $3, $4, $5, $6)`,
+        [
+          orderId,
+          method,
+          financeAccountId,
+          `-${Number(order.amount_paid).toFixed(2)}`,
+          reference,
+          actorId,
+        ],
       );
     }
     await client.query(
       `update orders set status = 'voided', payment_status = 'refunded', amount_paid = 0, updated_at = now() where id = $1`,
       [orderId],
     );
+    await restoreOrderInventory(client, orderId, actorId, "Order voided - recipe restored");
     await recalculateCustomerStatsForOrder(client, orderId);
     await client.query("commit");
     await auditOrder(orderId, actorId, "voided", nullableText(args._reason));
@@ -1034,10 +2291,16 @@ async function refundOrder(args: Record<string, unknown>, actorId: string) {
     const order = existing.rows[0];
     if (!order) throw new Error("Order was not found.");
     if (amount > Number(order.amount_paid)) throw new Error("Refund exceeds paid amount.");
+    const financeAccountId = await resolveFinanceAccountId(
+      client,
+      String(order.branch_id),
+      method,
+      args._finance_account_id,
+    );
     await client.query(
-      `insert into payments (order_id, method, kind, amount, reference, received_by)
-       values ($1, $2, 'refund', $3, $4, $5)`,
-      [orderId, method, `-${amount.toFixed(2)}`, reference, actorId],
+      `insert into payments (order_id, method, kind, finance_account_id, amount, reference, received_by)
+       values ($1, $2, 'refund', $3, $4, $5, $6)`,
+      [orderId, method, financeAccountId, `-${amount.toFixed(2)}`, reference, actorId],
     );
     const nextPaid = Math.max(0, Number(order.amount_paid) - amount);
     await client.query(
@@ -1049,6 +2312,10 @@ async function refundOrder(args: Record<string, unknown>, actorId: string) {
        where id = $1`,
       [orderId, moneyString(nextPaid)],
     );
+    if (nextPaid <= 0 && args._restore_inventory === true) {
+      await assertInventoryPeriodOpen(client, order.branch_id, order.created_at);
+      await restoreOrderInventory(client, orderId, actorId, "Full refund - recipe restored");
+    }
     await recalculateCustomerStatsForOrder(client, orderId);
     await client.query("commit");
     await auditOrder(orderId, actorId, "refunded", nullableText(args._reason));
@@ -1174,6 +2441,15 @@ function normalizePhone(value: string | null | undefined) {
   return digits;
 }
 
+function nameIdentityKey(value: string | null) {
+  const normalized = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized ? `name:${normalized}` : "";
+}
+
 function parseCustomerContext(notes: string | null | undefined) {
   const raw = notes?.trim();
   if (!raw) return { address: null, preferenceNote: null };
@@ -1196,6 +2472,14 @@ function roundMoney(value: number) {
 
 function moneyString(value: number) {
   return roundMoney(value).toFixed(2);
+}
+
+function roundQuantity(value: number) {
+  return Math.round((value + Number.EPSILON) * 1000) / 1000;
+}
+
+function baseQuantityString(value: number) {
+  return roundQuantity(value).toFixed(3);
 }
 
 function buildWhere(filters: Array<z.infer<typeof FilterSchema>>, offset: number) {
@@ -1312,7 +2596,14 @@ function assertWritableTable(table: string) {
   assertTable(table);
   if (table.startsWith("inventory_") && table.endsWith("_stock"))
     throw new Error("View is read-only.");
-  if (table === "inventory_food_cost_by_menu_item" || table === "inventory_low_stock") {
+  if (
+    table === "inventory_food_cost_by_menu_item" ||
+    table === "inventory_low_stock" ||
+    table === "inventory_menu_performance" ||
+    table === "inventory_cost_layers" ||
+    table === "inventory_fifo_consumptions" ||
+    table === "supplier_ledger_entries"
+  ) {
     throw new Error("View is read-only.");
   }
 }

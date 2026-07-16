@@ -22,6 +22,7 @@ import {
   Package,
   Banknote,
   Gift,
+  BriefcaseBusiness,
 } from "lucide-react";
 import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
 import { supabase } from "@/integrations/supabase/client";
@@ -151,6 +152,7 @@ const NAV: Array<{
   { label: "Orders", to: "/orders", icon: Receipt, permission: "orders:view" },
   { label: "Customers", to: "/customers", icon: UserRound, permission: "customers:view" },
   { label: "Promotions", to: "/promotions", icon: Gift, permission: "customers:manage" },
+  { label: "Hiring", to: "/hiring", icon: BriefcaseBusiness, permission: "staff:manage" },
   { label: "Menu", to: "/menu", icon: ChefHat, permission: "menu:manage" },
   { label: "Inventory", to: "/inventory", icon: Package, permission: "inventory:view" },
   { label: "Expenses", to: "/expenses", icon: Banknote, permission: "expenses:view" },

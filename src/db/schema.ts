@@ -44,6 +44,13 @@ export const paymentMethod = pgEnum("payment_method", ["cash", "card", "upi", "w
 export const paymentStatus = pgEnum("payment_status", ["pending", "partial", "paid", "refunded"]);
 
 export const paymentKind = pgEnum("payment_kind", ["payment", "refund", "void_adjustment"]);
+export const financeAccountType = pgEnum("finance_account_type", [
+  "counter_cash",
+  "online",
+  "bank",
+  "wallet",
+  "other",
+]);
 
 export const couponDiscountType = pgEnum("coupon_discount_type", [
   "amount",
@@ -181,11 +188,97 @@ export const branches = pgTable(
     address: text("address"),
     phone: text("phone"),
     deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }).default("0").notNull(),
+    businessDayStartTime: time("business_day_start_time").default("10:00:00").notNull(),
+    inventoryLockedBefore: timestamp("inventory_locked_before", { withTimezone: true }),
+    customerDuesCutoffAt: timestamp("customer_dues_cutoff_at", { withTimezone: true }),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt,
     updatedAt,
   },
   (table) => [uniqueIndex("branches_restaurant_code_unique").on(table.restaurantId, table.code)],
+);
+
+export const financeAccounts = pgTable(
+  "finance_accounts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    accountType: financeAccountType("account_type").default("other").notNull(),
+    isCash: boolean("is_cash").default(false).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("finance_accounts_branch_name_unique").on(table.branchId, table.name),
+    index("finance_accounts_branch_active_idx").on(table.branchId, table.isActive, table.sortOrder),
+  ],
+);
+
+export const financeDayClosures = pgTable(
+  "finance_day_closures",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    openingCash: numeric("opening_cash", { precision: 14, scale: 2 }).default("0").notNull(),
+    openingOnline: numeric("opening_online", { precision: 14, scale: 2 }).default("0").notNull(),
+    expectedCash: numeric("expected_cash", { precision: 14, scale: 2 }).default("0").notNull(),
+    expectedOnline: numeric("expected_online", { precision: 14, scale: 2 }).default("0").notNull(),
+    actualCash: numeric("actual_cash", { precision: 14, scale: 2 }),
+    actualOnline: numeric("actual_online", { precision: 14, scale: 2 }),
+    cashDifference: numeric("cash_difference", { precision: 14, scale: 2 }).default("0").notNull(),
+    onlineDifference: numeric("online_difference", { precision: 14, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+    closedBy: uuid("closed_by").references(() => users.id, { onDelete: "set null" }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("finance_day_closures_branch_date_unique").on(table.branchId, table.businessDate),
+    index("finance_day_closures_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+export const financeTransfers = pgTable(
+  "finance_transfers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).defaultNow().notNull(),
+    title: text("title").notNull(),
+    transferType: text("transfer_type").default("internal_transfer").notNull(),
+    fromAccountId: uuid("from_account_id").references(() => financeAccounts.id, {
+      onDelete: "restrict",
+    }),
+    toAccountId: uuid("to_account_id").references(() => financeAccounts.id, {
+      onDelete: "restrict",
+    }),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    reference: text("reference"),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("finance_transfers_branch_occurred_idx").on(table.branchId, table.occurredAt),
+    index("finance_transfers_from_account_idx").on(table.fromAccountId),
+    index("finance_transfers_to_account_idx").on(table.toAccountId),
+  ],
 );
 
 export const userRoles = pgTable(
@@ -540,6 +633,63 @@ export const orders = pgTable(
   ],
 );
 
+export const jobPosts = pgTable(
+  "job_posts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    department: text("department"),
+    location: text("location"),
+    employmentType: text("employment_type").default("full_time").notNull(),
+    salaryRange: text("salary_range"),
+    description: text("description"),
+    requirements: text("requirements"),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("job_posts_restaurant_active_idx").on(table.restaurantId, table.isActive, table.sortOrder),
+  ],
+);
+
+export const jobApplications = pgTable(
+  "job_applications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    jobPostId: uuid("job_post_id").references(() => jobPosts.id, { onDelete: "set null" }),
+    applicantName: text("applicant_name").notNull(),
+    phone: text("phone").notNull(),
+    whatsapp: text("whatsapp"),
+    email: text("email"),
+    city: text("city"),
+    experience: text("experience"),
+    expectedSalary: text("expected_salary"),
+    availability: text("availability"),
+    source: text("source"),
+    message: text("message"),
+    status: text("status").default("new").notNull(),
+    adminNotes: text("admin_notes"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("job_applications_restaurant_status_idx").on(
+      table.restaurantId,
+      table.status,
+      table.createdAt,
+    ),
+    index("job_applications_job_post_idx").on(table.jobPostId),
+  ],
+);
+
 export const customerReviews = pgTable(
   "customer_reviews",
   {
@@ -670,12 +820,18 @@ export const payments = pgTable(
       .references(() => orders.id, { onDelete: "cascade" }),
     method: paymentMethod("method").notNull(),
     kind: paymentKind("kind").default("payment").notNull(),
+    financeAccountId: uuid("finance_account_id").references(() => financeAccounts.id, {
+      onDelete: "set null",
+    }),
     amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
     reference: text("reference"),
     paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
     receivedBy: uuid("received_by").references(() => users.id, { onDelete: "set null" }),
   },
-  (table) => [index("payments_order_idx").on(table.orderId)],
+  (table) => [
+    index("payments_order_idx").on(table.orderId),
+    index("payments_finance_account_idx").on(table.financeAccountId),
+  ],
 );
 
 export const auditLog = pgTable(
@@ -704,6 +860,8 @@ export const inventoryItems = pgTable(
     name: text("name").notNull(),
     category: text("category"),
     baseUnit: inventoryBaseUnit("base_unit").notNull(),
+    displayUnit: text("display_unit"),
+    displayUnitFactor: numeric("display_unit_factor", { precision: 18, scale: 6 }),
     currentQty: numeric("current_qty", { precision: 14, scale: 3 }).default("0").notNull(),
     reorderLevel: numeric("reorder_level", { precision: 14, scale: 3 }).default("0").notNull(),
     averageCost: numeric("average_cost", { precision: 14, scale: 6 }).default("0").notNull(),
@@ -741,6 +899,9 @@ export const inventoryPurchases = pgTable(
       .notNull()
       .references(() => branches.id, { onDelete: "cascade" }),
     supplierId: uuid("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
+    financeAccountId: uuid("finance_account_id").references(() => financeAccounts.id, {
+      onDelete: "set null",
+    }),
     invoiceNo: text("invoice_no"),
     purchaseDate: date("purchase_date").notNull(),
     notes: text("notes"),
@@ -748,7 +909,10 @@ export const inventoryPurchases = pgTable(
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt,
   },
-  (table) => [index("inventory_purchases_branch_idx").on(table.branchId, table.purchaseDate)],
+  (table) => [
+    index("inventory_purchases_branch_idx").on(table.branchId, table.purchaseDate),
+    index("inventory_purchases_finance_account_idx").on(table.financeAccountId),
+  ],
 );
 
 export const inventoryPurchaseLines = pgTable(
@@ -762,8 +926,9 @@ export const inventoryPurchaseLines = pgTable(
       .notNull()
       .references(() => inventoryItems.id, { onDelete: "restrict" }),
     quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
-    unit: inventoryUnit("unit").notNull(),
+    unit: text("unit").notNull(),
     packSize: numeric("pack_size", { precision: 14, scale: 3 }),
+    conversionFactor: numeric("conversion_factor", { precision: 18, scale: 6 }),
     baseQuantity: numeric("base_quantity", { precision: 14, scale: 3 }).notNull(),
     unitCost: numeric("unit_cost", { precision: 14, scale: 4 }).notNull(),
     lineTotal: numeric("line_total", { precision: 14, scale: 2 }).notNull(),
@@ -771,6 +936,27 @@ export const inventoryPurchaseLines = pgTable(
   (table) => [
     index("inventory_purchase_lines_purchase_idx").on(table.purchaseId),
     index("inventory_purchase_lines_item_idx").on(table.inventoryItemId),
+  ],
+);
+
+export const inventoryUnitConversions = pgTable(
+  "inventory_unit_conversions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    unit: text("unit").notNull(),
+    baseQuantity: numeric("base_quantity", { precision: 18, scale: 6 }).notNull(),
+    label: text("label"),
+    isDefaultPurchase: boolean("is_default_purchase").default(false).notNull(),
+    isDefaultRecipe: boolean("is_default_recipe").default(false).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("inventory_unit_conversions_item_unit_unique").on(table.inventoryItemId, table.unit),
+    index("inventory_unit_conversions_item_idx").on(table.inventoryItemId),
   ],
 );
 
@@ -785,6 +971,13 @@ export const inventoryRecipes = pgTable(
       .notNull()
       .references(() => inventoryItems.id, { onDelete: "restrict" }),
     quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
+    recipeMode: text("recipe_mode").default("per_item").notNull(),
+    entryQuantity: numeric("entry_quantity", { precision: 14, scale: 3 }),
+    entryUnit: text("entry_unit"),
+    conversionFactor: numeric("conversion_factor", { precision: 18, scale: 6 }),
+    batchYield: numeric("batch_yield", { precision: 14, scale: 3 }),
+    batchEntryQuantity: numeric("batch_entry_quantity", { precision: 14, scale: 3 }),
+    batchEntryUnit: text("batch_entry_unit"),
     standardSource: text("standard_source").default("manual").notNull(),
     learningEnabled: boolean("learning_enabled").default(false).notNull(),
     createdAt,
@@ -812,6 +1005,9 @@ export const inventoryMovements = pgTable(
     beforeQty: numeric("before_qty", { precision: 14, scale: 3 }).notNull(),
     afterQty: numeric("after_qty", { precision: 14, scale: 3 }).notNull(),
     unitCost: numeric("unit_cost", { precision: 14, scale: 6 }).default("0").notNull(),
+    enteredQuantity: numeric("entered_quantity", { precision: 14, scale: 3 }),
+    enteredUnit: text("entered_unit"),
+    conversionFactor: numeric("conversion_factor", { precision: 18, scale: 6 }),
     relatedOrderId: uuid("related_order_id").references(() => orders.id, { onDelete: "set null" }),
     relatedPurchaseId: uuid("related_purchase_id").references(() => inventoryPurchases.id, {
       onDelete: "set null",
@@ -824,6 +1020,144 @@ export const inventoryMovements = pgTable(
     index("inventory_movements_branch_created_idx").on(table.branchId, table.createdAt),
     index("inventory_movements_item_created_idx").on(table.inventoryItemId, table.createdAt),
     index("inventory_movements_order_idx").on(table.relatedOrderId),
+  ],
+);
+
+export const inventoryCostLayers = pgTable(
+  "inventory_cost_layers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    sourcePurchaseLineId: uuid("source_purchase_line_id").references(() => inventoryPurchaseLines.id, {
+      onDelete: "set null",
+    }),
+    sourceMovementId: uuid("source_movement_id").references(() => inventoryMovements.id, {
+      onDelete: "set null",
+    }),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    quantityReceived: numeric("quantity_received", { precision: 14, scale: 3 }).notNull(),
+    quantityRemaining: numeric("quantity_remaining", { precision: 14, scale: 3 }).notNull(),
+    unitCost: numeric("unit_cost", { precision: 14, scale: 6 }).default("0").notNull(),
+    createdAt,
+  },
+  (table) => [
+    index("inventory_cost_layers_fifo_idx").on(
+      table.branchId,
+      table.inventoryItemId,
+      table.receivedAt,
+      table.createdAt,
+    ),
+    index("inventory_cost_layers_remaining_idx").on(table.inventoryItemId, table.quantityRemaining),
+  ],
+);
+
+export const inventoryFifoConsumptions = pgTable(
+  "inventory_fifo_consumptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    movementId: uuid("movement_id")
+      .notNull()
+      .references(() => inventoryMovements.id, { onDelete: "cascade" }),
+    costLayerId: uuid("cost_layer_id").references(() => inventoryCostLayers.id, {
+      onDelete: "set null",
+    }),
+    quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
+    unitCost: numeric("unit_cost", { precision: 14, scale: 6 }).default("0").notNull(),
+    totalCost: numeric("total_cost", { precision: 14, scale: 2 }).default("0").notNull(),
+    createdAt,
+  },
+  (table) => [
+    index("inventory_fifo_consumptions_movement_idx").on(table.movementId),
+    index("inventory_fifo_consumptions_layer_idx").on(table.costLayerId),
+  ],
+);
+
+export const inventoryCounts = pgTable(
+  "inventory_counts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    countDate: date("count_date").notNull(),
+    status: text("status").default("draft").notNull(),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    appliedBy: uuid("applied_by").references(() => users.id, { onDelete: "set null" }),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("inventory_counts_branch_date_idx").on(table.branchId, table.countDate),
+    index("inventory_counts_branch_status_idx").on(table.branchId, table.status),
+  ],
+);
+
+export const inventoryCountLines = pgTable(
+  "inventory_count_lines",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    countId: uuid("count_id")
+      .notNull()
+      .references(() => inventoryCounts.id, { onDelete: "cascade" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    systemQty: numeric("system_qty", { precision: 14, scale: 3 }).notNull(),
+    countedQuantity: numeric("counted_quantity", { precision: 14, scale: 3 }).notNull(),
+    countedUnit: text("counted_unit").notNull(),
+    conversionFactor: numeric("conversion_factor", { precision: 18, scale: 6 }),
+    countedBaseQty: numeric("counted_base_qty", { precision: 14, scale: 3 }).notNull(),
+    varianceQty: numeric("variance_qty", { precision: 14, scale: 3 }).notNull(),
+    unitCost: numeric("unit_cost", { precision: 14, scale: 6 }).default("0").notNull(),
+    varianceValue: numeric("variance_value", { precision: 14, scale: 2 }).default("0").notNull(),
+    adjustmentMovementId: uuid("adjustment_movement_id").references(() => inventoryMovements.id, {
+      onDelete: "set null",
+    }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex("inventory_count_lines_unique").on(table.countId, table.inventoryItemId),
+    index("inventory_count_lines_item_idx").on(table.inventoryItemId),
+  ],
+);
+
+export const supplierLedgerEntries = pgTable(
+  "supplier_ledger_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    restaurantId: uuid("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").references(() => branches.id, { onDelete: "cascade" }),
+    supplierId: uuid("supplier_id")
+      .notNull()
+      .references(() => suppliers.id, { onDelete: "cascade" }),
+    entryType: text("entry_type").notNull(),
+    purchaseId: uuid("purchase_id").references(() => inventoryPurchases.id, { onDelete: "set null" }),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    referenceNo: text("reference_no"),
+    occurredOn: date("occurred_on").notNull(),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt,
+  },
+  (table) => [
+    index("supplier_ledger_supplier_date_idx").on(table.supplierId, table.occurredOn),
+    index("supplier_ledger_branch_date_idx").on(table.branchId, table.occurredOn),
   ],
 );
 
@@ -865,6 +1199,9 @@ export const operationalExpenses = pgTable(
     vendor: text("vendor"),
     referenceNo: text("reference_no"),
     paymentMethod: paymentMethod("payment_method"),
+    financeAccountId: uuid("finance_account_id").references(() => financeAccounts.id, {
+      onDelete: "set null",
+    }),
     status: operationalExpenseStatus("status").default("paid").notNull(),
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     notes: text("notes"),
@@ -879,6 +1216,7 @@ export const operationalExpenses = pgTable(
       table.status,
     ),
     index("operational_expenses_category_idx").on(table.categoryId),
+    index("operational_expenses_finance_account_idx").on(table.financeAccountId),
   ],
 );
 

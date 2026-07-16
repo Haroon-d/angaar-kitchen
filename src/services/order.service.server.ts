@@ -1,28 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { db, pgPool } from "@/db/client.server";
+import type { PoolClient } from "pg";
+import { pgPool } from "@/db/client.server";
+import { deductOrderInventoryForOrderTx } from "@/lib/postgres-data.functions";
 import {
-  auditLog,
-  branches,
-  customerAddresses,
-  customerEvents,
-  customers,
-  menuItems,
-  orderCounters,
-  orderItems,
-  orders,
-  orderTaxes,
-  taxes,
-} from "@/db/schema";
-import { validateCoupon } from "@/services/coupon.service.server";
-
-type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+  recordCouponRedemption,
+  validateCoupon,
+  type ValidCoupon,
+} from "@/services/coupon.service.server";
 
 export type CustomerOrderInput = {
   branchId: string;
   diningType: "takeaway" | "delivery";
   customerName: string;
-  customerPhone: string;
+  customerPhone?: string | null;
   notes?: string | null;
   couponCode?: string | null;
   items: Array<{
@@ -32,55 +22,57 @@ export type CustomerOrderInput = {
   }>;
 };
 
+type BranchRow = {
+  id: string;
+  restaurant_id: string;
+  code: string;
+  is_active: boolean;
+  delivery_fee: string | number | null;
+};
+
+type MenuItemRow = {
+  id: string;
+  branch_id: string;
+  name: string;
+  base_price: string | number;
+  is_available: boolean;
+};
+
+type CustomerRow = {
+  id: string;
+  is_blocked: boolean;
+};
+
 export async function createCustomerOrder(input: CustomerOrderInput) {
   if (!input.items.length) {
     throw new Error("Order must contain at least one item.");
   }
 
-  const result = await db.transaction(async (tx) => {
-    const [branch] = await tx
-      .select()
-      .from(branches)
-      .where(eq(branches.id, input.branchId))
-      .limit(1);
+  const client = await pgPool.connect();
+  try {
+    await client.query("begin");
 
-    if (!branch?.isActive) {
-      throw new Error("This branch is not accepting orders.");
-    }
+    const branch = await getBranchForCustomerOrder(client, input.branchId);
+    const itemById = await getAvailableMenuItems(client, branch.id, input.items);
+    const subtotal = calculateSubtotal(input.items, itemById);
 
-    const requestedItemIds = [...new Set(input.items.map((item) => item.itemId))];
-    const availableItems = await tx
-      .select()
-      .from(menuItems)
-      .where(inArray(menuItems.id, requestedItemIds));
-
-    const itemById = new Map(availableItems.map((item) => [item.id, item]));
-    let subtotal = 0;
-
-    for (const line of input.items) {
-      assertOrderLine(line.qty);
-
-      const item = itemById.get(line.itemId);
-      if (!item || item.branchId !== branch.id || !item.isAvailable) {
-        throw new Error("One or more items are no longer available.");
-      }
-
-      subtotal += Number(item.basePrice) * line.qty;
-    }
-
-    const customer = await findOrCreateCustomer(tx, {
-      restaurantId: branch.restaurantId,
+    const customer = await findOrCreateCustomer(client, {
+      restaurantId: branch.restaurant_id,
       branchId: branch.id,
       name: input.customerName,
       phone: input.customerPhone,
       notes: input.notes,
     });
-    if (customer?.isBlocked) {
-      throw new Error("This customer is blocked. Please review the customer profile before taking an order.");
+    if (customer?.is_blocked) {
+      throw new Error(
+        "This customer is blocked. Please review the customer profile before taking an order.",
+      );
     }
-    const deliveryFee = input.diningType === "delivery" ? roundMoney(Number(branch.deliveryFee ?? 0)) : 0;
-    const coupon = await validateCouponForOrder({
-      restaurantId: branch.restaurantId,
+
+    const deliveryFee =
+      input.diningType === "delivery" ? roundMoney(Number(branch.delivery_fee ?? 0)) : 0;
+    const coupon = await validateCoupon(client, {
+      restaurantId: branch.restaurant_id,
       branchId: branch.id,
       code: input.couponCode,
       subtotal,
@@ -88,165 +80,225 @@ export async function createCustomerOrder(input: CustomerOrderInput) {
       customerId: customer?.id ?? null,
       source: "website",
     });
-    const itemDiscount = coupon?.discountType === "free_delivery" ? 0 : (coupon?.discountAmount ?? 0);
-    const deliveryDiscount = coupon?.discountType === "free_delivery" ? (coupon?.discountAmount ?? 0) : 0;
-    const discountTotal = roundMoney(itemDiscount + deliveryDiscount);
-    const taxableBase = Math.max(0, subtotal - itemDiscount);
-    const activeTaxes = await tx
-      .select()
-      .from(taxes)
-      .where(
-        and(
-          eq(taxes.restaurantId, branch.restaurantId),
-          eq(taxes.isActive, true),
-          eq(taxes.applyByDefault, true),
-        ),
-      );
-
-    const taxRows = activeTaxes.map((tax) => {
-      const rate = Number(tax.rate);
-      const amount = tax.isInclusive
-        ? roundMoney(taxableBase - taxableBase / (1 + rate / 100))
-        : roundMoney((taxableBase * rate) / 100);
-
-      return {
-        id: tax.id,
-        name: tax.name,
-        rate,
-        isInclusive: tax.isInclusive,
-        amount,
-      };
+    const totals = await calculateOrderTotals(client, {
+      restaurantId: branch.restaurant_id,
+      subtotal,
+      deliveryFee,
+      coupon,
     });
-
-    const taxTotal = taxRows
-      .filter((tax) => !tax.isInclusive)
-      .reduce((sum, tax) => sum + tax.amount, 0);
-    const grandTotal = roundMoney(taxableBase + taxTotal + deliveryFee - deliveryDiscount);
-    const orderNo = await reserveNextOrderNumber(tx, branch.id, branch.code);
+    const orderNo = await reserveNextOrderNumber(client, branch.id, branch.code);
     const orderId = randomUUID();
 
-    await tx.insert(orders).values({
-      id: orderId,
-      branchId: branch.id,
-      orderNo,
-      diningType: input.diningType,
-      status: "placed",
-      paymentStatus: "pending",
-      customerId: customer?.id ?? null,
-      customerName: normalizeText(input.customerName),
-      customerPhone: normalizeText(input.customerPhone),
-      notes: normalizeNullableText(input.notes),
-      subtotal: moneyString(subtotal),
-      discountTotal: moneyString(discountTotal),
-      taxTotal: moneyString(taxTotal),
-      deliveryFee: moneyString(deliveryFee),
-      grandTotal: moneyString(grandTotal),
-      amountPaid: "0.00",
-      couponId: coupon?.id ?? null,
-      idempotencyKey: randomUUID(),
-    });
-
-    await tx.insert(orderItems).values(
-      input.items.map((line) => {
-        const item = itemById.get(line.itemId)!;
-        const lineSubtotal = roundMoney(Number(item.basePrice) * line.qty);
-
-        return {
-          orderId,
-          itemId: item.id,
-          nameSnapshot: item.name,
-          unitPrice: item.basePrice,
-          qty: line.qty,
-          addonsTotal: "0.00",
-          lineSubtotal: moneyString(lineSubtotal),
-          notes: normalizeNullableText(line.notes),
-        };
-      }),
+    await client.query(
+      `insert into orders
+         (id, branch_id, order_no, dining_type, status, payment_status, customer_id,
+          customer_name, customer_phone, notes, subtotal, discount_total, tax_total,
+          delivery_fee, grand_total, amount_paid, coupon_id, idempotency_key)
+       values ($1, $2, $3, $4::dining_type, 'placed', 'pending', $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, 0, $14, $15)`,
+      [
+        orderId,
+        branch.id,
+        orderNo,
+        input.diningType,
+        customer?.id ?? null,
+        normalizeText(input.customerName),
+        normalizeNullableText(input.customerPhone),
+        normalizeNullableText(input.notes),
+        moneyString(subtotal),
+        moneyString(totals.discountTotal),
+        moneyString(totals.taxTotal),
+        moneyString(deliveryFee),
+        moneyString(totals.grandTotal),
+        coupon?.id ?? null,
+        randomUUID(),
+      ],
     );
 
-    if (taxRows.length) {
-      await tx.insert(orderTaxes).values(
-        taxRows.map((tax) => ({
+    for (const line of input.items) {
+      const item = itemById.get(line.itemId)!;
+      const lineSubtotal = roundMoney(Number(item.base_price) * line.qty);
+      await client.query(
+        `insert into order_items
+           (order_id, item_id, name_snapshot, unit_price, qty, addons_total, line_subtotal, notes)
+         values ($1, $2, $3, $4, $5, 0, $6, $7)`,
+        [
           orderId,
-          taxId: tax.id,
-          nameSnapshot: tax.name,
-          rateSnapshot: rateString(tax.rate),
-          amount: moneyString(tax.amount),
-        })),
+          item.id,
+          item.name,
+          item.base_price,
+          line.qty,
+          moneyString(lineSubtotal),
+          normalizeNullableText(line.notes),
+        ],
       );
     }
 
-    await tx.insert(auditLog).values({
-      restaurantId: branch.restaurantId,
+    for (const tax of totals.taxRows) {
+      await client.query(
+        `insert into order_taxes (order_id, tax_id, name_snapshot, rate_snapshot, amount)
+         values ($1, $2, $3, $4, $5)`,
+        [orderId, tax.id, tax.name, rateString(tax.rate), moneyString(tax.amount)],
+      );
+    }
+
+    await deductOrderInventoryForOrderTx(client, {
+      orderId,
       branchId: branch.id,
       actorId: null,
-      entity: "order",
-      entityId: orderId,
-      action: "customer_placed",
-      meta: {
-        order_no: orderNo,
-        grand_total: grandTotal,
-      },
+      orderNo,
     });
 
+    await client.query(
+      `insert into audit_log
+         (restaurant_id, branch_id, actor_id, entity, entity_id, action, meta)
+       values ($1, $2, null, 'order', $3, 'customer_placed', $4::jsonb)`,
+      [
+        branch.restaurant_id,
+        branch.id,
+        orderId,
+        JSON.stringify({ order_no: orderNo, grand_total: totals.grandTotal }),
+      ],
+    );
+
     if (customer) {
-      await recordCustomerOrder(tx, {
+      await recordCustomerOrder(client, {
         customerId: customer.id,
-        restaurantId: branch.restaurantId,
+        restaurantId: branch.restaurant_id,
         branchId: branch.id,
         orderId,
-        grandTotal,
+        grandTotal: totals.grandTotal,
         orderNo,
       });
     }
+
     if (coupon) {
-      await tx.execute(sql`
-        insert into coupon_redemptions (
-          coupon_id,
-          order_id,
-          customer_id,
-          restaurant_id,
-          branch_id,
-          code_snapshot,
-          discount_amount
-        )
-        values (
-          ${coupon.id},
-          ${orderId},
-          ${customer?.id ?? null},
-          ${branch.restaurantId},
-          ${branch.id},
-          ${coupon.code},
-          ${moneyString(coupon.discountAmount)}::numeric
-        )
-        on conflict (coupon_id, order_id) do nothing
-      `);
+      await recordCouponRedemption(client, {
+        coupon,
+        orderId,
+        customerId: customer?.id ?? null,
+        restaurantId: branch.restaurant_id,
+        branchId: branch.id,
+      });
     }
+
+    await client.query("commit");
     return {
       orderId,
       orderNo,
-      grandTotal,
+      grandTotal: totals.grandTotal,
     };
-  });
-
-  return {
-    orderId: result.orderId,
-    orderNo: result.orderNo,
-    grandTotal: result.grandTotal,
-  };
-}
-
-async function validateCouponForOrder(input: Parameters<typeof validateCoupon>[1]) {
-  const client = await pgPool.connect();
-  try {
-    return validateCoupon(client, input);
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
   } finally {
     client.release();
   }
 }
 
+async function getBranchForCustomerOrder(client: PoolClient, branchId: string) {
+  const result = await client.query<BranchRow>(
+    `select id, restaurant_id, code, is_active, delivery_fee
+     from branches
+     where id = $1`,
+    [branchId],
+  );
+  const branch = result.rows[0];
+  if (!branch?.is_active) {
+    throw new Error("This branch is not accepting orders.");
+  }
+  return branch;
+}
+
+async function getAvailableMenuItems(
+  client: PoolClient,
+  branchId: string,
+  lines: CustomerOrderInput["items"],
+) {
+  const requestedItemIds = [...new Set(lines.map((item) => item.itemId))];
+  const result = await client.query<MenuItemRow>(
+    `select id, branch_id, name, base_price, is_available
+     from menu_items
+     where id = any($1::uuid[])`,
+    [requestedItemIds],
+  );
+  const itemById = new Map(result.rows.map((item) => [item.id, item]));
+
+  for (const line of lines) {
+    assertOrderLine(line.qty);
+    const item = itemById.get(line.itemId);
+    if (!item || item.branch_id !== branchId || !item.is_available) {
+      throw new Error("One or more items are no longer available.");
+    }
+  }
+
+  return itemById;
+}
+
+function calculateSubtotal(
+  lines: CustomerOrderInput["items"],
+  itemById: Map<string, MenuItemRow>,
+) {
+  return lines.reduce((sum, line) => {
+    const item = itemById.get(line.itemId)!;
+    return sum + Number(item.base_price) * line.qty;
+  }, 0);
+}
+
+async function calculateOrderTotals(
+  client: PoolClient,
+  input: {
+    restaurantId: string;
+    subtotal: number;
+    deliveryFee: number;
+    coupon: ValidCoupon | null;
+  },
+) {
+  const itemDiscount =
+    input.coupon?.discountType === "free_delivery" ? 0 : (input.coupon?.discountAmount ?? 0);
+  const deliveryDiscount =
+    input.coupon?.discountType === "free_delivery" ? (input.coupon?.discountAmount ?? 0) : 0;
+  const discountTotal = roundMoney(itemDiscount + deliveryDiscount);
+  const taxableBase = Math.max(0, input.subtotal - itemDiscount);
+  const taxes = await client.query<{
+    id: string;
+    name: string;
+    rate: string | number;
+    is_inclusive: boolean;
+  }>(
+    `select id, name, rate, is_inclusive
+     from taxes
+     where restaurant_id = $1 and is_active = true and apply_by_default = true`,
+    [input.restaurantId],
+  );
+
+  const taxRows = taxes.rows.map((tax) => {
+    const rate = Number(tax.rate);
+    const amount = tax.is_inclusive
+      ? roundMoney(taxableBase - taxableBase / (1 + rate / 100))
+      : roundMoney((taxableBase * rate) / 100);
+    return {
+      id: tax.id,
+      name: tax.name,
+      rate,
+      isInclusive: tax.is_inclusive,
+      amount,
+    };
+  });
+  const taxTotal = taxRows
+    .filter((tax) => !tax.isInclusive)
+    .reduce((sum, tax) => sum + tax.amount, 0);
+
+  return {
+    discountTotal,
+    taxRows,
+    taxTotal,
+    grandTotal: roundMoney(taxableBase + taxTotal + input.deliveryFee - deliveryDiscount),
+  };
+}
+
 async function findOrCreateCustomer(
-  tx: DbTx,
+  client: PoolClient,
   input: {
     restaurantId: string;
     branchId: string;
@@ -257,50 +309,52 @@ async function findOrCreateCustomer(
 ) {
   const phone = normalizeNullableText(input.phone);
   const phoneNormalized = normalizePhone(phone);
-  if (!phone || !phoneNormalized) return null;
-
   const name = normalizeNullableText(input.name);
-  const context = parseCustomerContext(input.notes);
-  const [customer] = await tx
-    .insert(customers)
-    .values({
-      restaurantId: input.restaurantId,
-      branchId: input.branchId,
-      name,
-      primaryPhone: phone,
-      phoneNormalized,
-      defaultAddress: context.address,
-      notes: context.preferenceNote,
-    })
-    .onConflictDoUpdate({
-      target: [customers.restaurantId, customers.phoneNormalized],
-      set: {
-        branchId: input.branchId,
-        name: sql`coalesce(excluded.name, ${customers.name})`,
-        primaryPhone: sql`excluded.primary_phone`,
-        defaultAddress: sql`coalesce(${customers.defaultAddress}, excluded.default_address)`,
-        notes: sql`coalesce(${customers.notes}, excluded.notes)`,
-        updatedAt: sql`now()`,
-      },
-    })
-    .returning({ id: customers.id, isBlocked: customers.isBlocked });
+  const identityKey = phoneNormalized || nameIdentityKey(name);
+  if (!identityKey) return null;
 
-  if (context.address) {
-    await tx
-      .insert(customerAddresses)
-      .values({
-        customerId: customer.id,
-        address: context.address,
-        isDefault: true,
-      })
-      .onConflictDoNothing();
+  const context = parseCustomerContext(input.notes);
+  const result = await client.query<CustomerRow>(
+    `insert into customers
+       (restaurant_id, branch_id, name, primary_phone, phone_normalized, default_address, notes)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (restaurant_id, phone_normalized) do update
+       set branch_id = excluded.branch_id,
+           name = coalesce(excluded.name, customers.name),
+           primary_phone = case
+             when excluded.primary_phone <> '' then excluded.primary_phone
+             else customers.primary_phone
+           end,
+           default_address = coalesce(customers.default_address, excluded.default_address),
+           notes = coalesce(customers.notes, excluded.notes),
+           updated_at = now()
+     returning id, is_blocked`,
+    [
+      input.restaurantId,
+      input.branchId,
+      name,
+      phone ?? "",
+      identityKey,
+      context.address,
+      context.preferenceNote,
+    ],
+  );
+  const customer = result.rows[0];
+
+  if (customer && context.address) {
+    await client.query(
+      `insert into customer_addresses (customer_id, address, is_default)
+       values ($1, $2, true)
+       on conflict do nothing`,
+      [customer.id, context.address],
+    );
   }
 
   return customer;
 }
 
 async function recordCustomerOrder(
-  tx: DbTx,
+  client: PoolClient,
   input: {
     customerId: string;
     restaurantId: string;
@@ -310,53 +364,47 @@ async function recordCustomerOrder(
     grandTotal: number;
   },
 ) {
-  await tx
-    .update(customers)
-    .set({
-      firstOrderAt: sql`coalesce(${customers.firstOrderAt}, now())`,
-      lastOrderAt: sql`now()`,
-      totalOrders: sql`${customers.totalOrders} + 1`,
-      updatedAt: sql`now()`,
-    })
-    .where(eq(customers.id, input.customerId));
+  await client.query(
+    `update customers
+     set first_order_at = coalesce(first_order_at, now()),
+         last_order_at = now(),
+         total_orders = total_orders + 1,
+         updated_at = now()
+     where id = $1`,
+    [input.customerId],
+  );
 
-  await tx.insert(customerEvents).values({
-    customerId: input.customerId,
-    restaurantId: input.restaurantId,
-    branchId: input.branchId,
-    orderId: input.orderId,
-    eventType: "order_placed",
-    meta: {
-      order_no: input.orderNo,
-      grand_total: input.grandTotal,
-    },
-  });
+  await client.query(
+    `insert into customer_events
+       (customer_id, restaurant_id, branch_id, order_id, event_type, meta)
+     values ($1, $2, $3, $4, 'order_placed', $5::jsonb)`,
+    [
+      input.customerId,
+      input.restaurantId,
+      input.branchId,
+      input.orderId,
+      JSON.stringify({ order_no: input.orderNo, grand_total: input.grandTotal }),
+    ],
+  );
 }
 
 async function reserveNextOrderNumber(
-  tx: DbTx,
+  client: PoolClient,
   branchId: string,
   branchCode: string,
 ) {
   const today = utcDateString();
-  const [counter] = await tx
-    .insert(orderCounters)
-    .values({
-      branchId,
-      counterDate: today,
-      lastSeq: 1,
-    })
-    .onConflictDoUpdate({
-      target: [orderCounters.branchId, orderCounters.counterDate],
-      set: {
-        lastSeq: sql`${orderCounters.lastSeq} + 1`,
-      },
-    })
-    .returning({
-      lastSeq: orderCounters.lastSeq,
-    });
+  const result = await client.query<{ last_seq: number }>(
+    `insert into order_counters (branch_id, counter_date, last_seq)
+     values ($1, $2, 1)
+     on conflict (branch_id, counter_date) do update
+       set last_seq = order_counters.last_seq + 1
+     returning last_seq`,
+    [branchId, today],
+  );
+  const sequence = result.rows[0]?.last_seq ?? 1;
 
-  return `AK-${branchCode || "BR"}-${today.replaceAll("-", "")}-${String(counter.lastSeq).padStart(
+  return `AK-${branchCode || "BR"}-${today.replaceAll("-", "")}-${String(sequence).padStart(
     4,
     "0",
   )}`;
@@ -388,6 +436,15 @@ function normalizePhone(value: string | null | undefined) {
   if (digits.length === 11 && digits.startsWith("0")) return `92${digits.slice(1)}`;
   if (digits.length === 10 && digits.startsWith("3")) return `92${digits}`;
   return digits;
+}
+
+function nameIdentityKey(value: string | null) {
+  const normalized = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized ? `name:${normalized}` : "";
 }
 
 function parseCustomerContext(notes: string | null | undefined) {

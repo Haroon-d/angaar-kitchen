@@ -407,8 +407,17 @@ function DeliveryTab() {
 }
 
 function HoursTab({ branchId }: { branchId: string }) {
+  const { branch, refetch } = useActiveBranch();
   const qc = useQueryClient();
   const [ensuringHours, setEnsuringHours] = useState(false);
+  const [businessDayStart, setBusinessDayStart] = useState("10:00");
+  const [savingBusinessDay, setSavingBusinessDay] = useState(false);
+
+  useEffect(() => {
+    const value = (branch as { business_day_start_time?: string } | null)?.business_day_start_time;
+    if (value) setBusinessDayStart(value.slice(0, 5));
+  }, [branch]);
+
   const hoursQ = useQuery<OperatingHourRow[]>({
     queryKey: ["hours", branchId],
     queryFn: async () => {
@@ -474,6 +483,24 @@ function HoursTab({ branchId }: { branchId: string }) {
     onError: (e: any) => toast.error(e.message),
   });
 
+  async function saveBusinessDayStart() {
+    if (!branch) return;
+    setSavingBusinessDay(true);
+    const { error } = await supabase
+      .from("branches")
+      .update({ business_day_start_time: businessDayStart })
+      .eq("id", branch.id);
+    setSavingBusinessDay(false);
+    if (error) toast.error(error.message);
+    else {
+      toast.success("Business day start saved");
+      refetch();
+      qc.invalidateQueries({ queryKey: ["dashboard-today"] });
+      qc.invalidateQueries({ queryKey: ["orders-list"] });
+      qc.invalidateQueries({ queryKey: ["operational-expenses"] });
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -484,6 +511,26 @@ function HoursTab({ branchId }: { branchId: string }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
+        <div className="mb-4 rounded-lg border border-border bg-background/40 p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[220px] flex-1">
+              <Label className="mb-2 block">Business day starts at</Label>
+              <Input
+                type="time"
+                value={businessDayStart}
+                onChange={(event) => setBusinessDayStart(event.target.value)}
+              />
+            </div>
+            <Button onClick={saveBusinessDayStart} disabled={savingBusinessDay || !branch}>
+              {savingBusinessDay && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save shift start
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Reports and day-end cash should use this restaurant day, so late-night orders do not
+            get split incorrectly at 12 AM.
+          </p>
+        </div>
         {(hoursQ.isLoading || ensuringHours) && (
           <div className="flex items-center gap-2 rounded-lg border border-border p-4 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin text-primary" />
@@ -569,9 +616,10 @@ function PrinterTab() {
   async function testPrint() {
     try {
       const driverId = await PrintService.activeDriverId();
+      const textWidth = settings.paperSize === "58mm" ? 32 : 42;
       const body =
         driverId === "qz" || driverId === "network"
-          ? renderReceiptText(sample)
+          ? renderReceiptText(sample, textWidth)
           : PrintService.renderHtml(<ReceiptTemplate data={sample} paperSize={settings.paperSize} />);
       await PrintService.print({ html: body, kind: "receipt", paperSize: settings.paperSize });
       toast.success("Print job sent");

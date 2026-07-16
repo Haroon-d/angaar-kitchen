@@ -8,7 +8,7 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   delivery: "DELIVERY",
 };
 
-const DEFAULT_ADDRESS = "Grand Trunk Rd, near Punjab College, Pak Town, Kamoke, 52470";
+const DEFAULT_ADDRESS = "GT Road Near Punjab College Kamoke";
 const DEFAULT_PHONE = "0335 7200955";
 
 type Props = {

@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChefHat,
+  BriefcaseBusiness,
   Clock3,
   Eye,
   Facebook,
@@ -1628,6 +1629,13 @@ function CustomerHome() {
               >
                 Open cart
               </button>
+              <Link
+                to="/careers"
+                className="flex gap-2 rounded-md outline-none transition hover:text-[#f2d385] focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <BriefcaseBusiness className="mt-1 h-4 w-4 shrink-0 text-[#d8bd77]" />
+                <span>Careers</span>
+              </Link>
             </div>
           </div>
         </div>

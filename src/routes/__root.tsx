@@ -75,8 +75,13 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   useEffect(() => {
     const hostname = window.location.hostname;
+    const isCareersDomain = hostname.startsWith("careers.");
     const isPOSDomain = hostname === 'pos.angaarkitchen.com';
     const isRootPath = window.location.pathname === '/';
+    if (isCareersDomain && isRootPath) {
+      window.location.href = "/careers";
+      return;
+    }
     if (isPOSDomain && isRootPath) {
       window.location.href = '/login';
     }

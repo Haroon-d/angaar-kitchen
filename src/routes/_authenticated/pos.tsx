@@ -159,6 +159,8 @@ function POSPage() {
   const itemsQ = useQuery<MenuItemRow[]>({
     queryKey: ["pos-items", branch?.id],
     enabled: !!branch,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("menu_items")
@@ -173,6 +175,8 @@ function POSPage() {
   const catsQ = useQuery<MenuCategoryRow[]>({
     queryKey: ["pos-cats", branch?.id],
     enabled: !!branch,
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("menu_categories")
@@ -187,6 +191,8 @@ function POSPage() {
   const taxesQ = useQuery<TaxRow[]>({
     queryKey: ["pos-taxes", restaurant?.id],
     enabled: !!restaurant,
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("taxes")
@@ -201,7 +207,9 @@ function POSPage() {
   const stockQ = useQuery<StockStatus[]>({
     queryKey: ["menu-stock-status", branch?.id],
     enabled: !!branch,
-    refetchInterval: 15000,
+    staleTime: 10 * 1000,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await rpc<StockStatus[]>("get_menu_item_stock_status", {
         _branch: branch!.id,
@@ -213,18 +221,27 @@ function POSPage() {
   const editOrderQ = useQuery<{ order: EditableOrder; items: EditableOrderItem[] }>({
     queryKey: ["pos-edit-order", editOrderId],
     enabled: !!editOrderId,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
     queryFn: async () => {
-      const { data: order, error } = await supabase
+      const orderRequest = supabase
         .from("orders")
-        .select("*")
+        .select(
+          "id, order_no, dining_type, customer_name, customer_phone, table_label, notes, discount_total",
+        )
         .eq("id", editOrderId!)
         .single();
-      if (error) throw error;
 
-      const { data: items, error: itemsError } = await supabase
+      const itemsRequest = supabase
         .from("order_items")
-        .select("*")
+        .select("item_id, name_snapshot, unit_price, qty, notes")
         .eq("order_id", editOrderId!);
+
+      const [{ data: order, error }, { data: items, error: itemsError }] = await Promise.all([
+        orderRequest,
+        itemsRequest,
+      ]);
+      if (error) throw error;
       if (itemsError) throw itemsError;
 
       return {
@@ -253,6 +270,7 @@ function POSPage() {
 
   useEffect(() => {
     if (!editOrderId || !editOrderQ.data || hydratedEditOrderId === editOrderId) return;
+    if (editOrderQ.isFetching || editOrderQ.isError) return;
     const order = editOrderQ.data.order;
     const items = editOrderQ.data.items;
     const parsedNotes = parseOrderNotes(order.notes);
@@ -281,7 +299,7 @@ function POSPage() {
       })),
     );
     setHydratedEditOrderId(editOrderId);
-  }, [editOrderId, editOrderQ.data, hydratedEditOrderId]);
+  }, [editOrderId, editOrderQ.data, editOrderQ.isError, editOrderQ.isFetching, hydratedEditOrderId]);
 
   function addToCart(it: MenuItemRow) {
     setCart((c) => {
@@ -506,7 +524,15 @@ function POSPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["orders-list"] }),
         qc.invalidateQueries({ queryKey: ["order", savedOrderId] }),
+        qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
+        qc.invalidateQueries({ queryKey: ["item-usage-report"] }),
         qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
+        qc.invalidateQueries({ queryKey: ["inventory-items"] }),
+        qc.invalidateQueries({ queryKey: ["inventory-movements"] }),
+        qc.invalidateQueries({ queryKey: ["inventory-reports"] }),
+        qc.invalidateQueries({ queryKey: ["inventory-menu-performance"] }),
+        qc.invalidateQueries({ queryKey: ["inventory-control-branch"] }),
+        qc.invalidateQueries({ queryKey: ["pos-edit-order", savedOrderId] }),
       ]);
       nav({
         to: "/receipt/$orderId",

@@ -215,6 +215,11 @@ function OrderTicketPage() {
       qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
       qc.invalidateQueries({ queryKey: ["item-usage-report"] }),
       qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
+      qc.invalidateQueries({ queryKey: ["inventory-items"] }),
+      qc.invalidateQueries({ queryKey: ["inventory-movements"] }),
+      qc.invalidateQueries({ queryKey: ["inventory-reports"] }),
+      qc.invalidateQueries({ queryKey: ["inventory-menu-performance"] }),
+      qc.invalidateQueries({ queryKey: ["inventory-control-branch"] }),
     ]);
   }
 
@@ -232,7 +237,8 @@ function OrderTicketPage() {
       const driverId = await PrintService.activeDriverId();
       let body: string;
       if (driverId === "network" || driverId === "qz") {
-        body = kind === "kot" ? renderKotText(data) : renderReceiptText(data);
+        const textWidth = settings.paperSize === "58mm" ? 32 : 42;
+        body = kind === "kot" ? renderKotText(data, textWidth) : renderReceiptText(data, textWidth);
       } else if (kind === "kot") {
         body = PrintService.renderHtml(<KotTemplate data={data} paperSize={settings.paperSize} />);
       } else {

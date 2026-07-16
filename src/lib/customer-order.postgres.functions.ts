@@ -94,7 +94,7 @@ export const placeCustomerOrderPostgres = createServerFn({ method: "POST" })
         branchId: z.string().uuid(),
         diningType: z.enum(["takeaway", "delivery"]),
         customerName: z.string().min(2).max(80),
-        customerPhone: z.string().min(6).max(40),
+        customerPhone: z.string().max(40).optional().nullable().default(""),
         notes: z.string().max(240).optional().nullable(),
         couponCode: z.string().max(40).optional().nullable(),
         items: z.array(CustomerItem).min(1).max(40),
