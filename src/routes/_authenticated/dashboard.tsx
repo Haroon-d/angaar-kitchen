@@ -91,7 +91,7 @@ function DashboardPage() {
         .from("orders")
         .select(
           `
-          id, order_no, dining_type, status, grand_total, created_at, customer_name
+          id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, customer_name
         `,
         )
         .eq("branch_id", branch!.id)
@@ -186,6 +186,12 @@ function DashboardPage() {
   const completed = orders.filter((o) => o.status === "completed");
   const revenue = completed.reduce((s, o) => s + Number(o.grand_total || 0), 0);
   const open = orders.filter((o) => !TERMINAL_ORDER_STATUSES.includes(o.status));
+  const payableOrders = orders.filter((o) => !["cancelled", "voided", "refunded"].includes(o.status));
+  const pendingPaymentOrders = payableOrders.filter((o) => outstandingAmount(o) > 0);
+  const pendingPaymentAmount = pendingPaymentOrders.reduce(
+    (sum, order) => sum + outstandingAmount(order),
+    0,
+  );
   const avg = completed.length ? revenue / completed.length : 0;
 
   const inventoryCost = todayQ.data?.inventoryCost ?? 0;
@@ -347,6 +353,22 @@ function DashboardPage() {
           to="/orders"
           highlight={open.length > 0}
         />
+        <Stat
+          icon={Receipt}
+          label="Pending payment orders"
+          value={String(pendingPaymentOrders.length)}
+          to="/orders"
+          highlight={pendingPaymentOrders.length > 0}
+        />
+        {admin && (
+          <Stat
+            icon={Banknote}
+            label="Pending payment amount"
+            value={formatMoney(pendingPaymentAmount, symbol)}
+            to="/orders"
+            highlight={pendingPaymentAmount > 0}
+          />
+        )}
         <Stat icon={TrendingUp} label="Avg ticket" value={formatMoney(avg, symbol)} />
         <Stat
           icon={Package}
@@ -594,6 +616,10 @@ function formatQuantity(value: number, unit?: string | null) {
   const normalized = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2);
   const trimmed = normalized.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
   return unit && unit !== "qty" ? `${trimmed} ${unit}` : trimmed;
+}
+
+function outstandingAmount(order: { grand_total: number | string; amount_paid?: number | string | null }) {
+  return Math.max(0, Number(order.grand_total || 0) - Number(order.amount_paid || 0));
 }
 
 function toUsageReportRows(data: unknown): UsageReportRow[] {
