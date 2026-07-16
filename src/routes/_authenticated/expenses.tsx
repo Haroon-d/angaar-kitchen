@@ -6,6 +6,7 @@ import {
   ArrowLeftRight,
   Banknote,
   Calendar,
+  FileText,
   Loader2,
   Pencil,
   Plus,
@@ -133,6 +134,20 @@ type FinanceDayClosure = {
   closed_at: string | null;
 };
 
+type FinanceSourceRow = {
+  key: string;
+  name: string;
+  accountType: string;
+  isCash: boolean;
+  collected: number;
+  expenses: number;
+  purchases: number;
+  refunds: number;
+  transferIn: number;
+  transferOut: number;
+  net: number;
+};
+
 type Expense = {
   id: string;
   branch_id: string;
@@ -215,6 +230,96 @@ function sourceTypeLabel(type: FinanceAccount["account_type"] | string) {
   }
 }
 
+function movementTypeLabel(type: FinanceMovement["movement_type"] | string) {
+  switch (type) {
+    case "order_payment":
+      return "Order payment";
+    case "expense":
+      return "Expense";
+    case "purchase_payment":
+      return "Purchase";
+    case "transfer_in":
+      return "Transfer in";
+    case "transfer_out":
+      return "Transfer out";
+    default:
+      return "Movement";
+  }
+}
+
+function buildFinanceSourceRows(
+  accounts: FinanceAccount[],
+  movements: FinanceMovement[],
+): FinanceSourceRow[] {
+  const rows = new Map<string, FinanceSourceRow>();
+
+  const ensureRow = (key: string, name: string, accountType: string, isCash: boolean) => {
+    const existing = rows.get(key);
+    if (existing) return existing;
+    const row = {
+      key,
+      name,
+      accountType,
+      isCash,
+      collected: 0,
+      expenses: 0,
+      purchases: 0,
+      refunds: 0,
+      transferIn: 0,
+      transferOut: 0,
+      net: 0,
+    };
+    rows.set(key, row);
+    return row;
+  };
+
+  accounts
+    .filter((account) => account.is_active)
+    .forEach((account) => {
+      ensureRow(account.id, account.name, account.account_type, account.is_cash);
+    });
+
+  movements.forEach((movement) => {
+    const key =
+      movement.finance_account_id ??
+      `${movement.account_name || "Unknown source"}-${movement.is_cash ? "cash" : "online"}`;
+    const row = ensureRow(
+      key,
+      movement.account_name || "Unknown source",
+      movement.account_type || (movement.is_cash ? "counter_cash" : "online"),
+      movement.is_cash,
+    );
+    const amount = Number(movement.amount || 0);
+    row.net += amount;
+    if (movement.movement_type === "expense") {
+      row.expenses += Math.abs(amount);
+    } else if (movement.movement_type === "purchase_payment") {
+      row.purchases += Math.abs(amount);
+    } else if (movement.movement_type === "transfer_in") {
+      row.transferIn += Math.abs(amount);
+    } else if (movement.movement_type === "transfer_out") {
+      row.transferOut += Math.abs(amount);
+    } else if (amount < 0) {
+      row.refunds += Math.abs(amount);
+    } else {
+      row.collected += amount;
+    }
+  });
+
+  return [...rows.values()]
+    .filter(
+      (row) =>
+        row.collected ||
+        row.expenses ||
+        row.purchases ||
+        row.refunds ||
+        row.transferIn ||
+        row.transferOut ||
+        row.net,
+    )
+    .sort((a, b) => Number(b.isCash) - Number(a.isCash) || a.name.localeCompare(b.name));
+}
+
 function ExpensesPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
@@ -235,6 +340,7 @@ function ExpensesPage() {
         )
       }
       branchName={branch.name}
+      ownerWhatsAppPhone={branch.phone ?? restaurant.phone ?? "0335 7200955"}
       manager={manager}
       symbol={restaurant.currency_symbol}
     />
@@ -246,6 +352,7 @@ function ExpensesWorkspace({
   restaurantId,
   businessDayStart,
   branchName,
+  ownerWhatsAppPhone,
   manager,
   symbol,
 }: {
@@ -253,6 +360,7 @@ function ExpensesWorkspace({
   restaurantId: string;
   businessDayStart: string;
   branchName: string;
+  ownerWhatsAppPhone: string;
   manager: boolean;
   symbol: string;
 }) {
@@ -264,6 +372,7 @@ function ExpensesWorkspace({
   const [sourceFilter, setSourceFilter] = useState("all");
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [printingReport, setPrintingReport] = useState(false);
 
   const categoriesQ = useExpenseCategories(branchId);
   const accountsQ = useFinanceAccounts(branchId);
@@ -320,6 +429,33 @@ function ExpensesWorkspace({
     .filter((e) => e.status === "due")
     .reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
+  async function printFinanceReport() {
+    setPrintingReport(true);
+    try {
+      const [latestAccounts, latestMovements, latestClosure] = await Promise.all([
+        accountsQ.refetch(),
+        movementsQ.refetch(),
+        startDate === endDate ? closureQ.refetch() : Promise.resolve({ data: null }),
+      ]);
+
+      openFinanceControlReport({
+        branchName,
+        businessDayStart,
+        startDate,
+        endDate,
+        symbol,
+        accounts: latestAccounts.data ?? accounts,
+        movements: latestMovements.data ?? movementsQ.data ?? [],
+        closure: latestClosure.data ?? null,
+        ownerWhatsAppPhone,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not prepare finance report");
+    } finally {
+      setPrintingReport(false);
+    }
+  }
+
   return (
     <div className="space-y-6 p-4 sm:p-8">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -332,6 +468,14 @@ function ExpensesWorkspace({
         </div>
         {manager && (
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={printFinanceReport} disabled={printingReport}>
+              {printingReport ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <FileText className="mr-2 h-4 w-4" />
+              )}
+              Finance PDF report
+            </Button>
             <FinanceTransferDialog
               branchId={branchId}
               restaurantId={restaurantId}
@@ -712,95 +856,10 @@ function DayEndPanel({
   const shiftOpened = Boolean(closure);
   const shiftClosed = Boolean(closure?.closed_at);
   const shiftStatus = !enabled ? "Period view" : !shiftOpened ? "Not opened" : shiftClosed ? "Closed" : "Open";
-  const sourceRows = useMemo(() => {
-    const rows = new Map<
-      string,
-      {
-        key: string;
-        name: string;
-        accountType: string;
-        isCash: boolean;
-        collected: number;
-        expenses: number;
-        purchases: number;
-        refunds: number;
-        transferIn: number;
-        transferOut: number;
-        net: number;
-      }
-    >();
-
-    const ensureRow = (
-      key: string,
-      name: string,
-      accountType: string,
-      isCash: boolean,
-    ) => {
-      const existing = rows.get(key);
-      if (existing) return existing;
-      const row = {
-        key,
-        name,
-        accountType,
-        isCash,
-        collected: 0,
-        expenses: 0,
-        purchases: 0,
-        refunds: 0,
-        transferIn: 0,
-        transferOut: 0,
-        net: 0,
-      };
-      rows.set(key, row);
-      return row;
-    };
-
-    accounts
-      .filter((account) => account.is_active)
-      .forEach((account) => {
-        ensureRow(account.id, account.name, account.account_type, account.is_cash);
-      });
-
-    movements.forEach((movement) => {
-      const key =
-        movement.finance_account_id ??
-        `${movement.account_name || "Unknown source"}-${movement.is_cash ? "cash" : "online"}`;
-      const row = ensureRow(
-        key,
-        movement.account_name || "Unknown source",
-        movement.account_type || (movement.is_cash ? "counter_cash" : "online"),
-        movement.is_cash,
-      );
-      const amount = Number(movement.amount || 0);
-      row.net += amount;
-      if (movement.movement_type === "expense") {
-        row.expenses += Math.abs(amount);
-      } else if (movement.movement_type === "purchase_payment") {
-        row.purchases += Math.abs(amount);
-      } else if (movement.movement_type === "transfer_in") {
-        row.transferIn += Math.abs(amount);
-      } else if (movement.movement_type === "transfer_out") {
-        row.transferOut += Math.abs(amount);
-      } else if (amount < 0) {
-        row.refunds += Math.abs(amount);
-      } else {
-        row.collected += amount;
-      }
-    });
-
-    return [...rows.values()]
-      .filter(
-        (row) =>
-          row.collected ||
-          row.expenses ||
-          row.purchases ||
-          row.refunds ||
-          row.transferIn ||
-          row.transferOut ||
-          row.net,
-      )
-      .sort((a, b) => Number(b.isCash) - Number(a.isCash) || a.name.localeCompare(b.name));
-  }, [accounts, movements]);
+  const sourceRows = useMemo(
+    () => buildFinanceSourceRows(accounts, movements),
+    [accounts, movements],
+  );
 
   async function refreshClosingNumbers() {
     setRefreshing(true);
@@ -1931,6 +1990,430 @@ function FinanceAccountDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function openFinanceControlReport({
+  branchName,
+  businessDayStart,
+  startDate,
+  endDate,
+  symbol,
+  accounts,
+  movements,
+  closure,
+  ownerWhatsAppPhone,
+}: {
+  branchName: string;
+  businessDayStart: string;
+  startDate: string;
+  endDate: string;
+  symbol: string;
+  accounts: FinanceAccount[];
+  movements: FinanceMovement[];
+  closure: FinanceDayClosure | null;
+  ownerWhatsAppPhone: string;
+}) {
+  const sourceRows = buildFinanceSourceRows(accounts, movements);
+  const singleDay = startDate === endDate;
+  const shiftWindow = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
+  const cashMovement = movements
+    .filter((movement) => movement.is_cash)
+    .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+  const onlineMovement = movements
+    .filter((movement) => !movement.is_cash)
+    .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+  const openingCash = singleDay ? Number(closure?.opening_cash ?? 0) : 0;
+  const openingOnline = singleDay ? Number(closure?.opening_online ?? 0) : 0;
+  const expectedCash = openingCash + cashMovement;
+  const expectedOnline = openingOnline + onlineMovement;
+  const actualCash = closure?.actual_cash == null ? null : Number(closure.actual_cash);
+  const actualOnline = closure?.actual_online == null ? null : Number(closure.actual_online);
+  const cashDifference = actualCash == null ? null : actualCash - expectedCash;
+  const onlineDifference = actualOnline == null ? null : actualOnline - expectedOnline;
+  const movementRows = [...movements].sort(
+    (a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
+  );
+  const totalsByType = movementRows.reduce<Record<string, number>>((totals, movement) => {
+    totals[movement.movement_type] =
+      (totals[movement.movement_type] ?? 0) + Number(movement.amount || 0);
+    return totals;
+  }, {});
+
+  const printWindow = window.open("", "_blank", "width=1100,height=800");
+  if (!printWindow) {
+    toast.error("Allow popups to open the finance report.");
+    return;
+  }
+
+  const money = (value: number | null) => (value == null ? "Not counted" : formatMoney(value, symbol));
+  const generatedAt = new Date().toLocaleString("en-PK", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Karachi",
+  });
+  const whatsappHref = buildFinanceReportWhatsAppHref({
+    phone: ownerWhatsAppPhone,
+    branchName,
+    startDate,
+    endDate,
+    generatedAt,
+    symbol,
+    openingCash,
+    openingOnline,
+    cashMovement,
+    onlineMovement,
+    expectedCash,
+    expectedOnline,
+    cashDifference,
+    onlineDifference,
+    sourceRows,
+    singleDay,
+  });
+  const row = (label: string, value: string, tone = "") => `
+    <div class="metric ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>`;
+  const sourceTable = sourceRows.length
+    ? sourceRows
+        .map(
+          (source) => `
+        <tr>
+          <td>${escapeHtml(source.name)}</td>
+          <td>${escapeHtml(sourceTypeLabel(source.accountType))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.collected, symbol))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.transferIn, symbol))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.transferOut, symbol))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.purchases, symbol))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.expenses, symbol))}</td>
+          <td class="num">${escapeHtml(formatMoney(source.refunds, symbol))}</td>
+          <td class="num strong">${escapeHtml(formatMoney(source.net, symbol))}</td>
+        </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="9" class="empty">No finance movements in this period.</td></tr>`;
+  const typeRows = Object.entries(totalsByType)
+    .map(
+      ([type, value]) => `
+      <tr>
+        <td>${escapeHtml(movementTypeLabel(type))}</td>
+        <td class="num strong">${escapeHtml(formatMoney(value, symbol))}</td>
+      </tr>`,
+    )
+    .join("");
+  const movementTable = movementRows.length
+    ? movementRows
+        .map(
+          (movement) => `
+        <tr>
+          <td>${escapeHtml(reportDateTime(movement.occurred_at))}</td>
+          <td>${escapeHtml(movement.account_name || "Unknown source")}</td>
+          <td>${escapeHtml(movementTypeLabel(movement.movement_type))}</td>
+          <td>${escapeHtml(movement.title)}</td>
+          <td>${escapeHtml(movement.payment_method ?? "")}</td>
+          <td>${escapeHtml(movement.reference ?? "")}</td>
+          <td class="num strong">${escapeHtml(formatMoney(Number(movement.amount || 0), symbol))}</td>
+        </tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="7" class="empty">No finance movements in this period.</td></tr>`;
+
+  printWindow.document.write(`
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Finance Report - Angaar Kitchen</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #f5f1e8;
+        color: #17130d;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+      }
+      .page { max-width: 1120px; margin: 0 auto; padding: 28px; }
+      .toolbar {
+        position: sticky;
+        top: 0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 12px 28px;
+        background: #17130d;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        background: #ff6d32;
+        color: #111;
+        cursor: pointer;
+        font-weight: 700;
+        padding: 10px 14px;
+      }
+      .button {
+        border-radius: 8px;
+        background: #25d366;
+        color: #082615;
+        display: inline-block;
+        font-weight: 700;
+        padding: 10px 14px;
+        text-decoration: none;
+      }
+      header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        border-bottom: 3px solid #17130d;
+        padding-bottom: 16px;
+      }
+      h1 { margin: 0; font-family: Georgia, serif; font-size: 32px; letter-spacing: .02em; }
+      h2 { margin: 26px 0 10px; font-size: 17px; text-transform: uppercase; letter-spacing: .12em; }
+      .muted { color: #665f55; }
+      .right { text-align: right; }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .metric {
+        min-height: 78px;
+        border: 1px solid #d8cfbf;
+        border-radius: 10px;
+        background: #fffaf0;
+        padding: 12px;
+      }
+      .metric span {
+        display: block;
+        color: #6b6258;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+      .metric strong { display: block; margin-top: 8px; font-size: 18px; }
+      .metric.warn { border-color: #b45309; background: #fff7ed; }
+      table { width: 100%; border-collapse: collapse; background: #fffaf0; }
+      th {
+        background: #17130d;
+        color: #f8f0dc;
+        font-size: 10px;
+        letter-spacing: .08em;
+        text-align: left;
+        text-transform: uppercase;
+      }
+      th, td { border: 1px solid #d8cfbf; padding: 8px; vertical-align: top; }
+      .num { text-align: right; white-space: nowrap; }
+      .strong { font-weight: 800; }
+      .empty { color: #665f55; padding: 18px; text-align: center; }
+      .note {
+        border-left: 4px solid #ff6d32;
+        background: #fffaf0;
+        margin-top: 18px;
+        padding: 12px;
+      }
+      footer { margin-top: 24px; border-top: 1px solid #d8cfbf; padding-top: 12px; color: #665f55; }
+      @media print {
+        body { background: #fff; }
+        .toolbar { display: none; }
+        .page { max-width: none; padding: 12mm; }
+        .metric, table, .note { break-inside: avoid; }
+        h2 { break-after: avoid; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <a class="button" href="${escapeHtml(whatsappHref)}" target="_blank" rel="noreferrer">
+        Send WhatsApp summary
+      </a>
+      <button onclick="window.print()">Print or save PDF</button>
+    </div>
+    <main class="page">
+      <header>
+        <div>
+          <h1>Angaar Kitchen Finance Control Report</h1>
+          <p class="muted">${escapeHtml(branchName)} - Business day starts ${escapeHtml(businessDayStart)}</p>
+        </div>
+        <div class="right">
+          <strong>${escapeHtml(startDate)}${startDate === endDate ? "" : ` to ${escapeHtml(endDate)}`}</strong>
+          <p class="muted">Generated ${escapeHtml(generatedAt)}</p>
+        </div>
+      </header>
+
+      <section class="metrics">
+        ${row("Opening cash", singleDay ? formatMoney(openingCash, symbol) : "Period view")}
+        ${row("Cash movement", formatMoney(cashMovement, symbol))}
+        ${row("Expected cash", singleDay ? formatMoney(expectedCash, symbol) : formatMoney(cashMovement, symbol))}
+        ${row("Cash difference", singleDay ? money(cashDifference) : "Period view", cashDifference ? "warn" : "")}
+        ${row("Opening online", singleDay ? formatMoney(openingOnline, symbol) : "Period view")}
+        ${row("Online movement", formatMoney(onlineMovement, symbol))}
+        ${row("Expected online", singleDay ? formatMoney(expectedOnline, symbol) : formatMoney(onlineMovement, symbol))}
+        ${row("Online difference", singleDay ? money(onlineDifference) : "Period view", onlineDifference ? "warn" : "")}
+      </section>
+
+      <div class="note">
+        Shift window: ${escapeHtml(reportDateTime(shiftWindow.start))} to ${escapeHtml(reportDateTime(shiftWindow.end))}.
+        For period reports, opening balances are not added because opening/closing is stored per single business day.
+      </div>
+
+      <h2>Movement Summary</h2>
+      <table>
+        <thead><tr><th>Movement type</th><th class="num">Net amount</th></tr></thead>
+        <tbody>${typeRows || `<tr><td colspan="2" class="empty">No movement totals.</td></tr>`}</tbody>
+      </table>
+
+      <h2>Source Balances and Movement</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Type</th>
+            <th class="num">Collected</th>
+            <th class="num">Transfer in</th>
+            <th class="num">Transfer out</th>
+            <th class="num">Purchases</th>
+            <th class="num">Expenses</th>
+            <th class="num">Refunds</th>
+            <th class="num">Net</th>
+          </tr>
+        </thead>
+        <tbody>${sourceTable}</tbody>
+      </table>
+
+      <h2>Every Finance Movement</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Source</th>
+            <th>Type</th>
+            <th>Event</th>
+            <th>Method</th>
+            <th>Reference</th>
+            <th class="num">Amount</th>
+          </tr>
+        </thead>
+        <tbody>${movementTable}</tbody>
+      </table>
+
+      <footer>
+        This report is generated from the finance ledger: paid orders, expenses, purchases, and
+        money transfers. If a source is wrong on an order or expense, correct the original record,
+        then print this report again.
+      </footer>
+    </main>
+    <script>
+      window.onload = function () { setTimeout(function () { window.print(); }, 300); };
+    </script>
+  </body>
+</html>`);
+  printWindow.document.close();
+}
+
+function buildFinanceReportWhatsAppHref({
+  phone,
+  branchName,
+  startDate,
+  endDate,
+  generatedAt,
+  symbol,
+  openingCash,
+  openingOnline,
+  cashMovement,
+  onlineMovement,
+  expectedCash,
+  expectedOnline,
+  cashDifference,
+  onlineDifference,
+  sourceRows,
+  singleDay,
+}: {
+  phone: string;
+  branchName: string;
+  startDate: string;
+  endDate: string;
+  generatedAt: string;
+  symbol: string;
+  openingCash: number;
+  openingOnline: number;
+  cashMovement: number;
+  onlineMovement: number;
+  expectedCash: number;
+  expectedOnline: number;
+  cashDifference: number | null;
+  onlineDifference: number | null;
+  sourceRows: FinanceSourceRow[];
+  singleDay: boolean;
+}) {
+  const period = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+  const topSources = sourceRows
+    .slice(0, 6)
+    .map((row) => `- ${row.name}: net ${formatMoney(row.net, symbol)}`)
+    .join("\n");
+  const message = [
+    "Angaar Kitchen finance report",
+    `Branch: ${branchName}`,
+    `Period: ${period}`,
+    `Generated: ${generatedAt}`,
+    "",
+    singleDay ? `Opening cash: ${formatMoney(openingCash, symbol)}` : "Opening cash: period view",
+    `Cash movement: ${formatMoney(cashMovement, symbol)}`,
+    singleDay ? `Expected cash: ${formatMoney(expectedCash, symbol)}` : `Cash net: ${formatMoney(cashMovement, symbol)}`,
+    singleDay
+      ? `Cash difference: ${cashDifference == null ? "not counted" : formatMoney(cashDifference, symbol)}`
+      : "Cash difference: period view",
+    "",
+    singleDay ? `Opening online: ${formatMoney(openingOnline, symbol)}` : "Opening online: period view",
+    `Online movement: ${formatMoney(onlineMovement, symbol)}`,
+    singleDay
+      ? `Expected online: ${formatMoney(expectedOnline, symbol)}`
+      : `Online net: ${formatMoney(onlineMovement, symbol)}`,
+    singleDay
+      ? `Online difference: ${onlineDifference == null ? "not counted" : formatMoney(onlineDifference, symbol)}`
+      : "Online difference: period view",
+    "",
+    "Top sources:",
+    topSources || "No finance movements.",
+    "",
+    "Full ledger is available in the system PDF report.",
+  ].join("\n");
+
+  return `https://wa.me/${normalizeWhatsAppPhone(phone)}?text=${encodeURIComponent(message)}`;
+}
+
+function normalizeWhatsAppPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("92")) return digits;
+  if (digits.startsWith("0") && digits.length === 11) return `92${digits.slice(1)}`;
+  if (digits.startsWith("3") && digits.length === 10) return `92${digits}`;
+  return digits || "923357200955";
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[char] ?? char;
+  });
+}
+
+function reportDateTime(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("en-PK", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Karachi",
+  });
 }
 
 function DateInput({
