@@ -8,6 +8,7 @@ import {
   operationalExpenses,
   orderItems,
   orders,
+  payments,
 } from "@/db/schema";
 import { requireBranchRole } from "@/services/authorization.service.server";
 
@@ -87,6 +88,34 @@ export async function getDashboardSummary(input: {
       ),
     );
 
+  const paymentRows = await db
+    .select({
+      kind: payments.kind,
+      amount: payments.amount,
+    })
+    .from(payments)
+    .innerJoin(orders, eq(orders.id, payments.orderId))
+    .where(
+      and(
+        eq(orders.branchId, input.branchId),
+        gte(payments.paidAt, new Date(input.startAt)),
+        lt(payments.paidAt, new Date(input.endAt)),
+      ),
+    );
+
+  const orderPaymentNet = paymentRows.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0,
+  );
+  const orderPaymentCollected = paymentRows.reduce(
+    (sum, payment) => sum + Math.max(0, Number(payment.amount || 0)),
+    0,
+  );
+  const orderPaymentRefunded = paymentRows.reduce(
+    (sum, payment) => sum + Math.abs(Math.min(0, Number(payment.amount || 0))),
+    0,
+  );
+
   const [lowStock] = await db
     .select({
       count: sql<number>`count(*)::int`,
@@ -117,6 +146,9 @@ export async function getDashboardSummary(input: {
     inventoryCost,
     costByOrder,
     otherCosts: Number(expenseTotal?.total ?? 0),
+    orderPaymentNet,
+    orderPaymentCollected,
+    orderPaymentRefunded,
     lowStockCount: Number(lowStock?.count ?? 0),
     usageRows,
   };

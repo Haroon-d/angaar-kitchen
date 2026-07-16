@@ -138,7 +138,17 @@ function DashboardPage() {
         0,
       );
 
-      return { orders, inventoryCost, costByOrder, otherCosts, lowStockCount: 0, usageRows: [] };
+      return {
+        orders,
+        inventoryCost,
+        costByOrder,
+        otherCosts,
+        orderPaymentNet: 0,
+        orderPaymentCollected: 0,
+        orderPaymentRefunded: 0,
+        lowStockCount: 0,
+        usageRows: [],
+      };
     },
   });
   const lowStockQ = useQuery({
@@ -180,6 +190,9 @@ function DashboardPage() {
 
   const inventoryCost = todayQ.data?.inventoryCost ?? 0;
   const otherCosts = todayQ.data?.otherCosts ?? 0;
+  const orderPaymentNet = todayQ.data?.orderPaymentNet ?? 0;
+  const orderPaymentRefunded = todayQ.data?.orderPaymentRefunded ?? 0;
+  const collectionGap = orderPaymentNet - revenue;
   const grossProfit = revenue - inventoryCost;
   const totalProfit = grossProfit - otherCosts;
   const zakaat = Math.max(totalProfit, 0) * 0.05;
@@ -294,9 +307,33 @@ function DashboardPage() {
       <div className={`grid gap-4 sm:grid-cols-2 ${admin ? "lg:grid-cols-4" : "lg:grid-cols-5"}`}>
         <Stat
           icon={Banknote}
-          label={`Revenue ${isToday ? "today" : "in period"}`}
+          label={`Sales revenue ${isToday ? "today" : "in period"}`}
           value={formatMoney(revenue, symbol)}
         />
+        {admin && (
+          <Stat
+            icon={WalletCards}
+            label={`Money collected ${isToday ? "today" : "in period"}`}
+            value={formatMoney(orderPaymentNet, symbol)}
+            to="/expenses"
+            highlight={orderPaymentRefunded > 0}
+          />
+        )}
+        {admin && (
+          <Stat
+            icon={Receipt}
+            label={
+              collectionGap === 0
+                ? "Sales and cash match"
+                : collectionGap > 0
+                  ? "Collected above sales"
+                  : "Unpaid sales gap"
+            }
+            value={formatMoney(collectionGap, symbol)}
+            to="/expenses"
+            highlight={collectionGap !== 0}
+          />
+        )}
         <Stat
           icon={Receipt}
           label="Orders completed"
