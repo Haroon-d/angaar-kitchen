@@ -137,15 +137,6 @@ function AuthedLayout() {
     }
   }, [roles, rolesLoading, router, nav]);
 
-  useEffect(() => {
-  const hostname = window.location.hostname;
-  const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-  const isVercelFallback = hostname.endsWith(".vercel.app");
-  if (!isLocalhost && hostname !== 'pos.angaarkitchen.com' && !isVercelFallback) {
-    nav({ to: '/' });
-  }
-}, [nav]);
-  
   if (loading || rolesLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
