@@ -32,7 +32,7 @@ import { appDb } from "@/lib/app-db";
 import { useAuth, useMyRoles } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isPostgresAuthEnabled } from "@/lib/auth-backend";
-import { businessDateInputValue, formatMoney } from "@/lib/format";
+import { businessDateInputValue, formatMoney, pakistanDateInputValue } from "@/lib/format";
 import {
   canAccessPath,
   firstAllowedPath,
@@ -93,7 +93,7 @@ const db = appDb as unknown as DbClient;
 type FinanceDayClosure = {
   id: string;
   branch_id: string;
-  business_date: string;
+  business_date: string | Date;
   opening_cash: number | string;
   opening_online: number | string;
   closed_at: string | null;
@@ -287,7 +287,7 @@ function ShiftOpeningGate() {
             <div className="flex flex-wrap gap-1">
               {unclosedShifts.slice(0, 4).map((shift) => (
                 <Badge key={shift.id} variant="outline" className="border-amber-400/40 text-amber-100">
-                  {shift.business_date}
+                  {formatBusinessDate(shift.business_date)}
                 </Badge>
               ))}
             </div>
@@ -359,6 +359,11 @@ function isAfterBusinessStart(businessDayStart: string) {
   const nowMinutes = pakistanTime.getUTCHours() * 60 + pakistanTime.getUTCMinutes();
   const startMinutes = (Number.isFinite(hours) ? hours : 10) * 60 + (Number.isFinite(minutes) ? minutes : 0);
   return nowMinutes >= startMinutes;
+}
+
+function formatBusinessDate(value: string | Date) {
+  if (value instanceof Date) return pakistanDateInputValue(value);
+  return value;
 }
 
 const NAV: Array<{
