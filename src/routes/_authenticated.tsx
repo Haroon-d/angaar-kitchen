@@ -140,7 +140,8 @@ function AuthedLayout() {
   useEffect(() => {
   const hostname = window.location.hostname;
   const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-  if (!isLocalhost && hostname !== 'pos.angaarkitchen.com') {
+  const isVercelFallback = hostname.endsWith(".vercel.app");
+  if (!isLocalhost && hostname !== 'pos.angaarkitchen.com' && !isVercelFallback) {
     nav({ to: '/' });
   }
 }, [nav]);
