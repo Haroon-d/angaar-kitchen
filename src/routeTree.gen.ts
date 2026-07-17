@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as OpsRouteImport } from './routes/ops'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as CareersRouteImport } from './routes/careers'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
@@ -32,6 +33,11 @@ import { Route as AuthenticatedReceiptOrderIdRouteImport } from './routes/_authe
 const SignupRoute = SignupRouteImport.update({
   id: '/signup',
   path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OpsRoute = OpsRouteImport.update({
+  id: '/ops',
+  path: '/ops',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -129,6 +135,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
+  '/ops': typeof OpsRoute
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/customers': typeof AuthenticatedCustomersRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
+  '/ops': typeof OpsRoute
   '/signup': typeof SignupRoute
   '/branches': typeof AuthenticatedBranchesRoute
   '/customers': typeof AuthenticatedCustomersRoute
@@ -171,6 +179,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/careers': typeof CareersRoute
   '/login': typeof LoginRoute
+  '/ops': typeof OpsRoute
   '/signup': typeof SignupRoute
   '/_authenticated/branches': typeof AuthenticatedBranchesRoute
   '/_authenticated/customers': typeof AuthenticatedCustomersRoute
@@ -193,6 +202,7 @@ export interface FileRouteTypes {
     | '/'
     | '/careers'
     | '/login'
+    | '/ops'
     | '/signup'
     | '/branches'
     | '/customers'
@@ -213,6 +223,7 @@ export interface FileRouteTypes {
     | '/'
     | '/careers'
     | '/login'
+    | '/ops'
     | '/signup'
     | '/branches'
     | '/customers'
@@ -234,6 +245,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/careers'
     | '/login'
+    | '/ops'
     | '/signup'
     | '/_authenticated/branches'
     | '/_authenticated/customers'
@@ -256,6 +268,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   CareersRoute: typeof CareersRoute
   LoginRoute: typeof LoginRoute
+  OpsRoute: typeof OpsRoute
   SignupRoute: typeof SignupRoute
 }
 
@@ -266,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/signup'
       fullPath: '/signup'
       preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ops': {
+      id: '/ops'
+      path: '/ops'
+      fullPath: '/ops'
+      preLoaderRoute: typeof OpsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -440,6 +460,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   CareersRoute: CareersRoute,
   LoginRoute: LoginRoute,
+  OpsRoute: OpsRoute,
   SignupRoute: SignupRoute,
 }
 export const routeTree = rootRouteImport

@@ -77,13 +77,14 @@ function RootComponent() {
     const hostname = window.location.hostname;
     const isCareersDomain = hostname.startsWith("careers.");
     const isPOSDomain = hostname === 'pos.angaarkitchen.com';
+    const isVercelOperationsHost = hostname.endsWith(".vercel.app");
     const isRootPath = window.location.pathname === '/';
     if (isCareersDomain && isRootPath) {
       window.location.href = "/careers";
       return;
     }
-    if (isPOSDomain && isRootPath) {
-      window.location.href = '/login';
+    if ((isPOSDomain || isVercelOperationsHost) && isRootPath) {
+      window.location.href = '/ops';
     }
   }, []);
   return (

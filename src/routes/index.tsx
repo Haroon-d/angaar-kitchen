@@ -270,7 +270,7 @@ function CustomerHome() {
   const displayRestaurantName = restaurantName.replace(/^A/, "a");
   const branchName = menu?.branch?.name ?? "Angaar Kitchen";
   const footerAddress = displayLocation(menu?.branch?.address ?? menu?.restaurant?.address);
-  const workspacePath = roles?.length ? firstAllowedPath(roles) : "/login";
+  const workspacePath = roles?.length ? firstAllowedPath(roles) : "/ops";
   const openStatusLabel = live?.isOpenNow ? "Open now" : live?.todayHours ? "Closed now" : "Call for hours";
   const todayHoursLabel = live?.todayHours
     ? `${formatClock(live.todayHours.openTime)} - ${formatClock(live.todayHours.closeTime)}`
