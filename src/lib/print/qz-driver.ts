@@ -63,20 +63,26 @@ export class QZTrayDriver implements PrinterDriver {
       throw new Error("QZ Tray not connected. Open QZ Tray on this machine and reload.");
     }
     const settings = loadSettings();
-    const printerName = job.kind === "kot" ? settings.kitchenPrinter : settings.receiptPrinter;
+    const printerName = (job.kind === "kot" ? settings.kitchenPrinter : settings.receiptPrinter)
+      ?.trim();
     if (!printerName) {
       throw new Error("No printer selected. Pick one in Settings → Printer.");
     }
     await assertPrinterExists(qz, printerName);
     const config = qz.configs.create(printerName, {
-      encoding: "CP437",
-      spool: { end: "\n" },
+      encoding: "Cp1252",
     });
-    await qz.print(config, [{
-      type: "raw",
-      format: "plain",
-      data: toEscPos(job.html),
-    }]);
+    try {
+      await qz.print(config, [
+        {
+          type: "raw",
+          format: "plain",
+          data: toEscPos(job.html),
+        },
+      ]);
+    } catch (error) {
+      throw normalizeQzError(error, printerName);
+    }
   }
 
   /** Helper for the settings page to list available printers. */
@@ -102,6 +108,16 @@ async function assertPrinterExists(qz: any, printerName: string) {
   } catch (error) {
     if (error instanceof Error && error.message.includes("was not found")) throw error;
   }
+}
+
+function normalizeQzError(error: unknown, printerName: string) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (message.includes("reading '0'") || message.includes('reading "0"')) {
+    return new Error(
+      `QZ Tray could not send raw data to "${printerName}". Open QZ Tray, allow the print request, and confirm this exact Windows printer name is visible in QZ Tray.`,
+    );
+  }
+  return error instanceof Error ? error : new Error(message || "QZ Tray print failed.");
 }
 
 function toEscPos(text: string) {
