@@ -78,7 +78,7 @@ export class QZTrayDriver implements PrinterDriver {
           type: "raw",
           format: "command",
           flavor: "plain",
-          data: [toEscPos(job.html)],
+          data: [toPlainThermalText(job.html)],
         },
       ]);
     } catch (error) {
@@ -121,7 +121,7 @@ function normalizeQzError(error: unknown, printerName: string) {
   return error instanceof Error ? error : new Error(message || "QZ Tray print failed.");
 }
 
-function toEscPos(text: string) {
+function toPlainThermalText(text: string) {
   const normalized = text
     .replace(/â‚¨|₨|₹/g, "Rs.")
     .replace(/[·×»]/g, (ch) => ({ "·": "-", "×": "x", "»": ">" }[ch] ?? ch))
@@ -132,6 +132,5 @@ function toEscPos(text: string) {
     })
     .join("");
 
-  // ESC @ initialize, then text, feed paper past the cutter, then partial cut.
-  return "\x1B@" + normalized.replace(/\n/g, "\r\n") + "\r\n" + "\x1B\x64\x0C" + "\x1D\x56\x42\x00";
+  return normalized.replace(/\n/g, "\r\n") + "\r\n\r\n\r\n";
 }
