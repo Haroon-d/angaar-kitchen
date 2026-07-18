@@ -76,8 +76,9 @@ export class QZTrayDriver implements PrinterDriver {
       await qz.print(config, [
         {
           type: "raw",
-          format: "plain",
-          data: toEscPos(job.html),
+          format: "command",
+          flavor: "plain",
+          data: [toEscPos(job.html)],
         },
       ]);
     } catch (error) {
