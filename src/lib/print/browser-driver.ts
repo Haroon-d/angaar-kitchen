@@ -96,7 +96,8 @@ export class BrowserPrintDriver implements PrinterDriver {
 }
 
 export function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
-  const widthMm = size === "58mm" ? 58 : 80;
+  const paperWidthMm = size === "58mm" ? 58 : 80;
+  const printableWidthMm = size === "58mm" ? 48 : 72;
   const imagePrint = bodyHtml.includes("ak-print-image");
   return `<!doctype html>
 <html>
@@ -104,19 +105,19 @@ export function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
 <meta charset="utf-8" />
 <title>Receipt</title>
 <style>
-  @page { size: ${widthMm}mm ${imagePrint ? "297mm" : "auto"}; margin: 0; }
+  @page { size: ${paperWidthMm}mm ${imagePrint ? "297mm" : "auto"}; margin: 0; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #fff; color: #000; }
   body {
     font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
     font-size: ${size === "58mm" ? "11px" : "12px"};
     line-height: 1.4;
-    width: ${widthMm}mm;
-    padding: ${imagePrint ? "0" : "4mm 3mm"};
+    width: ${imagePrint ? paperWidthMm : printableWidthMm}mm;
+    padding: ${imagePrint ? "0" : "4mm 1.5mm 4mm 1.5mm"};
   }
   img { display: block; max-width: 100%; height: auto; break-inside: avoid; page-break-inside: avoid; }
-  .ak-print-sheet { width: ${widthMm}mm; height: 297mm; overflow: hidden; padding: 0 0 152mm; margin: 0; text-align: center; }
-  .ak-print-image { max-width: ${widthMm}mm; max-height: 145mm; width: auto; height: auto; object-fit: contain; object-position: top center; margin: 0 auto; }
+  .ak-print-sheet { width: ${paperWidthMm}mm; height: 297mm; overflow: hidden; padding: 0 0 152mm; margin: 0; text-align: center; }
+  .ak-print-image { max-width: ${paperWidthMm}mm; max-height: 145mm; width: auto; height: auto; object-fit: contain; object-position: top center; margin: 0 auto; }
   .ak-r-h1 { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; font-size: ${size === "58mm" ? "16px" : "18px"}; margin: 0; text-align: center; letter-spacing: .5px; }
   .ak-r-meta { text-align: center; font-size: ${size === "58mm" ? "10px" : "11px"}; line-height: 1.35; }
   .ak-r-rule { border: none; border-top: 1px dashed #555; margin: 6px 0; }
