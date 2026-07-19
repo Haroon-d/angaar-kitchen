@@ -236,7 +236,7 @@ function OrderTicketPage() {
     try {
       const driverId = await PrintService.activeDriverId();
       let body: string;
-      if (driverId === "network" || driverId === "qz") {
+      if (driverId === "network") {
         const textWidth = settings.paperSize === "58mm" ? 32 : 42;
         body = kind === "kot" ? renderKotText(data, textWidth) : renderReceiptText(data, textWidth);
       } else if (kind === "kot") {

@@ -95,7 +95,7 @@ export class BrowserPrintDriver implements PrinterDriver {
   }
 }
 
-function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
+export function wrapPrintDocument(bodyHtml: string, size: PaperSize) {
   const widthMm = size === "58mm" ? 58 : 80;
   const imagePrint = bodyHtml.includes("ak-print-image");
   return `<!doctype html>

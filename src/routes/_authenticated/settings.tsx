@@ -618,7 +618,7 @@ function PrinterTab() {
       const driverId = await PrintService.activeDriverId();
       const textWidth = settings.paperSize === "58mm" ? 32 : 42;
       const body =
-        driverId === "qz" || driverId === "network"
+        driverId === "network"
           ? renderReceiptText(sample, textWidth)
           : PrintService.renderHtml(<ReceiptTemplate data={sample} paperSize={settings.paperSize} />);
       await PrintService.print({ html: body, kind: "receipt", paperSize: settings.paperSize });
