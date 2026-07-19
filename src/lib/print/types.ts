@@ -53,6 +53,7 @@ export type ReceiptData = {
   deliveryFee?: number;
   serviceCharge?: number;
   grandTotal: number;
+  paymentStatus?: "pending" | "partial" | "paid" | "refunded";
   payments: ReceiptPayment[];
   amountReceived?: number;
   changeReturned?: number;

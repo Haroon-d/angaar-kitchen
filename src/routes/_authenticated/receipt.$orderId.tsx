@@ -166,6 +166,7 @@ function OrderTicketPage() {
         amount: Number(t.amount),
       })),
       grandTotal: Number(order.grand_total),
+      paymentStatus: (order.payment_status ?? "pending") as ReceiptData["paymentStatus"],
       payments: payments.map((p) => ({
         method: p.method,
         amount: Number(p.amount),

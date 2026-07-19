@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, Link, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Minus, Trash2, Loader2, Receipt, Search, X, MessageSquare } from "lucide-react";
@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatMoney } from "@/lib/format";
 import { previewCouponPostgres } from "@/lib/coupons.postgres.functions";
 import { searchCustomersForPosPostgres } from "@/lib/customers.postgres.functions";
+import { cloudinaryImageSrcSet, optimizeCloudinaryImageUrl } from "@/lib/image-delivery";
 
 export const Route = createFileRoute("/_authenticated/pos")({
   validateSearch: z.object({ editOrderId: z.string().optional() }),
@@ -155,6 +156,7 @@ function POSPage() {
   const [submitting, setSubmitting] = useState(false);
   const [hydratedEditOrderId, setHydratedEditOrderId] = useState<string | null>(null);
   const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
+  const deferredSearch = useDeferredValue(search);
 
   const itemsQ = useQuery<MenuItemRow[]>({
     queryKey: ["pos-items", branch?.id],
@@ -207,8 +209,7 @@ function POSPage() {
   const stockQ = useQuery<StockStatus[]>({
     queryKey: ["menu-stock-status", branch?.id],
     enabled: !!branch,
-    staleTime: 10 * 1000,
-    refetchInterval: 30000,
+    staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data, error } = await rpc<StockStatus[]>("get_menu_item_stock_status", {
@@ -259,12 +260,12 @@ function POSPage() {
   const filteredItems = useMemo(() => {
     let items = itemsQ.data ?? [];
     if (activeCat !== "all") items = items.filter((i) => i.category_id === activeCat);
-    if (search.trim()) {
-      const s = search.toLowerCase();
+    if (deferredSearch.trim()) {
+      const s = deferredSearch.toLowerCase();
       items = items.filter((i) => i.name.toLowerCase().includes(s));
     }
     return items;
-  }, [itemsQ.data, activeCat, search]);
+  }, [itemsQ.data, activeCat, deferredSearch]);
   const editingOrder = editOrderQ.data?.order;
   const isEditing = !!editOrderId;
 
@@ -301,7 +302,7 @@ function POSPage() {
     setHydratedEditOrderId(editOrderId);
   }, [editOrderId, editOrderQ.data, editOrderQ.isError, editOrderQ.isFetching, hydratedEditOrderId]);
 
-  function addToCart(it: MenuItemRow) {
+  const addToCart = useCallback((it: MenuItemRow) => {
     setCart((c) => {
       const found = c.find((x) => x.item_id === it.id);
       if (found) return c.map((x) => (x.uid === found.uid ? { ...x, qty: x.qty + 1 } : x));
@@ -316,7 +317,7 @@ function POSPage() {
         },
       ];
     });
-  }
+  }, []);
   function setQty(uid: string, qty: number) {
     if (qty <= 0) setCart((c) => c.filter((x) => x.uid !== uid));
     else setCart((c) => c.map((x) => (x.uid === uid ? { ...x, qty } : x)));
@@ -383,10 +384,10 @@ function POSPage() {
       setCustomerPhone(customer.phone);
       if (customer.defaultAddress) {
         setCustomerAddress(customer.defaultAddress);
-        if (diningType !== "delivery") setDiningType("delivery");
+        setDiningType((current) => (current === "delivery" ? current : "delivery"));
       }
-      if (customer.spicePreference && !orderNotes.trim()) {
-        setOrderNotes(customer.spicePreference);
+      if (customer.spicePreference) {
+        setOrderNotes((current) => (current.trim() ? current : customer.spicePreference ?? ""));
       }
       setCustomerMatches([]);
       if (customer.isBlocked) {
@@ -395,7 +396,7 @@ function POSPage() {
       }
       if (!options.silent) toast.success("Customer details loaded");
     },
-    [diningType, orderNotes],
+    [],
   );
 
   useEffect(() => {
@@ -521,19 +522,21 @@ function POSPage() {
       );
       idempotencyKeyRef.current = crypto.randomUUID();
       clearCart();
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["orders-list"] }),
-        qc.invalidateQueries({ queryKey: ["order", savedOrderId] }),
-        qc.invalidateQueries({ queryKey: ["dashboard-today"] }),
-        qc.invalidateQueries({ queryKey: ["item-usage-report"] }),
-        qc.invalidateQueries({ queryKey: ["menu-stock-status"] }),
-        qc.invalidateQueries({ queryKey: ["inventory-items"] }),
-        qc.invalidateQueries({ queryKey: ["inventory-movements"] }),
-        qc.invalidateQueries({ queryKey: ["inventory-reports"] }),
-        qc.invalidateQueries({ queryKey: ["inventory-menu-performance"] }),
-        qc.invalidateQueries({ queryKey: ["inventory-control-branch"] }),
-        qc.invalidateQueries({ queryKey: ["pos-edit-order", savedOrderId] }),
-      ]);
+      [
+        ["orders-list"],
+        ["order", savedOrderId],
+        ["dashboard-today"],
+        ["item-usage-report"],
+        ["menu-stock-status"],
+        ["inventory-items"],
+        ["inventory-movements"],
+        ["inventory-reports"],
+        ["inventory-menu-performance"],
+        ["inventory-control-branch"],
+        ["pos-edit-order", savedOrderId],
+      ].forEach((queryKey) => {
+        void qc.invalidateQueries({ queryKey });
+      });
       nav({
         to: "/receipt/$orderId",
         params: { orderId: savedOrderId },
@@ -613,34 +616,15 @@ function POSPage() {
               .
             </div>
           )}
-          {filteredItems.map((it) => {
-            const stock = stockByItem.get(it.id);
-            const warning = getStockWarning(stock);
-            return (
-              <button
-                key={it.id}
-                onClick={() => addToCart(it)}
-                className="group flex min-h-[108px] flex-col items-start rounded-lg border border-border bg-card p-3 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember"
-              >
-                {it.image_url ? (
-                  <img
-                    src={it.image_url}
-                    alt={it.name}
-                    className="mb-2 h-24 w-full rounded-md object-cover"
-                  />
-                ) : null}
-                <div className="line-clamp-2 text-sm font-medium">{it.name}</div>
-                {warning && (
-                  <Badge variant="outline" className={`mt-2 text-[10px] ${warning.cls}`}>
-                    {warning.label}
-                  </Badge>
-                )}
-                <div className="mt-auto pt-3 font-mono text-sm text-primary">
-                  {formatMoney(it.base_price, symbol)}
-                </div>
-              </button>
-            );
-          })}
+          {filteredItems.map((it) => (
+            <MenuItemButton
+              key={it.id}
+              item={it}
+              stock={stockByItem.get(it.id)}
+              symbol={symbol}
+              onAdd={addToCart}
+            />
+          ))}
         </div>
       </div>
 
@@ -939,6 +923,54 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
     </div>
   );
 }
+
+const MenuItemButton = memo(function MenuItemButton({
+  item,
+  stock,
+  symbol,
+  onAdd,
+}: {
+  item: MenuItemRow;
+  stock: StockStatus | undefined;
+  symbol: string;
+  onAdd: (item: MenuItemRow) => void;
+}) {
+  const warning = getStockWarning(stock);
+
+  return (
+    <button
+      onClick={() => onAdd(item)}
+      className="group flex min-h-[108px] flex-col items-start rounded-lg border border-border bg-card p-3 text-left shadow-card transition hover:border-primary/50 hover:shadow-ember"
+    >
+      {item.image_url ? (
+        <img
+          src={
+            optimizeCloudinaryImageUrl(item.image_url, {
+              width: 360,
+              height: 220,
+              quality: "auto:eco",
+            }) ?? item.image_url
+          }
+          srcSet={cloudinaryImageSrcSet(item.image_url, [240, 360, 520])}
+          sizes="(min-width: 640px) 30vw, 45vw"
+          alt={item.name}
+          loading="lazy"
+          decoding="async"
+          className="mb-2 h-24 w-full rounded-md object-cover"
+        />
+      ) : null}
+      <div className="line-clamp-2 text-sm font-medium">{item.name}</div>
+      {warning && (
+        <Badge variant="outline" className={`mt-2 text-[10px] ${warning.cls}`}>
+          {warning.label}
+        </Badge>
+      )}
+      <div className="mt-auto pt-3 font-mono text-sm text-primary">
+        {formatMoney(item.base_price, symbol)}
+      </div>
+    </button>
+  );
+});
 
 function buildOrderNotes(address: string, notes: string) {
   const lines: string[] = [];

@@ -29,6 +29,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
   const itemCount = data.items.reduce((total, item) => total + item.qty, 0);
   const paidAmount = data.payments.reduce((total, payment) => total + payment.amount, 0);
   const balanceDue = Math.max(0, data.grandTotal - Math.max(paidAmount, data.amountReceived ?? 0));
+  const unpaid = data.paymentStatus !== "paid" && data.paymentStatus !== "refunded" && balanceDue > 0;
   const brandLines = splitBrandName(data.brandName);
   const legalName = isSameText(data.legalName, data.brandName) ? null : data.legalName;
   const receiptAddress = receiptLocation(data.address);
@@ -97,6 +98,7 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
             {DINING_LABEL[data.diningType]}
           </div>
         </div>
+        {unpaid && <UnpaidStamp compact={compact} />}
         <MetaRow label="Date" value={formatDate(data.createdAt)} />
         {data.tableLabel && <MetaRow label="Table" value={data.tableLabel} />}
         {data.cashierName && <MetaRow label="Cashier" value={data.cashierName} />}
@@ -187,6 +189,21 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
         >
           <AmountRow label="TOTAL" value={formatMoney(data.grandTotal, sym)} strong />
         </div>
+        {unpaid && (
+          <div
+            style={{
+              marginTop: 5,
+              border: "2px solid #000",
+              padding: "4px 6px",
+              textAlign: "center",
+              fontSize: compact ? 14 : 16,
+              fontWeight: 900,
+              letterSpacing: 1,
+            }}
+          >
+            UNPAID - {formatMoney(balanceDue, sym)} DUE
+          </div>
+        )}
       </section>
 
       {data.payments.length > 0 && (
@@ -236,6 +253,24 @@ export function ReceiptTemplate({ data, paperSize = "80mm", preview = false }: P
           Ref: {data.orderId.slice(0, 12)}
         </div>
       </footer>
+    </div>
+  );
+}
+
+function UnpaidStamp({ compact }: { compact: boolean }) {
+  return (
+    <div
+      style={{
+        display: "inline-block",
+        margin: "3px 0 2px",
+        border: "2px solid #000",
+        padding: compact ? "2px 8px" : "3px 10px",
+        fontSize: compact ? 13 : 15,
+        fontWeight: 900,
+        letterSpacing: 1,
+      }}
+    >
+      UNPAID
     </div>
   );
 }

@@ -23,6 +23,10 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   const sym = data.currencySymbol;
   const padX = 3;
   const innerW = widthMm - padX * 2;
+  const paidAmount = data.payments.reduce((total, payment) => total + payment.amount, 0);
+  const balanceDue = Math.max(0, data.grandTotal - Math.max(paidAmount, data.amountReceived ?? 0));
+  const unpaid =
+    data.paymentStatus !== "paid" && data.paymentStatus !== "refunded" && balanceDue > 0;
   let y = 6;
 
   doc.setFont("helvetica", "bold");
@@ -51,6 +55,11 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   doc.setFont("helvetica", "bold");
   doc.text(DINING_LABEL[data.diningType], widthMm / 2, y, { align: "center" });
   y += 4;
+  if (unpaid) {
+    doc.setFontSize(12);
+    doc.text("UNPAID", widthMm / 2, y, { align: "center" });
+    y += 5;
+  }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   kv(doc, padX, y, innerW, "Order #", data.orderNo);
@@ -145,6 +154,12 @@ export function generateReceiptPdf(data: ReceiptData, paperSize: PaperSize = "80
   doc.text("TOTAL", padX, y);
   doc.text(formatMoney(data.grandTotal, sym), widthMm - padX, y, { align: "right" });
   y += 5;
+  if (unpaid) {
+    doc.setFontSize(10);
+    doc.text("UNPAID DUE", padX, y);
+    doc.text(formatMoney(balanceDue, sym), widthMm - padX, y, { align: "right" });
+    y += 5;
+  }
 
   // Payments
   doc.setFont("helvetica", "normal");

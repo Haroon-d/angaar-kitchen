@@ -40,6 +40,10 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
   const legalName = isSameText(data.legalName, data.brandName) ? null : data.legalName;
   const receiptAddress = receiptLocation(data.address);
   const receiptPhone = cleanText(data.phone) || DEFAULT_PHONE;
+  const paidAmount = data.payments.reduce((total, payment) => total + payment.amount, 0);
+  const balanceDue = Math.max(0, data.grandTotal - Math.max(paidAmount, data.amountReceived ?? 0));
+  const unpaid =
+    data.paymentStatus !== "paid" && data.paymentStatus !== "refunded" && balanceDue > 0;
 
   lines.push(center("ANGAAR"));
   lines.push(center(spacedText(brandLines.bottom.toUpperCase())));
@@ -49,6 +53,7 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
   if (data.taxId) addCentered(`Tax ID: ${data.taxId}`);
   lines.push(dbl);
   lines.push(center(`[ ${data.diningType.replace("_", " ").toUpperCase()} ]`));
+  if (unpaid) lines.push(center("*** UNPAID ***"));
   addMeta("Order", data.orderNo);
   addMeta("Date", formatDate(data.createdAt));
   addMeta("Table", data.tableLabel);
@@ -87,6 +92,7 @@ export function renderReceiptText(data: ReceiptData, width = 42): string {
     lines.push(row("Service", fmt(data.serviceCharge)));
   lines.push(dbl);
   lines.push(row("TOTAL", fmt(data.grandTotal)));
+  if (unpaid) lines.push(row("UNPAID DUE", fmt(balanceDue)));
   lines.push(dbl);
 
   for (const p of data.payments) {

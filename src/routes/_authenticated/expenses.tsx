@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { forwardRef, useEffect, useMemo, useState } from "react";
+import type { ComponentPropsWithoutRef, FormEvent, ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -105,6 +105,7 @@ type FinanceMovement = {
     | "order_payment"
     | "expense"
     | "purchase_payment"
+    | "supplier_payment"
     | "transfer_in"
     | "transfer_out";
   title: string;
@@ -182,42 +183,63 @@ const FinanceAccountSchema = z.object({
   sort_order: z.number().int().min(0).max(999),
 });
 
-const FinanceTransferSchema = z.object({
-  title: z.string().trim().min(1).max(120),
-  transfer_type: z.enum([
-    "internal_transfer",
-    "owner_contribution",
-    "owner_withdrawal",
-    "cash_deposit",
-    "cash_withdrawal",
-    "correction",
-  ]),
-  occurred_at: z.string().min(1),
-  from_account_id: z.string().uuid().nullable(),
-  to_account_id: z.string().uuid().nullable(),
-  amount: z.number().positive(),
-  reference: z.string().trim().max(120).optional().nullable(),
-  notes: z.string().trim().max(500).optional().nullable(),
-}).refine((value) => value.from_account_id || value.to_account_id, {
-  message: "Select at least one source.",
-  path: ["from_account_id"],
-}).refine((value) => value.from_account_id !== value.to_account_id, {
-  message: "From and To cannot be the same source.",
-  path: ["to_account_id"],
-});
+const FinanceTransferSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    transfer_type: z.enum([
+      "internal_transfer",
+      "owner_contribution",
+      "owner_withdrawal",
+      "cash_deposit",
+      "cash_withdrawal",
+      "correction",
+    ]),
+    occurred_at: z.string().min(1),
+    from_account_id: z.string().uuid().nullable(),
+    to_account_id: z.string().uuid().nullable(),
+    amount: z.number().positive(),
+    reference: z.string().trim().max(120).optional().nullable(),
+    notes: z.string().trim().max(500).optional().nullable(),
+  })
+  .refine((value) => value.from_account_id || value.to_account_id, {
+    message: "Select at least one source.",
+    path: ["from_account_id"],
+  })
+  .refine((value) => value.from_account_id !== value.to_account_id, {
+    message: "From and To cannot be the same source.",
+    path: ["to_account_id"],
+  });
 
-const ExpenseSchema = z.object({
-  title: z.string().trim().min(1).max(120),
-  category_id: z.string().uuid().nullable(),
-  expense_date: z.string().min(1),
-  vendor: z.string().trim().max(120).optional().nullable(),
-  reference_no: z.string().trim().max(120).optional().nullable(),
-  payment_method: z.enum(["cash", "card", "upi", "wallet", "other"]).nullable(),
-  finance_account_id: z.string().uuid().nullable(),
-  status: z.enum(["due", "paid", "void"]),
-  amount: z.number().min(0),
-  notes: z.string().trim().max(500).optional().nullable(),
-});
+const ExpenseSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    category_id: z.string().uuid().nullable(),
+    expense_date: z.string().min(1),
+    vendor: z.string().trim().max(120).optional().nullable(),
+    reference_no: z.string().trim().max(120).optional().nullable(),
+    payment_method: z.enum(["cash", "card", "upi", "wallet", "other"]).nullable(),
+    finance_account_id: z.string().uuid().nullable(),
+    status: z.enum(["due", "paid", "void"]),
+    amount: z.number().min(0),
+    notes: z.string().trim().max(500).optional().nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.status !== "paid") return;
+    if (!value.payment_method) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Select payment type for a paid expense.",
+        path: ["payment_method"],
+      });
+    }
+    if (!value.finance_account_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Select where this paid expense was paid from.",
+        path: ["finance_account_id"],
+      });
+    }
+  });
 
 function sourceTypeLabel(type: FinanceAccount["account_type"] | string) {
   switch (type) {
@@ -242,6 +264,8 @@ function movementTypeLabel(type: FinanceMovement["movement_type"] | string) {
       return "Expense";
     case "purchase_payment":
       return "Purchase";
+    case "supplier_payment":
+      return "Supplier payment";
     case "transfer_in":
       return "Transfer in";
     case "transfer_out":
@@ -297,7 +321,10 @@ function buildFinanceSourceRows(
     row.net += amount;
     if (movement.movement_type === "expense") {
       row.expenses += Math.abs(amount);
-    } else if (movement.movement_type === "purchase_payment") {
+    } else if (
+      movement.movement_type === "purchase_payment" ||
+      movement.movement_type === "supplier_payment"
+    ) {
       row.purchases += Math.abs(amount);
     } else if (movement.movement_type === "transfer_in") {
       row.transferIn += Math.abs(amount);
@@ -337,12 +364,9 @@ function ExpensesPage() {
     <ExpensesWorkspace
       branchId={branch.id}
       restaurantId={restaurant.id}
-      businessDayStart={
-        ((branch as { business_day_start_time?: string }).business_day_start_time ?? "10:00").slice(
-          0,
-          5,
-        )
-      }
+      businessDayStart={(
+        (branch as { business_day_start_time?: string }).business_day_start_time ?? "10:00"
+      ).slice(0, 5)}
       branchName={branch.name}
       ownerWhatsAppPhone={branch.phone ?? restaurant.phone ?? "0335 7200955"}
       manager={manager}
@@ -406,21 +430,22 @@ function ExpensesWorkspace({
   );
   const visibleExpenses = useMemo(() => {
     const s = search.trim().toLowerCase();
-    return expenses.filter((e) =>
-      (categoryFilter === "all" || (e.category_id ?? "none") === categoryFilter) &&
-      (sourceFilter === "all" || (e.finance_account_id ?? "none") === sourceFilter) &&
-      (methodFilter === "all" || (e.payment_method ?? "none") === methodFilter) &&
-      (statusFilter === "all" || e.status === statusFilter) &&
-      (!s ||
-        [
-          e.title,
-          e.vendor,
-          e.reference_no,
-          e.operational_expense_categories?.name,
-          e.finance_account_id ? accountById.get(e.finance_account_id)?.name : null,
-        ]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(s))),
+    return expenses.filter(
+      (e) =>
+        (categoryFilter === "all" || (e.category_id ?? "none") === categoryFilter) &&
+        (sourceFilter === "all" || (e.finance_account_id ?? "none") === sourceFilter) &&
+        (methodFilter === "all" || (e.payment_method ?? "none") === methodFilter) &&
+        (statusFilter === "all" || e.status === statusFilter) &&
+        (!s ||
+          [
+            e.title,
+            e.vendor,
+            e.reference_no,
+            e.operational_expense_categories?.name,
+            e.finance_account_id ? accountById.get(e.finance_account_id)?.name : null,
+          ]
+            .filter(Boolean)
+            .some((v) => String(v).toLowerCase().includes(s))),
     );
   }, [accountById, categoryFilter, expenses, methodFilter, search, sourceFilter, statusFilter]);
 
@@ -500,7 +525,12 @@ function ExpensesWorkspace({
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat icon={Banknote} label="Selected period cost" value={formatMoney(total, symbol)} />
         <Stat icon={ReceiptText} label="Already paid" value={formatMoney(paid, symbol)} />
-        <Stat icon={Calendar} label="Still payable" value={formatMoney(due, symbol)} highlight={due > 0} />
+        <Stat
+          icon={Calendar}
+          label="Still payable"
+          value={formatMoney(due, symbol)}
+          highlight={due > 0}
+        />
       </div>
 
       <DayEndPanel
@@ -638,7 +668,11 @@ function ExpensesWorkspace({
                         branchId={branchId}
                         categories={categoriesQ.data ?? []}
                         accounts={accounts}
-                        accountName={expense.finance_account_id ? accountById.get(expense.finance_account_id)?.name : null}
+                        accountName={
+                          expense.finance_account_id
+                            ? accountById.get(expense.finance_account_id)?.name
+                            : null
+                        }
                         manager={manager}
                         symbol={symbol}
                       />
@@ -714,12 +748,16 @@ function FinanceActionCenter({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <Button asChild variant="outline" className="h-auto justify-start gap-3 p-4 text-left">
+        <Button
+          asChild
+          variant="outline"
+          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
+        >
           <Link to="/inventory">
-            <ShoppingCart className="h-5 w-5 text-primary" />
-            <span>
+            <ShoppingCart className="h-5 w-5 shrink-0 text-primary" />
+            <span className="min-w-0">
               <span className="block font-semibold">Bought stock / packaging</span>
-              <span className="block text-xs text-muted-foreground">
+              <span className="block text-xs leading-snug text-muted-foreground">
                 Record purchase, payment source, and stock quantity.
               </span>
             </span>
@@ -770,13 +808,13 @@ function FinanceActionCenter({
         <Button
           type="button"
           variant="outline"
-          className="h-auto justify-start gap-3 p-4 text-left"
+          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
           onClick={scrollToShift}
         >
-          <ClipboardCheck className="h-5 w-5 text-primary" />
-          <span>
+          <ClipboardCheck className="h-5 w-5 shrink-0 text-primary" />
+          <span className="min-w-0">
             <span className="block font-semibold">Open or close shift</span>
-            <span className="block text-xs text-muted-foreground">
+            <span className="block text-xs leading-snug text-muted-foreground">
               Set opening cash, refresh expected totals, and close day.
             </span>
           </span>
@@ -784,18 +822,18 @@ function FinanceActionCenter({
         <Button
           type="button"
           variant="outline"
-          className="h-auto justify-start gap-3 p-4 text-left"
+          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
           onClick={onPrintReport}
           disabled={printingReport}
         >
           {printingReport ? (
-            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" />
           ) : (
-            <FileText className="h-5 w-5 text-primary" />
+            <FileText className="h-5 w-5 shrink-0 text-primary" />
           )}
-          <span>
+          <span className="min-w-0">
             <span className="block font-semibold">Send owner finance report</span>
-            <span className="block text-xs text-muted-foreground">
+            <span className="block text-xs leading-snug text-muted-foreground">
               Print PDF and share WhatsApp summary.
             </span>
           </span>
@@ -805,25 +843,35 @@ function FinanceActionCenter({
   );
 }
 
-function FinanceQuickAction({
-  icon: Icon,
-  title,
-  description,
-}: {
+type FinanceQuickActionProps = ComponentPropsWithoutRef<typeof Button> & {
   icon: LucideIcon;
   title: string;
   description: string;
-}) {
-  return (
-    <Button type="button" variant="outline" className="h-auto w-full justify-start gap-3 p-4 text-left">
-      <Icon className="h-5 w-5 text-primary" />
-      <span>
+};
+
+const FinanceQuickAction = forwardRef<HTMLButtonElement, FinanceQuickActionProps>(
+  ({ icon: Icon, title, description, className, ...props }, ref) => (
+    <Button
+      ref={ref}
+      type="button"
+      variant="outline"
+      className={[
+        "h-auto min-h-[104px] w-full justify-start gap-3 whitespace-normal p-4 text-left",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      {...props}
+    >
+      <Icon className="h-5 w-5 shrink-0 text-primary" />
+      <span className="min-w-0">
         <span className="block font-semibold">{title}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
+        <span className="block text-xs leading-snug text-muted-foreground">{description}</span>
       </span>
     </Button>
-  );
-}
+  ),
+);
+FinanceQuickAction.displayName = "FinanceQuickAction";
 
 function useExpenseCategories(branchId: string) {
   return useQuery({
@@ -898,8 +946,28 @@ function useFinanceDayClosure(branchId: string, businessDate: string, enabled: b
 
 function defaultAccountId(accounts: FinanceAccount[], method: PaymentMethod | "none" | null) {
   if (!accounts.length || !method || method === "none") return "none";
-  const accountType = method === "cash" ? "counter_cash" : method === "other" ? "other" : "online";
-  return accounts.find((account) => account.is_active && account.account_type === accountType)?.id ?? "none";
+  const activeAccounts = accounts.filter((account) => account.is_active);
+  if (!activeAccounts.length) return "none";
+  if (method === "cash") {
+    return (
+      activeAccounts.find((account) => account.account_type === "counter_cash")?.id ??
+      activeAccounts.find((account) => account.is_cash)?.id ??
+      activeAccounts[0].id
+    );
+  }
+  const preferredTypes =
+    method === "wallet"
+      ? ["wallet", "online", "bank", "other"]
+      : method === "other"
+        ? ["other", "online", "bank", "wallet"]
+        : ["online", "bank", "wallet", "other"];
+  return (
+    preferredTypes
+      .map((type) => activeAccounts.find((account) => account.account_type === type))
+      .find(Boolean)?.id ??
+    activeAccounts.find((account) => !account.is_cash)?.id ??
+    activeAccounts[0].id
+  );
 }
 
 function FilterSelect({
@@ -1006,7 +1074,13 @@ function DayEndPanel({
   const shiftWindow = businessDateRangeUtcBounds(date, date, businessDayStart);
   const shiftOpened = Boolean(closure);
   const shiftClosed = Boolean(closure?.closed_at);
-  const shiftStatus = !enabled ? "Period view" : !shiftOpened ? "Not opened" : shiftClosed ? "Closed" : "Open";
+  const shiftStatus = !enabled
+    ? "Period view"
+    : !shiftOpened
+      ? "Not opened"
+      : shiftClosed
+        ? "Closed"
+        : "Open";
   const sourceRows = useMemo(
     () => buildFinanceSourceRows(accounts, movements),
     [accounts, movements],
@@ -1204,7 +1278,11 @@ function DayEndPanel({
           <MoneyInput label="Opening cash" value={openingCash} onChange={setOpeningCash} />
           <MoneyMetric label="Expected cash" value={formatMoney(expectedCash, symbol)} />
           <MoneyInput label="Actual cash" value={actualCash} onChange={setActualCash} />
-          <MoneyMetric label="Cash difference" value={formatMoney(cashDiff, symbol)} warn={cashDiff !== 0} />
+          <MoneyMetric
+            label="Cash difference"
+            value={formatMoney(cashDiff, symbol)}
+            warn={cashDiff !== 0}
+          />
         </div>
         <div className="grid gap-3 lg:grid-cols-4">
           <MoneyInput label="Opening online" value={openingOnline} onChange={setOpeningOnline} />
@@ -1228,9 +1306,7 @@ function DayEndPanel({
           <div className="flex flex-wrap gap-2">
             {!shiftOpened ? (
               <Button
-                onClick={() =>
-                  saveRecord({ closedAt: null, successMessage: "Shift opened" })
-                }
+                onClick={() => saveRecord({ closedAt: null, successMessage: "Shift opened" })}
                 disabled={saving || !enabled}
               >
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -1481,8 +1557,8 @@ function FinanceTransferDialog({
         </DialogHeader>
         <form onSubmit={save} className="space-y-4">
           <div className="rounded-lg border border-border bg-background/35 p-3 text-sm text-muted-foreground">
-            Use this when money changes place, not when the business spends money. Examples:
-            pocket cash added to counter, counter cash sent online, or owner takes cash.
+            Use this when money changes place, not when the business spends money. Examples: pocket
+            cash added to counter, counter cash sent online, or owner takes cash.
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             <Button
@@ -1519,9 +1595,7 @@ function FinanceTransferDialog({
               <Label>Type</Label>
               <Select
                 value={f.transfer_type}
-                onValueChange={(value: FinanceTransferType) =>
-                  setF({ ...f, transfer_type: value })
-                }
+                onValueChange={(value: FinanceTransferType) => setF({ ...f, transfer_type: value })}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -1650,11 +1724,33 @@ function ExpenseDialog({
     vendor: expense?.vendor ?? "",
     reference_no: expense?.reference_no ?? "",
     payment_method: expense?.payment_method ?? "cash",
-    finance_account_id: expense?.finance_account_id ?? defaultAccountId(accounts, expense?.payment_method ?? "cash"),
+    finance_account_id:
+      expense?.finance_account_id ?? defaultAccountId(accounts, expense?.payment_method ?? "cash"),
     status: (expense?.status ?? "paid") as ExpenseStatus,
     amount: String(expense?.amount ?? "0"),
     notes: expense?.notes ?? "",
   });
+
+  useEffect(() => {
+    if (!open) return;
+    setF((current) => {
+      if (current.status !== "paid") return current;
+      const method = current.payment_method === "none" ? "cash" : current.payment_method;
+      const currentSourceValid = accounts.some(
+        (account) =>
+          account.id === current.finance_account_id &&
+          (account.is_active || account.id === expense?.finance_account_id),
+      );
+      const financeAccountId =
+        current.finance_account_id !== "none" && currentSourceValid
+          ? current.finance_account_id
+          : defaultAccountId(accounts, method);
+      if (method === current.payment_method && financeAccountId === current.finance_account_id) {
+        return current;
+      }
+      return { ...current, payment_method: method, finance_account_id: financeAccountId };
+    });
+  }, [accounts, expense?.finance_account_id, open]);
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -1762,7 +1858,29 @@ function ExpenseDialog({
               <Label>Status</Label>
               <Select
                 value={f.status}
-                onValueChange={(v: ExpenseStatus) => setF({ ...f, status: v })}
+                onValueChange={(v: ExpenseStatus) =>
+                  setF((current) => {
+                    if (v !== "paid") {
+                      return {
+                        ...current,
+                        status: v,
+                        payment_method: "none",
+                        finance_account_id: "none",
+                      };
+                    }
+                    const method =
+                      current.payment_method === "none" ? "cash" : current.payment_method;
+                    return {
+                      ...current,
+                      status: v,
+                      payment_method: method,
+                      finance_account_id:
+                        current.finance_account_id !== "none"
+                          ? current.finance_account_id
+                          : defaultAccountId(accounts, method),
+                    };
+                  })
+                }
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -1811,7 +1929,9 @@ function ExpenseDialog({
                 <SelectContent>
                   <SelectItem value="none">Not set</SelectItem>
                   {accounts
-                    .filter((account) => account.is_active || account.id === expense?.finance_account_id)
+                    .filter(
+                      (account) => account.is_active || account.id === expense?.finance_account_id,
+                    )
                     .map((account) => (
                       <SelectItem key={account.id} value={account.id}>
                         {account.name}
@@ -2063,7 +2183,13 @@ function FinanceAccountDialog({
       return;
     }
 
-    const payload = account ? parsed.data : { ...parsed.data, branch_id: branchId, restaurant_id: restaurantId };
+    const normalized = {
+      ...parsed.data,
+      is_cash: parsed.data.account_type === "counter_cash",
+    };
+    const payload = account
+      ? normalized
+      : { ...normalized, branch_id: branchId, restaurant_id: restaurantId };
     const { error } = account
       ? await db.from("finance_accounts").update(payload).eq("id", account.id)
       : await db.from("finance_accounts").insert(payload);
@@ -2133,11 +2259,16 @@ function FinanceAccountDialog({
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="flex items-center justify-between rounded-lg border border-border p-3">
-              <span className="text-sm font-medium">Cash drawer</span>
+              <span>
+                <span className="block text-sm font-medium">Cash drawer</span>
+                <span className="block text-xs text-muted-foreground">
+                  Controlled by the source type
+                </span>
+              </span>
               <input
                 type="checkbox"
-                checked={f.is_cash}
-                onChange={(e) => setF({ ...f, is_cash: e.target.checked })}
+                checked={f.account_type === "counter_cash"}
+                readOnly
                 className="h-4 w-4"
               />
             </label>
@@ -2213,7 +2344,8 @@ function openFinanceControlReport({
     return;
   }
 
-  const money = (value: number | null) => (value == null ? "Not counted" : formatMoney(value, symbol));
+  const money = (value: number | null) =>
+    value == null ? "Not counted" : formatMoney(value, symbol);
   const generatedAt = new Date().toLocaleString("en-PK", {
     dateStyle: "medium",
     timeStyle: "short",
@@ -2530,12 +2662,16 @@ function buildFinanceReportWhatsAppHref({
     "",
     singleDay ? `Opening cash: ${formatMoney(openingCash, symbol)}` : "Opening cash: period view",
     `Cash movement: ${formatMoney(cashMovement, symbol)}`,
-    singleDay ? `Expected cash: ${formatMoney(expectedCash, symbol)}` : `Cash net: ${formatMoney(cashMovement, symbol)}`,
+    singleDay
+      ? `Expected cash: ${formatMoney(expectedCash, symbol)}`
+      : `Cash net: ${formatMoney(cashMovement, symbol)}`,
     singleDay
       ? `Cash difference: ${cashDifference == null ? "not counted" : formatMoney(cashDifference, symbol)}`
       : "Cash difference: period view",
     "",
-    singleDay ? `Opening online: ${formatMoney(openingOnline, symbol)}` : "Opening online: period view",
+    singleDay
+      ? `Opening online: ${formatMoney(openingOnline, symbol)}`
+      : "Opening online: period view",
     `Online movement: ${formatMoney(onlineMovement, symbol)}`,
     singleDay
       ? `Expected online: ${formatMoney(expectedOnline, symbol)}`
