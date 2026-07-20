@@ -1,17 +1,38 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, Link, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Minus, Trash2, Loader2, Receipt, Search, X, MessageSquare } from "lucide-react";
+import {
+  Armchair,
+  Loader2,
+  MessageSquare,
+  Minus,
+  Plus,
+  Receipt,
+  Search,
+  ShoppingBag,
+  Trash2,
+  Truck,
+  UserCheck,
+  UtensilsCrossed,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { appDb as supabase } from "@/lib/app-db";
 import { useAuth } from "@/hooks/use-auth";
 import { useActiveBranch } from "@/hooks/use-active-branch";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMoney } from "@/lib/format";
@@ -32,6 +53,8 @@ type CartItem = {
   qty: number;
   notes?: string;
 };
+
+type DiningType = "dine_in" | "takeaway" | "delivery";
 
 type MenuItemRow = {
   id: string;
@@ -65,12 +88,36 @@ type StockStatus = {
 type EditableOrder = {
   id: string;
   order_no: string;
-  dining_type: "dine_in" | "takeaway" | "delivery";
+  dining_type: DiningType;
   customer_name: string | null;
   customer_phone: string | null;
   table_label: string | null;
   notes: string | null;
   discount_total: number | string | null;
+};
+
+type OpenDineInOrder = {
+  id: string;
+  order_no: string;
+  status: string;
+  customer_name: string | null;
+  table_label: string | null;
+  notes: string | null;
+  grand_total: number | string;
+  created_at: string;
+};
+
+type PosStaffMember = {
+  id: string;
+  user_id: string;
+  full_name?: string | null;
+  role: string;
+  branch_id: string | null;
+};
+
+type ProfileRow = {
+  id: string;
+  full_name: string | null;
 };
 
 type EditableOrderItem = {
@@ -113,6 +160,34 @@ const QUICK_ITEM_NOTES = [
   "Parcel separately",
 ];
 
+const SERVICE_OPTIONS: Array<{
+  value: DiningType;
+  title: string;
+  subtitle: string;
+  icon: LucideIcon;
+}> = [
+  {
+    value: "dine_in",
+    title: "Dine in",
+    subtitle: "Table, waiter, kitchen flow",
+    icon: UtensilsCrossed,
+  },
+  {
+    value: "takeaway",
+    title: "Takeaway",
+    subtitle: "Counter pickup order",
+    icon: ShoppingBag,
+  },
+  {
+    value: "delivery",
+    title: "Delivery",
+    subtitle: "Customer address and rider notes",
+    icon: Truck,
+  },
+];
+
+const DEFAULT_TABLES = Array.from({ length: 16 }, (_, index) => `T-${index + 1}`);
+
 async function rpc<T>(fn: string, args: Record<string, unknown>) {
   return (await supabase.rpc(fn, args)) as RpcResult<T>;
 }
@@ -136,7 +211,7 @@ function POSPage() {
   const editOrderId = searchParams.editOrderId;
 
   const [search, setSearch] = useState("");
-  const [diningType, setDiningType] = useState<"dine_in" | "takeaway" | "delivery">("dine_in");
+  const [diningType, setDiningType] = useState<DiningType | null>(null);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
@@ -144,6 +219,7 @@ function POSPage() {
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [orderNotes, setOrderNotes] = useState("");
+  const [assignedTo, setAssignedTo] = useState("unassigned");
   const [tableLabel, setTableLabel] = useState("");
   const [discount, setDiscount] = useState("0");
   const [couponCode, setCouponCode] = useState("");
@@ -219,6 +295,57 @@ function POSPage() {
       return data ?? [];
     },
   });
+  const dineInOrdersQ = useQuery<OpenDineInOrder[]>({
+    queryKey: ["pos-dine-in-table-orders", branch?.id],
+    enabled: !!branch && diningType === "dine_in",
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchOnWindowFocus: true,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, order_no, status, customer_name, table_label, notes, grand_total, created_at")
+        .eq("branch_id", branch!.id)
+        .eq("dining_type", "dine_in")
+        .in("status", ["open", "placed", "preparing", "ready", "served"])
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as OpenDineInOrder[];
+    },
+  });
+  const staffQ = useQuery<PosStaffMember[]>({
+    queryKey: ["pos-staff-assignment", restaurant?.id, branch?.id],
+    enabled: !!restaurant && !!session,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const { data: roles, error } = await supabase
+        .from("user_roles")
+        .select("id, user_id, role, branch_id")
+        .eq("restaurant_id", restaurant!.id)
+        .in("role", ["admin", "manager", "cashier", "waiter"]);
+      if (error) throw error;
+
+      const roleRows = (roles ?? []) as PosStaffMember[];
+      const userIds = Array.from(new Set(roleRows.map((role) => role.user_id).filter(Boolean)));
+      const profileMap = new Map<string, string | null>();
+      if (userIds.length) {
+        const { data: profiles, error: profilesError } = await supabase
+          .from("profiles")
+          .select("id, full_name")
+          .in("id", userIds);
+        if (profilesError) throw profilesError;
+        for (const profile of (profiles ?? []) as ProfileRow[]) {
+          profileMap.set(profile.id, profile.full_name);
+        }
+      }
+
+      return roleRows.map((role) => ({
+        ...role,
+        full_name: profileMap.get(role.user_id) ?? null,
+      }));
+    },
+  });
   const editOrderQ = useQuery<{ order: EditableOrder; items: EditableOrderItem[] }>({
     queryKey: ["pos-edit-order", editOrderId],
     enabled: !!editOrderId,
@@ -268,6 +395,27 @@ function POSPage() {
   }, [itemsQ.data, activeCat, deferredSearch]);
   const editingOrder = editOrderQ.data?.order;
   const isEditing = !!editOrderId;
+  const currentDiningType: DiningType = diningType ?? editingOrder?.dining_type ?? "dine_in";
+  const staffOptions = useMemo(() => {
+    return (staffQ.data ?? [])
+      .filter((staff) => !staff.branch_id || staff.branch_id === branch?.id)
+      .filter((staff) => ["admin", "manager", "cashier", "waiter"].includes(staff.role))
+      .map((staff) => ({
+        id: staff.id,
+        label:
+          staff.full_name?.trim() ||
+          `${staff.role.slice(0, 1).toUpperCase()}${staff.role.slice(1)} ${staff.user_id.slice(0, 6)}`,
+        role: staff.role,
+      }));
+  }, [branch?.id, staffQ.data]);
+  const tableOrders = useMemo(() => {
+    const map = new Map<string, OpenDineInOrder>();
+    for (const order of dineInOrdersQ.data ?? []) {
+      const key = normalizeTableLabel(order.table_label);
+      if (key && !map.has(key)) map.set(key, order);
+    }
+    return map;
+  }, [dineInOrdersQ.data]);
 
   useEffect(() => {
     if (!editOrderId || !editOrderQ.data || hydratedEditOrderId === editOrderId) return;
@@ -283,6 +431,7 @@ function POSPage() {
     setCustomerMatches([]);
     setSelectedCustomerId(null);
     setOrderNotes(parsedNotes.notes);
+    setAssignedTo(parsedNotes.assignedTo || "unassigned");
     setTableLabel(order.table_label ?? "");
     setDiscount(String(Number(order.discount_total ?? 0)));
     setCouponCode("");
@@ -346,7 +495,9 @@ function POSPage() {
     setCustomerMatches([]);
     setSelectedCustomerId(null);
     setOrderNotes("");
+    setAssignedTo("unassigned");
     setTableLabel("");
+    setDiningType(null);
     setDiscount("0");
     setCouponCode("");
     setCouponDiscount(0);
@@ -362,7 +513,7 @@ function POSPage() {
 
   const subtotal = cart.reduce((s, x) => s + x.unit_price * x.qty, 0);
   const discountNum = Math.max(0, Math.min(subtotal, Number(discount) || 0));
-  const deliveryFee = diningType === "delivery" ? Number(branch?.delivery_fee ?? 0) : 0;
+  const deliveryFee = currentDiningType === "delivery" ? Number(branch?.delivery_fee ?? 0) : 0;
   const couponItemDiscount = couponDiscountType === "free_delivery" ? 0 : couponDiscount;
   const couponDeliveryDiscount = couponDiscountType === "free_delivery" ? couponDiscount : 0;
   const itemDiscount = Math.max(0, Math.min(subtotal, discountNum + couponItemDiscount));
@@ -480,6 +631,10 @@ function POSPage() {
 
   async function placeOrder() {
     if (!branch || !user) return;
+    if (!currentDiningType) {
+      toast.error("Choose dine in, takeaway, or delivery first");
+      return;
+    }
     if (cart.length === 0) {
       toast.error("Cart is empty");
       return;
@@ -492,11 +647,15 @@ function POSPage() {
     setSubmitting(true);
     try {
       const payload = {
-        _dining_type: diningType,
+        _dining_type: currentDiningType,
         _customer_name: customerName,
         _customer_phone: customerPhone,
-        _table_label: diningType === "dine_in" ? tableLabel : "",
-        _notes: buildOrderNotes(diningType === "delivery" ? customerAddress : "", orderNotes),
+        _table_label: currentDiningType === "dine_in" ? tableLabel : "",
+        _notes: buildOrderNotes(
+          currentDiningType === "delivery" ? customerAddress : "",
+          orderNotes,
+          assignedTo,
+        ),
         _discount: discountNum,
         _coupon_code: couponCode.trim() || null,
         _items: cart.map((x) => ({ item_id: x.item_id, qty: x.qty, notes: x.notes ?? null })),
@@ -563,6 +722,36 @@ function POSPage() {
       <div className="p-8 text-center text-destructive">Could not load order for editing.</div>
     );
   }
+  if (!diningType && !isEditing) {
+    return (
+      <div className="flex min-h-[calc(100vh-3.5rem)] flex-col justify-center p-4 sm:p-8">
+        <div className="mx-auto w-full max-w-5xl">
+          <div className="mb-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+              Start order
+            </p>
+            <h1 className="mt-2 font-display text-3xl sm:text-4xl">Choose service type</h1>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              Select how this order will be served. The POS will show only the fields needed for
+              that workflow.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            {SERVICE_OPTIONS.map((option) => (
+              <ServiceTypeCard
+                key={option.value}
+                title={option.title}
+                subtitle={option.subtitle}
+                icon={option.icon}
+                onClick={() => setDiningType(option.value)}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -574,6 +763,18 @@ function POSPage() {
             {isEditing && editingOrder && (
               <div className="text-xs text-muted-foreground">
                 {editingOrder.order_no} · unpaid order edit
+              </div>
+            )}
+            {!isEditing && (
+              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="capitalize">{currentDiningType.replace("_", " ")}</span>
+                <button
+                  type="button"
+                  className="text-primary underline-offset-4 hover:underline"
+                  onClick={() => setDiningType(null)}
+                >
+                  Change
+                </button>
               </div>
             )}
           </div>
@@ -589,6 +790,20 @@ function POSPage() {
         </div>
 
         <Tabs value={activeCat} onValueChange={setActiveCat} className="mt-4">
+          {currentDiningType === "dine_in" && (
+            <TableBoard
+              selectedTable={tableLabel}
+              tableOrders={tableOrders}
+              loading={dineInOrdersQ.isLoading}
+              symbol={symbol}
+              onSelect={(table) => {
+                const order = tableOrders.get(normalizeTableLabel(table));
+                if (order) toast.message(`${table} has ${order.order_no} already open`);
+                setTableLabel(table);
+              }}
+            />
+          )}
+
           <TabsList className="flex h-auto max-h-[76px] w-full flex-wrap justify-start gap-1 overflow-y-auto overflow-x-hidden">
             <TabsTrigger value="all" className="h-8 px-2.5">
               All
@@ -653,7 +868,7 @@ function POSPage() {
               <Button
                 key={d}
                 type="button"
-                variant={diningType === d ? "default" : "outline"}
+                variant={currentDiningType === d ? "default" : "outline"}
                 size="sm"
                 onClick={() => setDiningType(d)}
                 className="capitalize"
@@ -662,13 +877,32 @@ function POSPage() {
               </Button>
             ))}
           </div>
-          {diningType === "dine_in" && (
+          {currentDiningType === "dine_in" && (
             <Input
               placeholder="Table number"
               value={tableLabel}
               onChange={(e) => setTableLabel(e.target.value)}
             />
           )}
+          <div className="space-y-1">
+            <Label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <UserCheck className="h-3.5 w-3.5" />
+              Assigned to
+            </Label>
+            <Select value={assignedTo} onValueChange={setAssignedTo}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select staff member" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {staffOptions.map((staff) => (
+                  <SelectItem key={staff.id} value={staff.label}>
+                    {staff.label} · {staff.role}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <Input
               placeholder="Customer name"
@@ -723,7 +957,7 @@ function POSPage() {
                 )}
               </div>
             )}
-            {diningType === "delivery" && (
+            {currentDiningType === "delivery" && (
               <Textarea
                 className="col-span-2 min-h-[58px] resize-none"
                 placeholder="Delivery address"
@@ -915,6 +1149,102 @@ function POSPage() {
   );
 }
 
+function ServiceTypeCard({
+  title,
+  subtitle,
+  icon: Icon,
+  onClick,
+}: {
+  title: string;
+  subtitle: string;
+  icon: LucideIcon;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex min-h-[180px] flex-col rounded-xl border border-border bg-card p-5 text-left shadow-card transition hover:-translate-y-0.5 hover:border-primary/70 hover:shadow-ember"
+    >
+      <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15 text-primary group-hover:bg-primary group-hover:text-primary-foreground">
+        <Icon className="h-6 w-6" />
+      </span>
+      <span className="mt-6 font-display text-2xl">{title}</span>
+      <span className="mt-2 text-sm text-muted-foreground">{subtitle}</span>
+    </button>
+  );
+}
+
+function TableBoard({
+  selectedTable,
+  tableOrders,
+  loading,
+  symbol,
+  onSelect,
+}: {
+  selectedTable: string;
+  tableOrders: Map<string, OpenDineInOrder>;
+  loading: boolean;
+  symbol: string;
+  onSelect: (table: string) => void;
+}) {
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-card/70 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Armchair className="h-4 w-4 text-primary" />
+            Dine-in tables
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Select a table before adding items. Status is based on open dine-in orders.
+          </div>
+        </div>
+        {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+        {DEFAULT_TABLES.map((table) => {
+          const order = tableOrders.get(normalizeTableLabel(table));
+          const status = getTableStatus(order);
+          const selected = normalizeTableLabel(selectedTable) === normalizeTableLabel(table);
+          return (
+            <button
+              key={table}
+              type="button"
+              onClick={() => onSelect(table)}
+              className={`min-h-[88px] rounded-lg border p-2 text-left transition ${
+                selected
+                  ? "border-primary bg-primary/15"
+                  : "border-border bg-background/40 hover:border-primary/50"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-sm font-semibold">{table}</span>
+                <Badge variant="outline" className={`text-[10px] ${status.className}`}>
+                  {status.label}
+                </Badge>
+              </div>
+              {order ? (
+                <div className="mt-2 space-y-0.5 text-[11px] text-muted-foreground">
+                  <div className="truncate font-mono text-foreground">{order.order_no}</div>
+                  <div className="truncate">{order.customer_name || "Walk-in"}</div>
+                  {parseOrderNotes(order.notes).assignedTo && (
+                    <div className="truncate">Assigned: {parseOrderNotes(order.notes).assignedTo}</div>
+                  )}
+                  <div>{formatMoney(order.grand_total, symbol)}</div>
+                </div>
+              ) : (
+                <div className="mt-3 text-[11px] text-muted-foreground">Ready for new order</div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Row({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
     <div className={`flex items-center justify-between ${muted ? "text-muted-foreground" : ""}`}>
@@ -972,30 +1302,44 @@ const MenuItemButton = memo(function MenuItemButton({
   );
 });
 
-function buildOrderNotes(address: string, notes: string) {
+function buildOrderNotes(address: string, notes: string, assignedTo: string) {
   const lines: string[] = [];
   const cleanAddress = address.trim();
   const cleanNotes = notes.trim();
+  const cleanAssignedTo = assignedTo === "unassigned" ? "" : assignedTo.trim();
   if (cleanAddress) lines.push(`Address: ${cleanAddress}`);
+  if (cleanAssignedTo) lines.push(`Assigned to: ${cleanAssignedTo}`);
   if (cleanNotes) lines.push(`Notes: ${cleanNotes}`);
   return lines.join("\n");
 }
 
 function parseOrderNotes(value: unknown) {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return { address: "", notes: "" };
+  if (!raw) return { address: "", notes: "", assignedTo: "" };
 
   const lines = raw.split(/\r?\n/);
   const addressLine = lines.find((line) => /^address:/i.test(line));
+  const assignedToLine = lines.find((line) => /^assigned to:/i.test(line));
   const notesLine = lines.find((line) => /^notes:/i.test(line));
-  if (addressLine || notesLine) {
+  if (addressLine || assignedToLine || notesLine) {
     return {
       address: addressLine?.replace(/^address:\s*/i, "").trim() ?? "",
+      assignedTo: assignedToLine?.replace(/^assigned to:\s*/i, "").trim() ?? "",
       notes: notesLine?.replace(/^notes:\s*/i, "").trim() ?? "",
     };
   }
 
-  return { address: "", notes: raw };
+  return { address: "", notes: raw, assignedTo: "" };
+}
+
+function normalizeTableLabel(value: string | null | undefined) {
+  const clean = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^table\s*/i, "")
+    .replace(/^t[-\s]*/i, "")
+    .replace(/\s+/g, "");
+  return clean || "";
 }
 
 function normalizePhone(value: string | null | undefined) {
@@ -1020,4 +1364,15 @@ function getStockWarning(stock: StockStatus | undefined) {
   if (stock.is_low)
     return { label: "Low stock", cls: "border-amber-500/30 bg-amber-500/15 text-amber-300" };
   return null;
+}
+
+function getTableStatus(order: OpenDineInOrder | undefined) {
+  if (!order) return { label: "Available", className: "border-success/30 text-success" };
+  if (order.status === "served")
+    return { label: "Served", className: "border-blue-500/30 bg-blue-500/10 text-blue-300" };
+  if (order.status === "ready")
+    return { label: "Ready", className: "border-amber-500/30 bg-amber-500/10 text-amber-300" };
+  if (order.status === "preparing")
+    return { label: "Cooking", className: "border-primary/40 bg-primary/10 text-primary" };
+  return { label: "Reserved", className: "border-muted-foreground/30 text-muted-foreground" };
 }
