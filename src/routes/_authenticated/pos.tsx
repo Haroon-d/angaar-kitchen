@@ -186,7 +186,24 @@ const SERVICE_OPTIONS: Array<{
   },
 ];
 
-const DEFAULT_TABLES = Array.from({ length: 16 }, (_, index) => `T-${index + 1}`);
+const DINING_HALLS = [
+  {
+    name: "Main Hall",
+    description: "Front service area",
+    tables: Array.from({ length: 5 }, (_, index) => ({
+      id: `M-${index + 1}`,
+      label: `Table ${index + 1}`,
+    })),
+  },
+  {
+    name: "Family Hall",
+    description: "Family seating area",
+    tables: Array.from({ length: 4 }, (_, index) => ({
+      id: `F-${index + 1}`,
+      label: `Table ${index + 1}`,
+    })),
+  },
+];
 
 async function rpc<T>(fn: string, args: Record<string, unknown>) {
   return (await supabase.rpc(fn, args)) as RpcResult<T>;
@@ -629,6 +646,12 @@ function POSPage() {
     }
   }
 
+  function chooseTable(table: string) {
+    const order = tableOrders.get(normalizeTableLabel(table));
+    if (order) toast.message(`${table} has ${order.order_no} already open`);
+    setTableLabel(table);
+  }
+
   async function placeOrder() {
     if (!branch || !user) return;
     if (!currentDiningType) {
@@ -752,6 +775,43 @@ function POSPage() {
       </div>
     );
   }
+  if (currentDiningType === "dine_in" && !tableLabel && !isEditing) {
+    return (
+      <div className="flex min-h-[calc(100vh-3.5rem)] flex-col justify-center p-4 sm:p-8">
+        <div className="mx-auto w-full max-w-6xl">
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+                Dine in
+              </p>
+              <h1 className="mt-2 font-display text-3xl sm:text-4xl">Choose table</h1>
+              <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+                Select a table from Main Hall or Family Hall. After this, the menu opens fully.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setDiningType(null);
+                setTableLabel("");
+              }}
+            >
+              Change service
+            </Button>
+          </div>
+
+          <TableBoard
+            selectedTable={tableLabel}
+            tableOrders={tableOrders}
+            loading={dineInOrdersQ.isLoading}
+            symbol={symbol}
+            onSelect={chooseTable}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -766,14 +826,29 @@ function POSPage() {
               </div>
             )}
             {!isEditing && (
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="capitalize">{currentDiningType.replace("_", " ")}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span className="capitalize">
+                  {currentDiningType.replace("_", " ")}
+                  {currentDiningType === "dine_in" && tableLabel ? ` · ${tableLabel}` : ""}
+                </span>
+                {currentDiningType === "dine_in" && (
+                  <button
+                    type="button"
+                    className="text-primary underline-offset-4 hover:underline"
+                    onClick={() => setTableLabel("")}
+                  >
+                    Change table
+                  </button>
+                )}
                 <button
                   type="button"
                   className="text-primary underline-offset-4 hover:underline"
-                  onClick={() => setDiningType(null)}
+                  onClick={() => {
+                    setDiningType(null);
+                    setTableLabel("");
+                  }}
                 >
-                  Change
+                  Change service
                 </button>
               </div>
             )}
@@ -790,20 +865,6 @@ function POSPage() {
         </div>
 
         <Tabs value={activeCat} onValueChange={setActiveCat} className="mt-4">
-          {currentDiningType === "dine_in" && (
-            <TableBoard
-              selectedTable={tableLabel}
-              tableOrders={tableOrders}
-              loading={dineInOrdersQ.isLoading}
-              symbol={symbol}
-              onSelect={(table) => {
-                const order = tableOrders.get(normalizeTableLabel(table));
-                if (order) toast.message(`${table} has ${order.order_no} already open`);
-                setTableLabel(table);
-              }}
-            />
-          )}
-
           <TabsList className="flex h-auto max-h-[76px] w-full flex-wrap justify-start gap-1 overflow-y-auto overflow-x-hidden">
             <TabsTrigger value="all" className="h-8 px-2.5">
               All
@@ -870,7 +931,10 @@ function POSPage() {
                 type="button"
                 variant={currentDiningType === d ? "default" : "outline"}
                 size="sm"
-                onClick={() => setDiningType(d)}
+                onClick={() => {
+                  setDiningType(d);
+                  if (d !== "dine_in") setTableLabel("");
+                }}
                 className="capitalize"
               >
                 {d.replace("_", " ")}
@@ -878,11 +942,21 @@ function POSPage() {
             ))}
           </div>
           {currentDiningType === "dine_in" && (
-            <Input
-              placeholder="Table number"
-              value={tableLabel}
-              onChange={(e) => setTableLabel(e.target.value)}
-            />
+            <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/45 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">Table</span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-semibold">{tableLabel}</span>
+                {!isEditing && (
+                  <button
+                    type="button"
+                    className="text-xs text-primary underline-offset-4 hover:underline"
+                    onClick={() => setTableLabel("")}
+                  >
+                    Change
+                  </button>
+                )}
+              </div>
+            </div>
           )}
           <div className="space-y-1">
             <Label className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -1189,8 +1263,8 @@ function TableBoard({
   onSelect: (table: string) => void;
 }) {
   return (
-    <div className="mb-4 rounded-lg border border-border bg-card/70 p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <div className="mb-3 rounded-lg border border-border bg-card/70 p-2.5">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Armchair className="h-4 w-4 text-primary" />
@@ -1203,43 +1277,69 @@ function TableBoard({
         {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
-        {DEFAULT_TABLES.map((table) => {
-          const order = tableOrders.get(normalizeTableLabel(table));
-          const status = getTableStatus(order);
-          const selected = normalizeTableLabel(selectedTable) === normalizeTableLabel(table);
-          return (
-            <button
-              key={table}
-              type="button"
-              onClick={() => onSelect(table)}
-              className={`min-h-[88px] rounded-lg border p-2 text-left transition ${
-                selected
-                  ? "border-primary bg-primary/15"
-                  : "border-border bg-background/40 hover:border-primary/50"
+      <div className="grid gap-2 xl:grid-cols-2">
+        {DINING_HALLS.map((hall) => (
+          <section key={hall.name} className="rounded-lg border border-border bg-background/35 p-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold uppercase tracking-[0.14em]">
+                  {hall.name}
+                </div>
+                <div className="text-xs text-muted-foreground">{hall.description}</div>
+              </div>
+              <Badge variant="outline" className="shrink-0 border-primary/30 text-[10px] text-primary">
+                {hall.tables.length} tables
+              </Badge>
+            </div>
+
+            <div
+              className={`grid grid-cols-2 gap-2 ${
+                hall.tables.length === 5 ? "sm:grid-cols-5 xl:grid-cols-5" : "sm:grid-cols-4 xl:grid-cols-4"
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-sm font-semibold">{table}</span>
-                <Badge variant="outline" className={`text-[10px] ${status.className}`}>
-                  {status.label}
-                </Badge>
-              </div>
-              {order ? (
-                <div className="mt-2 space-y-0.5 text-[11px] text-muted-foreground">
-                  <div className="truncate font-mono text-foreground">{order.order_no}</div>
-                  <div className="truncate">{order.customer_name || "Walk-in"}</div>
-                  {parseOrderNotes(order.notes).assignedTo && (
-                    <div className="truncate">Assigned: {parseOrderNotes(order.notes).assignedTo}</div>
-                  )}
-                  <div>{formatMoney(order.grand_total, symbol)}</div>
-                </div>
-              ) : (
-                <div className="mt-3 text-[11px] text-muted-foreground">Ready for new order</div>
-              )}
-            </button>
-          );
-        })}
+              {hall.tables.map((table) => {
+                const order = tableOrders.get(normalizeTableLabel(table.id));
+                const status = getTableStatus(order);
+                const selected = normalizeTableLabel(selectedTable) === normalizeTableLabel(table.id);
+                const assignedTo = order ? parseOrderNotes(order.notes).assignedTo : "";
+                return (
+                  <button
+                    key={table.id}
+                    type="button"
+                    onClick={() => onSelect(table.id)}
+                    className={`flex min-h-[72px] min-w-0 flex-col rounded-lg border p-2 text-left transition ${
+                      selected
+                        ? "border-primary bg-primary/15 shadow-ember"
+                        : "border-border bg-card/70 hover:border-primary/50"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs font-semibold text-primary">{table.id}</div>
+                        <div className="truncate text-sm font-semibold">{table.label}</div>
+                      </div>
+                      <Badge variant="outline" className={`shrink-0 px-1.5 text-[9px] ${status.className}`}>
+                        {status.label}
+                      </Badge>
+                    </div>
+
+                    {order ? (
+                      <div className="mt-1.5 min-w-0 text-[10px] leading-tight text-muted-foreground">
+                        <div className="truncate font-mono text-foreground">{order.order_no}</div>
+                        <div className="truncate">{assignedTo || order.customer_name || "Open order"}</div>
+                        <div className="mt-0.5 font-mono font-semibold text-primary">
+                          {formatMoney(order.grand_total, symbol)}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-auto pt-1.5 text-[10px] text-muted-foreground">Available</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
     </div>
   );
@@ -1333,13 +1433,26 @@ function parseOrderNotes(value: unknown) {
 }
 
 function normalizeTableLabel(value: string | null | undefined) {
-  const clean = (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^table\s*/i, "")
-    .replace(/^t[-\s]*/i, "")
-    .replace(/\s+/g, "");
-  return clean || "";
+  const clean = (value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  if (!clean) return "";
+
+  const normalized = clean
+    .replace(/^table/, "")
+    .replace(/^mainhall/, "m")
+    .replace(/^main/, "m")
+    .replace(/^familyhall/, "f")
+    .replace(/^family/, "f");
+
+  const match = normalized.match(/^([tmf])[-_]?0*(\d+)$/);
+  if (match) {
+    const prefix = match[1] === "t" ? "" : `${match[1]}-`;
+    return `${prefix}${Number(match[2])}`;
+  }
+
+  const numberOnly = normalized.match(/^0*(\d+)$/);
+  if (numberOnly) return `${Number(numberOnly[1])}`;
+
+  return normalized.replace(/[-_]/g, "");
 }
 
 function normalizePhone(value: string | null | undefined) {
