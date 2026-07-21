@@ -26,13 +26,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMoney } from "@/lib/format";
@@ -105,19 +98,6 @@ type OpenDineInOrder = {
   notes: string | null;
   grand_total: number | string;
   created_at: string;
-};
-
-type PosStaffMember = {
-  id: string;
-  user_id: string;
-  full_name?: string | null;
-  role: string;
-  branch_id: string | null;
-};
-
-type ProfileRow = {
-  id: string;
-  full_name: string | null;
 };
 
 type EditableOrderItem = {
@@ -236,7 +216,7 @@ function POSPage() {
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [orderNotes, setOrderNotes] = useState("");
-  const [assignedTo, setAssignedTo] = useState("unassigned");
+  const [assignedTo, setAssignedTo] = useState("");
   const [tableLabel, setTableLabel] = useState("");
   const [discount, setDiscount] = useState("0");
   const [couponCode, setCouponCode] = useState("");
@@ -330,39 +310,6 @@ function POSPage() {
       return (data ?? []) as OpenDineInOrder[];
     },
   });
-  const staffQ = useQuery<PosStaffMember[]>({
-    queryKey: ["pos-staff-assignment", restaurant?.id, branch?.id],
-    enabled: !!restaurant && !!session,
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-    queryFn: async () => {
-      const { data: roles, error } = await supabase
-        .from("user_roles")
-        .select("id, user_id, role, branch_id")
-        .eq("restaurant_id", restaurant!.id)
-        .in("role", ["admin", "manager", "cashier", "waiter"]);
-      if (error) throw error;
-
-      const roleRows = (roles ?? []) as PosStaffMember[];
-      const userIds = Array.from(new Set(roleRows.map((role) => role.user_id).filter(Boolean)));
-      const profileMap = new Map<string, string | null>();
-      if (userIds.length) {
-        const { data: profiles, error: profilesError } = await supabase
-          .from("profiles")
-          .select("id, full_name")
-          .in("id", userIds);
-        if (profilesError) throw profilesError;
-        for (const profile of (profiles ?? []) as ProfileRow[]) {
-          profileMap.set(profile.id, profile.full_name);
-        }
-      }
-
-      return roleRows.map((role) => ({
-        ...role,
-        full_name: profileMap.get(role.user_id) ?? null,
-      }));
-    },
-  });
   const editOrderQ = useQuery<{ order: EditableOrder; items: EditableOrderItem[] }>({
     queryKey: ["pos-edit-order", editOrderId],
     enabled: !!editOrderId,
@@ -413,18 +360,6 @@ function POSPage() {
   const editingOrder = editOrderQ.data?.order;
   const isEditing = !!editOrderId;
   const currentDiningType: DiningType = diningType ?? editingOrder?.dining_type ?? "dine_in";
-  const staffOptions = useMemo(() => {
-    return (staffQ.data ?? [])
-      .filter((staff) => !staff.branch_id || staff.branch_id === branch?.id)
-      .filter((staff) => ["admin", "manager", "cashier", "waiter"].includes(staff.role))
-      .map((staff) => ({
-        id: staff.id,
-        label:
-          staff.full_name?.trim() ||
-          `${staff.role.slice(0, 1).toUpperCase()}${staff.role.slice(1)} ${staff.user_id.slice(0, 6)}`,
-        role: staff.role,
-      }));
-  }, [branch?.id, staffQ.data]);
   const tableOrders = useMemo(() => {
     const map = new Map<string, OpenDineInOrder>();
     for (const order of dineInOrdersQ.data ?? []) {
@@ -448,7 +383,7 @@ function POSPage() {
     setCustomerMatches([]);
     setSelectedCustomerId(null);
     setOrderNotes(parsedNotes.notes);
-    setAssignedTo(parsedNotes.assignedTo || "unassigned");
+    setAssignedTo(parsedNotes.assignedTo || "");
     setTableLabel(order.table_label ?? "");
     setDiscount(String(Number(order.discount_total ?? 0)));
     setCouponCode("");
@@ -512,7 +447,7 @@ function POSPage() {
     setCustomerMatches([]);
     setSelectedCustomerId(null);
     setOrderNotes("");
-    setAssignedTo("unassigned");
+    setAssignedTo("");
     setTableLabel("");
     setDiningType(null);
     setDiscount("0");
@@ -963,19 +898,11 @@ function POSPage() {
               <UserCheck className="h-3.5 w-3.5" />
               Assigned to
             </Label>
-            <Select value={assignedTo} onValueChange={setAssignedTo}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select staff member" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="unassigned">Unassigned</SelectItem>
-                {staffOptions.map((staff) => (
-                  <SelectItem key={staff.id} value={staff.label}>
-                    {staff.label} · {staff.role}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Input
+              placeholder="e.g. Haroon, Usman, waiter name"
+              value={assignedTo}
+              onChange={(e) => setAssignedTo(e.target.value)}
+            />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <Input
