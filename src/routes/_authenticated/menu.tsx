@@ -123,7 +123,7 @@ function MenuPage() {
             {catsQ.data?.length === 0 && (
               <p className="px-3 py-4 text-sm text-muted-foreground">No categories yet.</p>
             )}
-            {catsQ.data?.map((c) => (
+            {catsQ.data?.map((c: any) => (
               <div key={c.id} className="group flex items-center">
                 <button
                   onClick={() => setActiveCat(c.id)}
@@ -144,7 +144,7 @@ function MenuPage() {
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="text-base">
-              {activeCat ? catsQ.data?.find((c) => c.id === activeCat)?.name : "All items"}
+              {activeCat ? catsQ.data?.find((c: any) => c.id === activeCat)?.name : "All items"}
             </CardTitle>
           </CardHeader>
           <CardContent className="min-w-0">
@@ -157,7 +157,7 @@ function MenuPage() {
               </div>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {itemsQ.data?.map((it) => {
+                {itemsQ.data?.map((it: any) => {
                   const cost = costByItem.get(it.id) as any;
                   const recipeCost = Number(cost?.recipe_cost ?? 0);
                   const foodPct = Number(cost?.food_cost_percent ?? 0);

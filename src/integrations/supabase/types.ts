@@ -968,7 +968,7 @@ export type Database = {
     };
     Enums: {
       app_role: "owner" | "admin" | "manager" | "cashier" | "kitchen" | "waiter";
-      dining_type: "dine_in" | "takeaway" | "delivery";
+      dining_type: "dine_in" | "takeaway" | "delivery" | "outdoor";
       order_status:
         | "open"
         | "placed"
@@ -1107,7 +1107,7 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["owner", "admin", "manager", "cashier", "kitchen", "waiter"],
-      dining_type: ["dine_in", "takeaway", "delivery"],
+      dining_type: ["dine_in", "takeaway", "delivery", "outdoor"],
       order_status: [
         "open",
         "placed",

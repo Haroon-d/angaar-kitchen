@@ -301,7 +301,7 @@ function TaxesTab() {
           {taxesQ.data?.length === 0 && (
             <p className="text-sm text-muted-foreground">No taxes yet.</p>
           )}
-          {taxesQ.data?.map((t) => (
+          {taxesQ.data?.map((t: any) => (
             <div
               key={t.id}
               className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3"

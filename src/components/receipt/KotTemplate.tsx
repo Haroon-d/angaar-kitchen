@@ -5,6 +5,7 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   dine_in: "DINE IN",
   takeaway: "TAKEAWAY",
   delivery: "DELIVERY",
+  outdoor: "OUTDOOR",
 };
 
 type Props = {

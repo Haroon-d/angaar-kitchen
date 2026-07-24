@@ -143,7 +143,14 @@ type CustomerForm = {
   is_blocked: boolean;
 };
 
-type CustomerSegment = "all" | "vip" | "high_value" | "inactive" | "blocked" | "no_address";
+type CustomerSegment =
+  | "all"
+  | "due"
+  | "vip"
+  | "high_value"
+  | "inactive"
+  | "blocked"
+  | "no_address";
 
 type CustomerInsights = {
   repeatCustomers: number;
@@ -155,6 +162,7 @@ type CustomerInsights = {
 
 const SEGMENTS: Array<{ value: CustomerSegment; label: string }> = [
   { value: "all", label: "All" },
+  { value: "due", label: "Dues" },
   { value: "vip", label: "VIP" },
   { value: "high_value", label: "High value" },
   { value: "inactive", label: "Inactive" },
@@ -245,13 +253,16 @@ function CustomersPage() {
   const customers = useMemo(() => q.data ?? [], [q.data]);
   const duesByCustomer = useMemo(() => buildCustomerDues(duesQ.data ?? []), [duesQ.data]);
   const selectedCustomer = customers.find((customer) => customer.id === selectedId) ?? null;
-  const segmentCounts = useMemo(() => buildSegmentCounts(customers), [customers]);
+  const segmentCounts = useMemo(
+    () => buildSegmentCounts(customers, duesByCustomer),
+    [customers, duesByCustomer],
+  );
   const insights = useMemo(() => buildCustomerInsights(customers), [customers]);
   const filtered = useMemo(() => {
     const term = debouncedSearch.trim().toLowerCase();
     const normalizedTerm = normalizePhone(term);
     return customers
-      .filter((customer) => matchesSegment(customer, segment))
+      .filter((customer) => matchesSegment(customer, segment, duesByCustomer.get(customer.id)))
       .filter((customer) => {
         if (!term) return true;
         return [
@@ -266,7 +277,7 @@ function CustomersPage() {
           .some((value) => String(value).toLowerCase().includes(term)) ||
           (!!normalizedTerm && customer.phone_normalized.includes(normalizedTerm));
       });
-  }, [customers, debouncedSearch, segment]);
+  }, [customers, debouncedSearch, duesByCustomer, segment]);
 
   const summary = useMemo(() => {
     const inactiveSince = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -392,10 +403,20 @@ function CustomersPage() {
               : "Showing all pending customer payments."}
           </p>
         </div>
-        <Button type="button" variant="outline" onClick={clearPendingDuesTillNow} disabled={clearingDues}>
-          {clearingDues && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Clear till now
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => setSegment("due")}>
+            Show dues
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={clearPendingDuesTillNow}
+            disabled={clearingDues}
+          >
+            {clearingDues && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Clear till now
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1869,7 +1890,7 @@ function LoyaltyPanel({
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <Card className="bg-card/60 shadow-card">
       <CardContent className="p-4">
@@ -1993,19 +2014,25 @@ function isCollectibleOrder(order: Pick<CustomerOrderRow, "status" | "payment_st
   return !["cancelled", "voided", "refunded"].includes(order.status);
 }
 
-function buildSegmentCounts(customers: CustomerRow[]) {
+function buildSegmentCounts(customers: CustomerRow[], duesByCustomer: Map<string, CustomerDue>) {
   return SEGMENTS.reduce(
     (counts, item) => {
-      counts[item.value] = customers.filter((customer) => matchesSegment(customer, item.value))
-        .length;
+      counts[item.value] = customers.filter((customer) =>
+        matchesSegment(customer, item.value, duesByCustomer.get(customer.id)),
+      ).length;
       return counts;
     },
     {} as Record<CustomerSegment, number>,
   );
 }
 
-function matchesSegment(customer: CustomerRow, segment: CustomerSegment) {
+function matchesSegment(
+  customer: CustomerRow,
+  segment: CustomerSegment,
+  due?: CustomerDue,
+) {
   if (segment === "all") return true;
+  if (segment === "due") return Number(due?.amount || 0) > 0;
   if (segment === "vip") return customer.is_vip;
   if (segment === "blocked") return customer.is_blocked;
   if (segment === "no_address") return !customer.default_address;

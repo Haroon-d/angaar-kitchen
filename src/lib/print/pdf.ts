@@ -6,6 +6,7 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   dine_in: "DINE IN",
   takeaway: "TAKEAWAY",
   delivery: "DELIVERY",
+  outdoor: "OUTDOOR",
 };
 const DEFAULT_ADDRESS = "Grand Trunk Rd, near Punjab College, Pak Town, Kamoke, 52470";
 

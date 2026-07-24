@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { POSTGRES_SESSION_STORAGE_KEY } from "@/integrations/postgres/auth-middleware";
-import { supabase } from "@/integrations/supabase/client";
+import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { useAuth, useMyRoles, isAdmin, isManager } from "@/hooks/use-auth";
 import { isPostgresAuthEnabled } from "@/lib/auth-backend";
@@ -50,6 +50,20 @@ type UsageReportRow = {
   revenue: number;
   cost: number;
   order_count: number;
+};
+
+type DashboardOrderRow = {
+  id: string;
+  order_no: string;
+  dining_type: string;
+  status: string;
+  grand_total: number | string | null;
+  created_at: string;
+  customer_name: string | null;
+};
+
+type DashboardExpenseRow = {
+  amount: number | string | null;
 };
 
 function DashboardPage() {
@@ -100,7 +114,7 @@ function DashboardPage() {
         .order("created_at", { ascending: false });
       if (error) throw error;
 
-      const orders = data ?? [];
+      const orders = (data ?? []) as DashboardOrderRow[];
       const completedOrderIds = orders.filter((o) => o.status === "completed").map((o) => o.id);
 
       let inventoryCost = 0;
@@ -133,8 +147,8 @@ function DashboardPage() {
         .neq("status", "void");
       if (expensesError) throw expensesError;
 
-      const otherCosts = (expenses ?? []).reduce(
-        (sum: number, expense) => sum + Number(expense.amount || 0),
+      const otherCosts = ((expenses ?? []) as DashboardExpenseRow[]).reduce(
+        (sum: number, expense: DashboardExpenseRow) => sum + Number(expense.amount || 0),
         0,
       );
 
@@ -207,7 +221,7 @@ function DashboardPage() {
   const totalStockQty = inventoryUsage.reduce((sum, row) => sum + row.quantity, 0);
 
   const handleResetDates = () => {
-    const dateStr = pakistanDateInputValue();
+    const dateStr = businessDateInputValue(businessDayStart);
     setStartDate(dateStr);
     setEndDate(dateStr);
   };
@@ -616,7 +630,7 @@ function toUsageReportRows(data: unknown): UsageReportRow[] {
   });
 }
 
-function authHeaders(token: string | null | undefined) {
+function authHeaders(token: string | null | undefined): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 

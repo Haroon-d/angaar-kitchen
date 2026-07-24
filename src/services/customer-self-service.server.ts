@@ -17,7 +17,7 @@ export type CustomerSelfServiceLookup = {
   }>;
   lastOrder: {
     orderNo: string;
-    diningType: "takeaway" | "delivery" | "dine_in";
+    diningType: "takeaway" | "delivery" | "dine_in" | "outdoor";
     grandTotal: number;
     createdAt: string;
     items: Array<{
@@ -84,7 +84,7 @@ export async function lookupCustomerForSelfService(input: {
     pgPool.query<{
       id: string;
       order_no: string;
-      dining_type: "takeaway" | "delivery" | "dine_in";
+      dining_type: "takeaway" | "delivery" | "dine_in" | "outdoor";
       grand_total: string | number;
       created_at: Date;
     }>(

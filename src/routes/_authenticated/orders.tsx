@@ -64,7 +64,7 @@ export const Route = createFileRoute("/_authenticated/orders")({
 type OrderRow = {
   id: string;
   order_no: string;
-  dining_type: "dine_in" | "takeaway" | "delivery";
+  dining_type: "dine_in" | "takeaway" | "delivery" | "outdoor";
   status: OrderStatus;
   payment_status: PaymentStatus;
   grand_total: number | string;
@@ -196,6 +196,9 @@ function OrdersPage() {
       ).length,
       dineIn: channelOrders.filter(
         (order) => order.dining_type === "dine_in" && isToFulfill(order.status),
+      ).length,
+      outdoor: channelOrders.filter(
+        (order) => order.dining_type === "outdoor" && isToFulfill(order.status),
       ).length,
     }),
     [channelOrders],
@@ -358,7 +361,7 @@ function OrdersPage() {
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OrderQueueCard
           icon={Truck}
           label="Delivery queue"
@@ -376,6 +379,12 @@ function OrdersPage() {
           label="Dine-in queue"
           value={fulfillmentCounts.dineIn}
           hint="Open table service"
+        />
+        <OrderQueueCard
+          icon={MapPin}
+          label="Outdoor queue"
+          value={fulfillmentCounts.outdoor}
+          hint="Outdoor seating service"
         />
       </div>
 
@@ -437,9 +446,7 @@ function OrdersPage() {
 
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1 rounded-md bg-muted/40 px-2 py-0.5 capitalize">
-                      {order.dining_type === "dine_in" && order.table_label
-                        ? `T-${order.table_label}`
-                        : order.dining_type.replace("_", " ")}
+                      {formatDiningTypeLabel(order)}
                     </span>
                     <span className="inline-flex items-center gap-1">
                       <Clock className="h-3 w-3" />
@@ -610,7 +617,7 @@ function nextFulfillmentStatus(order: OrderRow): OrderStatus | null {
   if (order.status === "open" || order.status === "placed") return "preparing";
   if (order.status === "preparing") return "ready";
   if (order.status === "ready") {
-    return order.dining_type === "dine_in" ? "served" : "completed";
+    return isTableService(order) ? "served" : "completed";
   }
   if (order.status === "served") return "completed";
   return null;
@@ -645,6 +652,16 @@ function parseOrderNotes(value: unknown) {
   return { address: "", notes: raw };
 }
 
+function isTableService(order: OrderRow) {
+  return order.dining_type === "dine_in" || order.dining_type === "outdoor";
+}
+
+function formatDiningTypeLabel(order: OrderRow) {
+  if (order.dining_type === "dine_in" && order.table_label) return `T-${order.table_label}`;
+  if (order.dining_type === "outdoor" && order.table_label) return `Outdoor · ${order.table_label}`;
+  return order.dining_type.replace("_", " ");
+}
+
 function orderWhatsAppUrl(order: OrderRow) {
   const normalized = normalizePhone(order.customer_phone ?? "");
   const message = buildOrderWhatsAppMessage(order);
@@ -657,7 +674,14 @@ function buildOrderWhatsAppMessage(order: OrderRow) {
   const total = Number(order.grand_total || 0).toLocaleString("en-PK", {
     maximumFractionDigits: 0,
   });
-  const context = order.dining_type === "delivery" ? "delivery order" : "takeaway order";
+  const context =
+    order.dining_type === "delivery"
+      ? "delivery order"
+      : order.dining_type === "outdoor"
+        ? "outdoor order"
+        : order.dining_type === "dine_in"
+          ? "dine-in order"
+          : "takeaway order";
 
   if (order.status === "ready") {
     const line =
@@ -689,7 +713,8 @@ function normalizePhone(value: string) {
 }
 
 function getOrderChannel(order: OrderRow): OrderChannel {
-  if (!order.created_by && order.dining_type !== "dine_in") return "website";
+  if (!order.created_by && order.dining_type !== "dine_in" && order.dining_type !== "outdoor")
+    return "website";
   return "pos";
 }
 

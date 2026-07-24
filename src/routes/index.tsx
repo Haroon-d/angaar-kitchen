@@ -203,7 +203,7 @@ type CustomerLookup = {
   }>;
   lastOrder: {
     orderNo: string;
-    diningType: "takeaway" | "delivery" | "dine_in";
+    diningType: "takeaway" | "delivery" | "dine_in" | "outdoor";
     grandTotal: number;
     createdAt: string;
     items: Array<{ itemId: string; name: string; qty: number; price: number }>;

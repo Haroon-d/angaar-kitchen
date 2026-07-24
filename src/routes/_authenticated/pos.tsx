@@ -47,7 +47,7 @@ type CartItem = {
   notes?: string;
 };
 
-type DiningType = "dine_in" | "takeaway" | "delivery";
+type DiningType = "dine_in" | "takeaway" | "delivery" | "outdoor";
 
 type MenuItemRow = {
   id: string;
@@ -159,6 +159,12 @@ const SERVICE_OPTIONS: Array<{
     icon: ShoppingBag,
   },
   {
+    value: "outdoor",
+    title: "Outdoor",
+    subtitle: "Outdoor seating order",
+    icon: Armchair,
+  },
+  {
     value: "delivery",
     title: "Delivery",
     subtitle: "Customer address and rider notes",
@@ -184,6 +190,10 @@ const DINING_HALLS = [
     })),
   },
 ];
+
+function hasSeatLabel(type: DiningType) {
+  return type === "dine_in" || type === "outdoor";
+}
 
 async function rpc<T>(fn: string, args: Record<string, unknown>) {
   return (await supabase.rpc(fn, args)) as RpcResult<T>;
@@ -487,7 +497,7 @@ function POSPage() {
       setCustomerPhone(customer.phone);
       if (customer.defaultAddress) {
         setCustomerAddress(customer.defaultAddress);
-        setDiningType((current) => (current === "delivery" ? current : "delivery"));
+        setDiningType((current) => current ?? "delivery");
       }
       if (customer.spicePreference) {
         setOrderNotes((current) => (current.trim() ? current : customer.spicePreference ?? ""));
@@ -590,7 +600,7 @@ function POSPage() {
   async function placeOrder() {
     if (!branch || !user) return;
     if (!currentDiningType) {
-      toast.error("Choose dine in, takeaway, or delivery first");
+      toast.error("Choose dine in, takeaway, outdoor, or delivery first");
       return;
     }
     if (cart.length === 0) {
@@ -608,7 +618,7 @@ function POSPage() {
         _dining_type: currentDiningType,
         _customer_name: customerName,
         _customer_phone: customerPhone,
-        _table_label: currentDiningType === "dine_in" ? tableLabel : "",
+        _table_label: hasSeatLabel(currentDiningType) ? tableLabel : "",
         _notes: buildOrderNotes(
           currentDiningType === "delivery" ? customerAddress : "",
           orderNotes,
@@ -630,6 +640,7 @@ function POSPage() {
           });
       if (error) throw error;
       const row = Array.isArray(data) ? data[0] : data;
+      if (!row) throw new Error("No order returned");
       const savedOrderId = row?.order_id ?? row?.updated_order_id;
       if (!savedOrderId) throw new Error("No order returned");
       toast.success(
@@ -695,7 +706,7 @@ function POSPage() {
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {SERVICE_OPTIONS.map((option) => (
               <ServiceTypeCard
                 key={option.value}
@@ -764,7 +775,7 @@ function POSPage() {
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <span className="capitalize">
                   {currentDiningType.replace("_", " ")}
-                  {currentDiningType === "dine_in" && tableLabel ? ` · ${tableLabel}` : ""}
+                  {hasSeatLabel(currentDiningType) && tableLabel ? ` · ${tableLabel}` : ""}
                 </span>
                 {currentDiningType === "dine_in" && (
                   <button
@@ -859,8 +870,8 @@ function POSPage() {
         </div>
 
         <div className="space-y-3 border-b border-border p-4">
-          <div className="grid grid-cols-3 gap-2">
-            {(["dine_in", "takeaway", "delivery"] as const).map((d) => (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
+            {(["dine_in", "takeaway", "outdoor", "delivery"] as const).map((d) => (
               <Button
                 key={d}
                 type="button"
@@ -868,7 +879,7 @@ function POSPage() {
                 size="sm"
                 onClick={() => {
                   setDiningType(d);
-                  if (d !== "dine_in") setTableLabel("");
+                  if (!hasSeatLabel(d)) setTableLabel("");
                 }}
                 className="capitalize"
               >
@@ -876,11 +887,13 @@ function POSPage() {
               </Button>
             ))}
           </div>
-          {currentDiningType === "dine_in" && (
+          {hasSeatLabel(currentDiningType) && (
             <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/45 px-3 py-2 text-sm">
-              <span className="text-muted-foreground">Table</span>
+              <span className="text-muted-foreground">
+                {currentDiningType === "outdoor" ? "Outdoor spot" : "Table"}
+              </span>
               <div className="flex items-center gap-2">
-                <span className="font-mono font-semibold">{tableLabel}</span>
+                <span className="font-mono font-semibold">{tableLabel || "Not set"}</span>
                 {!isEditing && (
                   <button
                     type="button"
@@ -965,6 +978,14 @@ function POSPage() {
                 value={customerAddress}
                 onChange={(e) => setCustomerAddress(e.target.value)}
                 rows={2}
+              />
+            )}
+            {currentDiningType === "outdoor" && (
+              <Input
+                className="col-span-2"
+                placeholder="Outdoor table / spot (optional)"
+                value={tableLabel}
+                onChange={(e) => setTableLabel(e.target.value)}
               />
             )}
             <Textarea

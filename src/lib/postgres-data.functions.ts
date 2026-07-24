@@ -24,6 +24,8 @@ const TABLES = new Set([
   "finance_day_closures",
   "finance_transfers",
   "finance_movements",
+  "finance_account_positions",
+  "finance_obligations",
   "customers",
   "customer_addresses",
   "customer_events",
@@ -123,6 +125,12 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
   },
   finance_movements: {
     read: ["dashboard:view", "expenses:view"],
+  },
+  finance_account_positions: {
+    read: ["dashboard:view", "expenses:view"],
+  },
+  finance_obligations: {
+    read: ["dashboard:view", "expenses:view", "orders:view", "customers:view"],
   },
   customers: {
     read: ["customers:view", "pos:use"],
@@ -422,8 +430,24 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         o.branch_id,
         p.paid_at as occurred_at,
         p.finance_account_id,
-        coalesce(fa.name, case when p.method = 'cash' then 'Counter Cash' else 'Online' end) as account_name,
-        coalesce(fa.account_type::text, case when p.method = 'cash' then 'counter_cash' else 'online' end) as account_type,
+        coalesce(
+          fa.name,
+          case
+            when p.method = 'cash' then 'Counter Cash'
+            when p.method = 'wallet' then 'Wallet'
+            when p.method = 'other' then 'Other'
+            else 'Online'
+          end
+        ) as account_name,
+        coalesce(
+          fa.account_type::text,
+          case
+            when p.method = 'cash' then 'counter_cash'
+            when p.method = 'wallet' then 'wallet'
+            when p.method = 'other' then 'other'
+            else 'online'
+          end
+        ) as account_type,
         coalesce(fa.is_cash, p.method = 'cash') as is_cash,
         'order_payment'::text as movement_type,
         o.order_no as title,
@@ -472,6 +496,26 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       where ip.finance_account_id is not null
       union all
       select
+        sle.id,
+        sle.branch_id,
+        ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+        sle.finance_account_id,
+        coalesce(fa.name, 'Not set') as account_name,
+        coalesce(fa.account_type::text, 'other') as account_type,
+        coalesce(fa.is_cash, false) as is_cash,
+        'supplier_payment'::text as movement_type,
+        coalesce(s.name, 'Supplier payment') as title,
+        null::text as payment_method,
+        'supplier_payment'::text as payment_kind,
+        sle.amount::numeric as amount,
+        sle.reference_no as reference
+      from supplier_ledger_entries sle
+      left join finance_accounts fa on fa.id = sle.finance_account_id
+      left join suppliers s on s.id = sle.supplier_id
+      where sle.entry_type = 'payment'
+        and sle.finance_account_id is not null
+      union all
+      select
         t.id,
         t.branch_id,
         t.occurred_at,
@@ -506,6 +550,159 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       from finance_transfers t
       left join finance_accounts fa on fa.id = t.to_account_id
       where t.to_account_id is not null
+      `,
+      input,
+    );
+  }
+
+  if (input.table === "finance_account_positions") {
+    return selectVirtualRows(
+      `
+      with movement_rows as (
+        select
+          p.finance_account_id,
+          p.paid_at as occurred_at,
+          p.amount::numeric as amount
+        from payments p
+        join orders o on o.id = p.order_id
+        where p.finance_account_id is not null
+        union all
+        select
+          e.finance_account_id,
+          ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+          (-e.amount)::numeric as amount
+        from operational_expenses e
+        where e.status = 'paid'
+          and e.finance_account_id is not null
+        union all
+        select
+          ip.finance_account_id,
+          ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+          (-ip.total)::numeric as amount
+        from inventory_purchases ip
+        where ip.finance_account_id is not null
+        union all
+        select
+          sle.finance_account_id,
+          ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+          sle.amount::numeric as amount
+        from supplier_ledger_entries sle
+        where sle.entry_type = 'payment'
+          and sle.finance_account_id is not null
+        union all
+        select t.from_account_id, t.occurred_at, (-t.amount)::numeric
+        from finance_transfers t
+        where t.from_account_id is not null
+        union all
+        select t.to_account_id, t.occurred_at, t.amount::numeric
+        from finance_transfers t
+        where t.to_account_id is not null
+      ),
+      branch_day as (
+        select
+          b.id as branch_id,
+          case
+            when (now() at time zone b.timezone)::time < b.business_day_start_time
+              then ((now() at time zone b.timezone)::date - 1)
+            else (now() at time zone b.timezone)::date
+          end as business_date,
+          b.business_day_start_time,
+          b.timezone
+        from branches b
+      ),
+      branch_window as (
+        select
+          bd.branch_id,
+          bd.business_date,
+          ((bd.business_date + bd.business_day_start_time) at time zone bd.timezone) as start_at,
+          (((bd.business_date + 1) + bd.business_day_start_time) at time zone bd.timezone) as end_at
+        from branch_day bd
+      ),
+      movement_totals as (
+        select
+          mr.finance_account_id,
+          coalesce(sum(mr.amount), 0)::numeric as all_time_movement,
+          coalesce(sum(mr.amount) filter (
+            where mr.occurred_at >= bw.start_at and mr.occurred_at < bw.end_at
+          ), 0)::numeric as current_shift_movement
+        from movement_rows mr
+        join finance_accounts fa on fa.id = mr.finance_account_id
+        join branch_window bw on bw.branch_id = fa.branch_id
+        group by mr.finance_account_id
+      )
+      select
+        fa.id as account_id,
+        fa.restaurant_id,
+        fa.branch_id,
+        fa.name,
+        fa.account_type::text as account_type,
+        fa.is_cash,
+        fa.is_active,
+        fa.sort_order,
+        bw.business_date::text as business_date,
+        coalesce(mt.all_time_movement, 0)::numeric as all_time_movement,
+        coalesce(mt.current_shift_movement, 0)::numeric as current_shift_movement,
+        coalesce(mt.all_time_movement, 0)::numeric as balance
+      from finance_accounts fa
+      join branch_window bw on bw.branch_id = fa.branch_id
+      left join movement_totals mt on mt.finance_account_id = fa.id
+      `,
+      input,
+    );
+  }
+
+  if (input.table === "finance_obligations") {
+    return selectVirtualRows(
+      `
+      select
+        o.id,
+        o.branch_id,
+        'receivable'::text as obligation_type,
+        'order'::text as source_type,
+        o.id as source_id,
+        coalesce(nullif(o.customer_name, ''), nullif(o.customer_phone, ''), 'Walk-in customer') as counterparty_name,
+        o.order_no as reference,
+        greatest(o.grand_total::numeric - coalesce(o.amount_paid, 0)::numeric, 0)::numeric as amount,
+        o.status::text as status,
+        o.created_at as occurred_at,
+        o.notes
+      from orders o
+      where o.payment_status in ('pending', 'partial')
+        and o.status not in ('cancelled', 'voided', 'refunded')
+        and greatest(o.grand_total::numeric - coalesce(o.amount_paid, 0)::numeric, 0) > 0
+      union all
+      select
+        e.id,
+        e.branch_id,
+        'payable'::text as obligation_type,
+        'expense'::text as source_type,
+        e.id as source_id,
+        coalesce(nullif(e.vendor, ''), e.title, 'Expense due') as counterparty_name,
+        coalesce(e.reference_no, e.title) as reference,
+        e.amount::numeric as amount,
+        e.status::text as status,
+        ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
+        e.notes
+      from operational_expenses e
+      where e.status = 'due'
+        and e.amount::numeric > 0
+      union all
+      select
+        (s.id::text || ':' || sle.branch_id::text) as id,
+        sle.branch_id,
+        'payable'::text as obligation_type,
+        'supplier'::text as source_type,
+        s.id as source_id,
+        s.name as counterparty_name,
+        'Supplier balance'::text as reference,
+        sum(sle.amount)::numeric as amount,
+        'due'::text as status,
+        max(sle.created_at) as occurred_at,
+        null::text as notes
+      from supplier_ledger_entries sle
+      join suppliers s on s.id = sle.supplier_id
+      group by s.id, sle.branch_id, s.name
+      having sum(sle.amount)::numeric > 0
       `,
       input,
     );
@@ -770,16 +967,26 @@ async function resolveFinanceAccountId(
     return requested;
   }
 
-  const targetType = method === "cash" ? "counter_cash" : method === "other" ? "other" : "online";
+  const targetTypes =
+    method === "cash"
+      ? ["counter_cash"]
+      : method === "wallet"
+        ? ["wallet", "online", "bank"]
+        : method === "other"
+          ? ["other"]
+          : ["online", "bank", "wallet"];
   const result = await client.query(
     `select id
        from finance_accounts
-      where branch_id = $1 and account_type = $2 and is_active = true
-      order by sort_order asc, created_at asc
+      where branch_id = $1 and account_type::text = any($2::text[]) and is_active = true
+      order by array_position($2::text[], account_type::text), sort_order asc, created_at asc
       limit 1`,
-    [branchId, targetType],
+    [branchId, targetTypes],
   );
-  return result.rows[0]?.id ?? null;
+  if (!result.rows[0]?.id) {
+    throw new Error("Set up an active finance source for this payment method first.");
+  }
+  return result.rows[0].id;
 }
 
 async function recordPayment(args: Record<string, unknown>, actorId: string) {
@@ -984,10 +1191,9 @@ async function assertInventoryPeriodOpen(
       : new Date(occurredAt);
   if (Number.isNaN(date.getTime())) throw new Error("Invalid inventory date.");
 
-  const result = await client.query(
-    "select inventory_locked_before from branches where id = $1",
-    [branchId],
-  );
+  const result = await client.query("select inventory_locked_before from branches where id = $1", [
+    branchId,
+  ]);
   const lockedBefore = result.rows[0]?.inventory_locked_before;
   if (lockedBefore && date < new Date(lockedBefore)) {
     throw new Error("This inventory period is locked. Post a current correction instead.");
@@ -1030,8 +1236,12 @@ async function reserveFifoConsumption(
 ) {
   let remaining = roundQuantity(input.quantity);
   let totalCost = 0;
-  const rows: Array<{ layerId: string | null; quantity: number; unitCost: number; totalCost: number }> =
-    [];
+  const rows: Array<{
+    layerId: string | null;
+    quantity: number;
+    unitCost: number;
+    totalCost: number;
+  }> = [];
   const layers = await client.query(
     `select id, quantity_remaining, unit_cost
        from inventory_cost_layers
@@ -1156,7 +1366,8 @@ async function recordInventoryPurchase(args: Record<string, unknown>, actorId: s
       if (!itemId || !Number.isFinite(quantity) || quantity <= 0) {
         throw new Error("Every purchase line needs a valid ingredient and positive quantity.");
       }
-      if (!Number.isFinite(unitCost) || unitCost < 0) throw new Error("Unit cost cannot be negative.");
+      if (!Number.isFinite(unitCost) || unitCost < 0)
+        throw new Error("Unit cost cannot be negative.");
 
       const itemResult = await client.query(
         `select id, base_unit, current_qty, average_cost
@@ -1174,7 +1385,8 @@ async function recordInventoryPurchase(args: Record<string, unknown>, actorId: s
       const beforeQty = Number(item.current_qty);
       const afterQty = roundQuantity(beforeQty + baseQuantity);
       const currentValue = Math.max(0, beforeQty) * Number(item.average_cost);
-      const averageCost = afterQty > 0 ? (currentValue + lineTotal) / afterQty : Number(item.average_cost);
+      const averageCost =
+        afterQty > 0 ? (currentValue + lineTotal) / afterQty : Number(item.average_cost);
 
       const purchaseLineResult = await client.query(
         `insert into inventory_purchase_lines
@@ -1552,12 +1764,14 @@ async function recordSupplierPayment(args: Record<string, unknown>, actorId: str
   const branchId = String(args._branch ?? "");
   const supplierId = String(args._supplier ?? "");
   const amount = Number(args._amount ?? 0);
+  const financeAccountId = nullableText(args._finance_account);
   const occurredOn = nullableText(args._date) ?? new Date().toISOString().slice(0, 10);
   const reference = nullableText(args._reference);
   const notes = nullableText(args._notes);
   if (!branchId || !supplierId || !Number.isFinite(amount) || amount <= 0) {
     throw new Error("Supplier payment needs supplier, branch, and positive amount.");
   }
+  if (!financeAccountId) throw new Error("Select where this supplier payment was paid from.");
 
   const client = await pgPool.connect();
   try {
@@ -1573,17 +1787,23 @@ async function recordSupplierPayment(args: Record<string, unknown>, actorId: str
       [supplierId, branch.restaurant_id],
     );
     if (!supplier.rowCount) throw new Error("Supplier was not found.");
+    const source = await client.query(
+      "select id from finance_accounts where id = $1 and branch_id = $2 and is_active = true",
+      [financeAccountId, branchId],
+    );
+    if (!source.rowCount) throw new Error("Payment source is not available for this branch.");
 
     const result = await client.query(
       `insert into supplier_ledger_entries
-         (restaurant_id, branch_id, supplier_id, entry_type, amount, reference_no,
+         (restaurant_id, branch_id, supplier_id, entry_type, finance_account_id, amount, reference_no,
           occurred_on, notes, created_by)
-       values ($1, $2, $3, 'payment', $4, $5, $6, $7, $8)
+       values ($1, $2, $3, 'payment', $4, $5, $6, $7, $8, $9)
        returning id`,
       [
         branch.restaurant_id,
         branchId,
         supplierId,
+        financeAccountId,
         moneyString(-amount),
         reference,
         occurredOn,
@@ -1688,7 +1908,12 @@ async function updatePosOrder(args: Record<string, unknown>, actorId: string) {
     if (Number(previousOrder.amount_paid ?? 0) > 0)
       throw new Error("Paid orders cannot be edited.");
     await assertInventoryPeriodOpen(client, previousOrder.branch_id, previousOrder.created_at);
-    await restoreOrderInventory(client, orderId, actorId, "Order edited - previous recipe restored");
+    await restoreOrderInventory(
+      client,
+      orderId,
+      actorId,
+      "Order edited - previous recipe restored",
+    );
     await client.query("delete from order_taxes where order_id = $1", [orderId]);
     await client.query("delete from order_items where order_id = $1", [orderId]);
     await client.query("delete from coupon_redemptions where order_id = $1", [orderId]);
@@ -1726,7 +1951,12 @@ async function writePosOrder(
   input: {
     orderId?: string;
     orderNo?: string;
-    branch: { id: string; code: string; restaurant_id: string; delivery_fee: number | string | null };
+    branch: {
+      id: string;
+      code: string;
+      restaurant_id: string;
+      delivery_fee: number | string | null;
+    };
     actorId: string;
     diningType: string;
     customerName: string | null;
@@ -1763,7 +1993,9 @@ async function writePosOrder(
     notes: input.orderNotes,
   });
   if (customer?.is_blocked) {
-    throw new Error("This customer is blocked. Please review the customer profile before taking an order.");
+    throw new Error(
+      "This customer is blocked. Please review the customer profile before taking an order.",
+    );
   }
   const deliveryFee =
     input.diningType === "delivery" ? roundMoney(Number(input.branch.delivery_fee ?? 0)) : 0;
@@ -1776,10 +2008,17 @@ async function writePosOrder(
     customerId: customer?.id ?? null,
     source: "pos",
   });
-  const couponItemDiscount = coupon?.discountType === "free_delivery" ? 0 : (coupon?.discountAmount ?? 0);
-  const deliveryDiscount = coupon?.discountType === "free_delivery" ? (coupon?.discountAmount ?? 0) : 0;
-  const discount = roundMoney(Math.max(0, Math.min(subtotal, manualDiscount + couponItemDiscount)) + deliveryDiscount);
-  const taxableBase = Math.max(0, subtotal - Math.max(0, Math.min(subtotal, manualDiscount + couponItemDiscount)));
+  const couponItemDiscount =
+    coupon?.discountType === "free_delivery" ? 0 : (coupon?.discountAmount ?? 0);
+  const deliveryDiscount =
+    coupon?.discountType === "free_delivery" ? (coupon?.discountAmount ?? 0) : 0;
+  const discount = roundMoney(
+    Math.max(0, Math.min(subtotal, manualDiscount + couponItemDiscount)) + deliveryDiscount,
+  );
+  const taxableBase = Math.max(
+    0,
+    subtotal - Math.max(0, Math.min(subtotal, manualDiscount + couponItemDiscount)),
+  );
   const taxes = await client.query(
     `select * from taxes where restaurant_id = $1 and is_active = true and apply_by_default = true`,
     [input.branch.restaurant_id],
@@ -2146,7 +2385,11 @@ async function updateOrderStatus(args: Record<string, unknown>, actorId: string,
     );
     if (!existing.rowCount) throw new Error("Order was not found.");
     if (status === "cancelled" && existing.rows[0].status !== "cancelled") {
-      await assertInventoryPeriodOpen(client, existing.rows[0].branch_id, existing.rows[0].created_at);
+      await assertInventoryPeriodOpen(
+        client,
+        existing.rows[0].branch_id,
+        existing.rows[0].created_at,
+      );
       await restoreOrderInventory(client, orderId, actorId, "Order cancelled - recipe restored");
     }
     const result = await client.query(
@@ -2209,7 +2452,9 @@ async function adjustOrderDiscount(args: Record<string, unknown>, actorId: strin
     const nextDiscount = Math.max(0, Math.min(subtotal, discount));
     const taxes = await client.query("select * from order_taxes where order_id = $1", [orderId]);
     const taxTotal = taxes.rows.reduce((sum, tax) => sum + Number(tax.amount || 0), 0);
-    const grandTotal = roundMoney(subtotal - nextDiscount + taxTotal + Number(order.delivery_fee ?? 0));
+    const grandTotal = roundMoney(
+      subtotal - nextDiscount + taxTotal + Number(order.delivery_fee ?? 0),
+    );
     await client.query(
       `update orders
        set discount_total = $2, grand_total = $3,
@@ -2328,10 +2573,7 @@ async function refundOrder(args: Record<string, unknown>, actorId: string) {
   }
 }
 
-async function getBranchForOrder(
-  client: PoolClient,
-  branchId: string,
-) {
+async function getBranchForOrder(client: PoolClient, branchId: string) {
   const result = await client.query(
     "select id, code, restaurant_id, delivery_fee from branches where id = $1",
     [branchId],
@@ -2341,11 +2583,7 @@ async function getBranchForOrder(
   return branch;
 }
 
-async function reserveOrderNo(
-  client: PoolClient,
-  branchId: string,
-  branchCode: string,
-) {
+async function reserveOrderNo(client: PoolClient, branchId: string, branchCode: string) {
   const today = new Date().toISOString().slice(0, 10);
   const result = await client.query(
     `insert into order_counters (branch_id, counter_date, last_seq)
@@ -2406,13 +2644,7 @@ async function recordLoyaltyEarnedEvent(
           and ce.event_type = 'loyalty_earned'
       )
     `,
-    [
-      input.customerId,
-      input.orderId,
-      input.orderNo,
-      moneyString(input.grandTotal),
-      points,
-    ],
+    [input.customerId, input.orderId, input.orderNo, moneyString(input.grandTotal), points],
   );
 }
 
@@ -2563,7 +2795,7 @@ async function assertTableAccess(userId: string, table: string, operation: DataO
     throw new AuthorizationError("No access policy exists for this table.");
   }
 
-  const permissions = operation === "read" ? policy.read : policy[operation] ?? policy.write;
+  const permissions = operation === "read" ? policy.read : (policy[operation] ?? policy.write);
   if (!permissions?.length) {
     throw new AuthorizationError();
   }

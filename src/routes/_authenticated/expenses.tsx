@@ -12,6 +12,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Printer,
   ReceiptText,
   RotateCcw,
   Search,
@@ -26,6 +27,9 @@ import { toast } from "sonner";
 import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isManager, useMyRoles } from "@/hooks/use-auth";
+import { PrintService } from "@/lib/print/print-service";
+import { usePrinterSettings } from "@/lib/print/settings";
+import type { PaperSize } from "@/lib/print/types";
 import {
   businessDateInputValue,
   businessDateRangeUtcBounds,
@@ -153,6 +157,35 @@ type FinanceSourceRow = {
   net: number;
 };
 
+type FinanceAccountBalanceMap = Record<string, number>;
+
+type FinanceAccountPosition = {
+  account_id: string;
+  branch_id: string;
+  name: string;
+  account_type: FinanceAccount["account_type"];
+  is_cash: boolean;
+  is_active: boolean;
+  business_date: string;
+  all_time_movement: number | string;
+  current_shift_movement: number | string;
+  balance: number | string;
+};
+
+type FinanceObligation = {
+  id: string;
+  branch_id: string;
+  obligation_type: "receivable" | "payable";
+  source_type: "order" | "expense" | "supplier";
+  source_id: string;
+  counterparty_name: string;
+  reference: string | null;
+  amount: number | string;
+  status: string;
+  occurred_at: string;
+  notes: string | null;
+};
+
 type Expense = {
   id: string;
   branch_id: string;
@@ -167,6 +200,19 @@ type Expense = {
   amount: number | string;
   notes: string | null;
   operational_expense_categories?: { name: string } | null;
+};
+
+type ExpenseFormState = {
+  title: string;
+  category_id: string;
+  expense_date: string;
+  vendor: string;
+  reference_no: string;
+  payment_method: PaymentMethod | "none";
+  finance_account_id: string;
+  status: ExpenseStatus;
+  amount: string;
+  notes: string;
 };
 
 const CategorySchema = z.object({
@@ -256,6 +302,53 @@ function sourceTypeLabel(type: FinanceAccount["account_type"] | string) {
   }
 }
 
+const ONLINE_FINANCE_ACCOUNT_TYPES = new Set(["online", "bank", "wallet"]);
+
+function isCashFinanceSource(
+  accountType: string | null | undefined,
+  isCash: boolean | null | undefined,
+) {
+  return Boolean(isCash) || accountType === "counter_cash";
+}
+
+function isOnlineFinanceSource(
+  accountType: string | null | undefined,
+  isCash: boolean | null | undefined,
+) {
+  return !isCashFinanceSource(accountType, isCash) && ONLINE_FINANCE_ACCOUNT_TYPES.has(accountType ?? "");
+}
+
+function financeSourceBucket(
+  accountType: string | null | undefined,
+  isCash: boolean | null | undefined,
+) {
+  if (isCashFinanceSource(accountType, isCash)) return "cash";
+  if (isOnlineFinanceSource(accountType, isCash)) return "online";
+  return "other";
+}
+
+function fallbackAccountTypeForBucket(bucket: "cash" | "online" | "other") {
+  if (bucket === "cash") return "counter_cash";
+  if (bucket === "online") return "online";
+  return "other";
+}
+
+function isCashMovement(movement: FinanceMovement) {
+  return isCashFinanceSource(movement.account_type, movement.is_cash);
+}
+
+function isOnlineMovement(movement: FinanceMovement) {
+  return isOnlineFinanceSource(movement.account_type, movement.is_cash);
+}
+
+function isCashPosition(position: FinanceAccountPosition) {
+  return isCashFinanceSource(position.account_type, position.is_cash);
+}
+
+function isOnlinePosition(position: FinanceAccountPosition) {
+  return isOnlineFinanceSource(position.account_type, position.is_cash);
+}
+
 function movementTypeLabel(type: FinanceMovement["movement_type"] | string) {
   switch (type) {
     case "order_payment":
@@ -308,14 +401,15 @@ function buildFinanceSourceRows(
     });
 
   movements.forEach((movement) => {
+    const bucket = financeSourceBucket(movement.account_type, movement.is_cash);
     const key =
       movement.finance_account_id ??
-      `${movement.account_name || "Unknown source"}-${movement.is_cash ? "cash" : "online"}`;
+      `${movement.account_name || "Unknown source"}-${bucket}`;
     const row = ensureRow(
       key,
       movement.account_name || "Unknown source",
-      movement.account_type || (movement.is_cash ? "counter_cash" : "online"),
-      movement.is_cash,
+      movement.account_type || fallbackAccountTypeForBucket(bucket),
+      bucket === "cash",
     );
     const amount = Number(movement.amount || 0);
     row.net += amount;
@@ -349,6 +443,20 @@ function buildFinanceSourceRows(
         row.net,
     )
     .sort((a, b) => Number(b.isCash) - Number(a.isCash) || a.name.localeCompare(b.name));
+}
+
+function buildCurrentAccountBalances(positions: FinanceAccountPosition[]): FinanceAccountBalanceMap {
+  const balances: FinanceAccountBalanceMap = {};
+  positions.forEach((position) => {
+    balances[position.account_id] = Number(position.balance || 0);
+  });
+  return balances;
+}
+
+function accountRequiresBalance(account: FinanceAccount | undefined) {
+  return Boolean(
+    account && ["counter_cash", "online", "bank", "wallet"].includes(account.account_type),
+  );
 }
 
 function ExpensesPage() {
@@ -401,11 +509,14 @@ function ExpensesWorkspace({
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [printingReport, setPrintingReport] = useState(false);
+  const { settings: printerSettings } = usePrinterSettings(branchId);
 
   const categoriesQ = useExpenseCategories(branchId);
   const accountsQ = useFinanceAccounts(branchId);
   const movementsQ = useFinanceMovements(branchId, startDate, endDate, businessDayStart);
   const closureQ = useFinanceDayClosure(branchId, startDate, startDate === endDate);
+  const positionsQ = useFinanceAccountPositions(branchId);
+  const obligationsQ = useFinanceObligations(branchId);
   const expensesQ = useQuery({
     queryKey: ["operational-expenses", branchId, startDate, endDate],
     queryFn: async () => {
@@ -424,6 +535,12 @@ function ExpensesWorkspace({
 
   const expenses = useMemo(() => expensesQ.data ?? [], [expensesQ.data]);
   const accounts = useMemo(() => accountsQ.data ?? [], [accountsQ.data]);
+  const positions = useMemo(() => positionsQ.data ?? [], [positionsQ.data]);
+  const obligations = useMemo(() => obligationsQ.data ?? [], [obligationsQ.data]);
+  const currentAccountBalances = useMemo(
+    () => buildCurrentAccountBalances(positions),
+    [positions],
+  );
   const accountById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account])),
     [accounts],
@@ -457,14 +574,46 @@ function ExpensesWorkspace({
   const due = activeExpenses
     .filter((e) => e.status === "due")
     .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const cashPosition = positions
+    .filter(isCashPosition)
+    .reduce((sum, position) => sum + Number(position.balance || 0), 0);
+  const onlinePosition = positions
+    .filter(isOnlinePosition)
+    .reduce((sum, position) => sum + Number(position.balance || 0), 0);
+  const receivableTotal = obligations
+    .filter((obligation) => obligation.obligation_type === "receivable")
+    .reduce((sum, obligation) => sum + Number(obligation.amount || 0), 0);
+  const payableTotal = obligations
+    .filter((obligation) => obligation.obligation_type === "payable")
+    .reduce((sum, obligation) => sum + Number(obligation.amount || 0), 0);
+
+  async function refreshFinanceTruth() {
+    await Promise.all([
+      positionsQ.refetch(),
+      obligationsQ.refetch(),
+      movementsQ.refetch(),
+      closureQ.refetch(),
+      expensesQ.refetch(),
+      accountsQ.refetch(),
+    ]);
+    toast.success("Finance position refreshed");
+  }
 
   async function printFinanceReport() {
     setPrintingReport(true);
     try {
-      const [latestAccounts, latestMovements, latestClosure] = await Promise.all([
+      const [
+        latestAccounts,
+        latestMovements,
+        latestClosure,
+        latestPositions,
+        latestObligations,
+      ] = await Promise.all([
         accountsQ.refetch(),
         movementsQ.refetch(),
         startDate === endDate ? closureQ.refetch() : Promise.resolve({ data: null }),
+        positionsQ.refetch(),
+        obligationsQ.refetch(),
       ]);
 
       openFinanceControlReport({
@@ -476,6 +625,8 @@ function ExpensesWorkspace({
         accounts: latestAccounts.data ?? accounts,
         movements: latestMovements.data ?? movementsQ.data ?? [],
         closure: latestClosure.data ?? null,
+        positions: latestPositions.data ?? positions,
+        obligations: latestObligations.data ?? obligations,
         ownerWhatsAppPhone,
       });
     } catch (error) {
@@ -510,11 +661,26 @@ function ExpensesWorkspace({
       </div>
 
       {manager && (
+        <FinancePositionOverview
+          positions={positions}
+          obligations={obligations}
+          cashPosition={cashPosition}
+          onlinePosition={onlinePosition}
+          receivableTotal={receivableTotal}
+          payableTotal={payableTotal}
+          symbol={symbol}
+          loading={positionsQ.isLoading || obligationsQ.isLoading}
+          onRefresh={refreshFinanceTruth}
+        />
+      )}
+
+      {manager && (
         <FinanceActionCenter
           branchId={branchId}
           restaurantId={restaurantId}
           categories={categoriesQ.data ?? []}
           accounts={accounts}
+          accountBalances={currentAccountBalances}
           businessDayStart={businessDayStart}
           symbol={symbol}
           printingReport={printingReport}
@@ -548,6 +714,8 @@ function ExpensesWorkspace({
             movementsQ.refetch(),
             closureQ.refetch(),
             accountsQ.refetch(),
+            positionsQ.refetch(),
+            obligationsQ.refetch(),
           ]);
         }}
         onRefresh={async () => {
@@ -556,6 +724,8 @@ function ExpensesWorkspace({
             movementsQ.refetch(),
             closureQ.refetch(),
             accountsQ.refetch(),
+            positionsQ.refetch(),
+            obligationsQ.refetch(),
           ]);
         }}
       />
@@ -569,7 +739,7 @@ function ExpensesWorkspace({
               variant="outline"
               size="sm"
               onClick={() => {
-                const dateStr = pakistanDateInputValue();
+                const dateStr = businessDateInputValue(businessDayStart);
                 setStartDate(dateStr);
                 setEndDate(dateStr);
                 setCategoryFilter("all");
@@ -586,6 +756,15 @@ function ExpensesWorkspace({
           </div>
         </CardContent>
       </Card>
+
+      {manager && (
+        <FinanceMovementProofPanel
+          movements={movementsQ.data ?? []}
+          branchName={branchName}
+          symbol={symbol}
+          paperSize={printerSettings.paperSize}
+        />
+      )}
 
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <Card>
@@ -668,6 +847,8 @@ function ExpensesWorkspace({
                         branchId={branchId}
                         categories={categoriesQ.data ?? []}
                         accounts={accounts}
+                        accountBalances={currentAccountBalances}
+                        businessDayStart={businessDayStart}
                         accountName={
                           expense.finance_account_id
                             ? accountById.get(expense.finance_account_id)?.name
@@ -712,11 +893,358 @@ function ExpensesWorkspace({
   );
 }
 
+function FinancePositionOverview({
+  positions,
+  obligations,
+  cashPosition,
+  onlinePosition,
+  receivableTotal,
+  payableTotal,
+  symbol,
+  loading,
+  onRefresh,
+}: {
+  positions: FinanceAccountPosition[];
+  obligations: FinanceObligation[];
+  cashPosition: number;
+  onlinePosition: number;
+  receivableTotal: number;
+  payableTotal: number;
+  symbol: string;
+  loading: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const [refreshing, setRefreshing] = useState(false);
+  const importantObligations = obligations
+    .slice()
+    .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))
+    .slice(0, 8);
+  const totalAvailable = cashPosition + onlinePosition;
+  const receivableRecords = obligations.filter(
+    (obligation) => obligation.obligation_type === "receivable",
+  );
+  const payableRecords = obligations.filter(
+    (obligation) => obligation.obligation_type === "payable",
+  );
+  const pendingOrderRecords = receivableRecords.filter(
+    (obligation) => obligation.source_type === "order",
+  );
+  const pendingOrderTotal = pendingOrderRecords.reduce(
+    (sum, obligation) => sum + Number(obligation.amount || 0),
+    0,
+  );
+  const supplierPayableTotal = payableRecords
+    .filter((obligation) => obligation.source_type === "supplier")
+    .reduce((sum, obligation) => sum + Number(obligation.amount || 0), 0);
+  const dueExpenseTotal = payableRecords
+    .filter((obligation) => obligation.source_type === "expense")
+    .reduce((sum, obligation) => sum + Number(obligation.amount || 0), 0);
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <Card className="border-primary/25 bg-card/75">
+      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle>Money position</CardTitle>
+          <CardDescription>
+            Current business balances, open collections, and payables from the live records.
+          </CardDescription>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+          {refreshing ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <RotateCcw className="mr-2 h-4 w-4" />
+          )}
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          <Stat icon={Banknote} label="Cash we have" value={formatMoney(cashPosition, symbol)} />
+          <Stat
+            icon={WalletCards}
+            label="Online / bank"
+            value={formatMoney(onlinePosition, symbol)}
+          />
+          <Stat
+            icon={Banknote}
+            label="Total available"
+            value={formatMoney(totalAvailable, symbol)}
+          />
+          <Stat
+            icon={HandCoins}
+            label={`Need to collect (${receivableRecords.length})`}
+            value={formatMoney(receivableTotal, symbol)}
+            highlight={receivableTotal > 0}
+          />
+          <Stat
+            icon={ReceiptText}
+            label={`Need to pay (${payableRecords.length})`}
+            value={formatMoney(payableTotal, symbol)}
+            highlight={payableTotal > 0}
+          />
+          <Stat
+            icon={ClipboardCheck}
+            label={`Pending orders (${pendingOrderRecords.length})`}
+            value={formatMoney(pendingOrderTotal, symbol)}
+            highlight={pendingOrderTotal > 0}
+          />
+        </div>
+
+        {(supplierPayableTotal > 0 || dueExpenseTotal > 0 || pendingOrderTotal > 0) && (
+          <div className="grid gap-3 md:grid-cols-3">
+            <ObligationMiniStat
+              label="Customer pending payments"
+              value={formatMoney(pendingOrderTotal, symbol)}
+              count={pendingOrderRecords.length}
+            />
+            <ObligationMiniStat
+              label="Supplier balances"
+              value={formatMoney(supplierPayableTotal, symbol)}
+              count={
+                payableRecords.filter((obligation) => obligation.source_type === "supplier")
+                  .length
+              }
+            />
+            <ObligationMiniStat
+              label="Due expenses"
+              value={formatMoney(dueExpenseTotal, symbol)}
+              count={
+                payableRecords.filter((obligation) => obligation.source_type === "expense")
+                  .length
+              }
+            />
+          </div>
+        )}
+
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+          <div className="rounded-xl border border-border bg-background/35 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="font-medium">Where the money is</p>
+              {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+            </div>
+            {positions.length ? (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {positions.map((position) => (
+                  <div key={position.account_id} className="rounded-lg border border-border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{position.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {sourceTypeLabel(position.account_type)}
+                        </p>
+                      </div>
+                      {!position.is_active && <Badge variant="outline">Inactive</Badge>}
+                    </div>
+                    <p className="mt-3 font-mono text-xl">
+                      {formatMoney(position.balance, symbol)}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Shift movement {formatMoney(position.current_shift_movement, symbol)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                No finance accounts found. Add counter cash and online/bank sources first.
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-border bg-background/35 p-3">
+            <p className="font-medium">Open money records</p>
+            <p className="text-xs text-muted-foreground">
+              People to collect from and vendors/suppliers to pay.
+            </p>
+            <div className="mt-3 space-y-2">
+              {importantObligations.length ? (
+                importantObligations.map((obligation) => (
+                  <div
+                    key={`${obligation.source_type}-${obligation.id}`}
+                    className="rounded-lg border border-border p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={
+                              obligation.obligation_type === "receivable"
+                                ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
+                                : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+                            }
+                          >
+                            {obligation.obligation_type === "receivable"
+                              ? "Collect"
+                              : "Pay"}
+                          </Badge>
+                          <span className="truncate font-medium">
+                            {obligation.counterparty_name}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate text-xs text-muted-foreground">
+                          {obligation.reference || sourceObligationLabel(obligation.source_type)}
+                        </p>
+                      </div>
+                      <p className="shrink-0 font-mono font-semibold">
+                        {formatMoney(obligation.amount, symbol)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                  Nothing open right now.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ObligationMiniStat({
+  label,
+  value,
+  count,
+}: {
+  label: string;
+  value: string;
+  count: number;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-background/35 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium">{label}</p>
+        <Badge variant="outline">{count}</Badge>
+      </div>
+      <p className="mt-2 font-mono text-lg font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function sourceObligationLabel(type: FinanceObligation["source_type"]) {
+  switch (type) {
+    case "order":
+      return "Pending order payment";
+    case "expense":
+      return "Due expense";
+    case "supplier":
+      return "Supplier balance";
+    default:
+      return "Open record";
+  }
+}
+
+function FinanceMovementProofPanel({
+  movements,
+  branchName,
+  symbol,
+  paperSize,
+}: {
+  movements: FinanceMovement[];
+  branchName: string;
+  symbol: string;
+  paperSize: PaperSize;
+}) {
+  const [printingId, setPrintingId] = useState<string | null>(null);
+  const recentMovements = movements.slice(0, 8);
+
+  async function printRaseed(movement: FinanceMovement) {
+    setPrintingId(movement.id);
+    try {
+      await PrintService.print({
+        kind: "receipt",
+        paperSize,
+        html: renderFinanceMovementRaseedHtml({ movement, branchName, symbol }),
+      });
+      toast.success("Finance raseed sent to printer");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not print finance raseed");
+    } finally {
+      setPrintingId(null);
+    }
+  }
+
+  return (
+    <Card className="bg-card/70">
+      <CardHeader className="space-y-1">
+        <CardTitle>Finance raseed</CardTitle>
+        <CardDescription>
+          Print proof for money received, paid, moved, or taken from the counter.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {recentMovements.length ? (
+          <div className="grid gap-2">
+            {recentMovements.map((movement) => {
+              const amount = Number(movement.amount || 0);
+              const printing = printingId === movement.id;
+              return (
+                <div
+                  key={movement.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/35 p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">{movementTypeLabel(movement.movement_type)}</Badge>
+                      <span className="truncate font-medium">{movement.title || "Finance movement"}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {movement.account_name || "Unknown source"} - {reportDateTime(movement.occurred_at)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <p className="font-mono font-semibold">
+                      {formatMoney(amount, symbol)}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void printRaseed(movement)}
+                      disabled={printing}
+                    >
+                      {printing ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Printer className="mr-2 h-4 w-4" />
+                      )}
+                      Raseed
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+            No finance movement in this selected period yet.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function FinanceActionCenter({
   branchId,
   restaurantId,
   categories,
   accounts,
+  accountBalances,
   businessDayStart,
   symbol,
   printingReport,
@@ -726,6 +1254,7 @@ function FinanceActionCenter({
   restaurantId: string;
   categories: ExpenseCategory[];
   accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
   businessDayStart: string;
   symbol: string;
   printingReport: boolean;
@@ -751,13 +1280,13 @@ function FinanceActionCenter({
         <Button
           asChild
           variant="outline"
-          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
+          className="h-auto min-h-[116px] items-start justify-start gap-3 whitespace-normal p-4 text-left"
         >
           <Link to="/inventory">
             <ShoppingCart className="h-5 w-5 shrink-0 text-primary" />
-            <span className="min-w-0">
-              <span className="block font-semibold">Bought stock / packaging</span>
-              <span className="block text-xs leading-snug text-muted-foreground">
+            <span className="min-w-0 overflow-hidden">
+              <span className="block break-words font-semibold">Bought stock / packaging</span>
+              <span className="block break-words text-xs leading-snug text-muted-foreground">
                 Record purchase, payment source, and stock quantity.
               </span>
             </span>
@@ -767,6 +1296,8 @@ function FinanceActionCenter({
           branchId={branchId}
           categories={categories}
           accounts={accounts}
+          accountBalances={accountBalances}
+          businessDayStart={businessDayStart}
           symbol={symbol}
           trigger={
             <FinanceQuickAction
@@ -780,6 +1311,7 @@ function FinanceActionCenter({
           branchId={branchId}
           restaurantId={restaurantId}
           accounts={accounts}
+          accountBalances={accountBalances}
           businessDayStart={businessDayStart}
           symbol={symbol}
           trigger={
@@ -794,6 +1326,7 @@ function FinanceActionCenter({
           branchId={branchId}
           restaurantId={restaurantId}
           accounts={accounts}
+          accountBalances={accountBalances}
           businessDayStart={businessDayStart}
           symbol={symbol}
           initialPreset="owner_took_cash"
@@ -808,13 +1341,13 @@ function FinanceActionCenter({
         <Button
           type="button"
           variant="outline"
-          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
+          className="h-auto min-h-[116px] items-start justify-start gap-3 whitespace-normal p-4 text-left"
           onClick={scrollToShift}
         >
           <ClipboardCheck className="h-5 w-5 shrink-0 text-primary" />
-          <span className="min-w-0">
-            <span className="block font-semibold">Open or close shift</span>
-            <span className="block text-xs leading-snug text-muted-foreground">
+          <span className="min-w-0 overflow-hidden">
+            <span className="block break-words font-semibold">Open or close shift</span>
+            <span className="block break-words text-xs leading-snug text-muted-foreground">
               Set opening cash, refresh expected totals, and close day.
             </span>
           </span>
@@ -822,7 +1355,7 @@ function FinanceActionCenter({
         <Button
           type="button"
           variant="outline"
-          className="h-auto min-h-[104px] justify-start gap-3 whitespace-normal p-4 text-left"
+          className="h-auto min-h-[116px] items-start justify-start gap-3 whitespace-normal p-4 text-left"
           onClick={onPrintReport}
           disabled={printingReport}
         >
@@ -831,9 +1364,9 @@ function FinanceActionCenter({
           ) : (
             <FileText className="h-5 w-5 shrink-0 text-primary" />
           )}
-          <span className="min-w-0">
-            <span className="block font-semibold">Send owner finance report</span>
-            <span className="block text-xs leading-snug text-muted-foreground">
+          <span className="min-w-0 overflow-hidden">
+            <span className="block break-words font-semibold">Send owner finance report</span>
+            <span className="block break-words text-xs leading-snug text-muted-foreground">
               Print PDF and share WhatsApp summary.
             </span>
           </span>
@@ -856,7 +1389,7 @@ const FinanceQuickAction = forwardRef<HTMLButtonElement, FinanceQuickActionProps
       type="button"
       variant="outline"
       className={[
-        "h-auto min-h-[104px] w-full justify-start gap-3 whitespace-normal p-4 text-left",
+        "h-auto min-h-[116px] w-full items-start justify-start gap-3 whitespace-normal p-4 text-left",
         className,
       ]
         .filter(Boolean)
@@ -864,9 +1397,11 @@ const FinanceQuickAction = forwardRef<HTMLButtonElement, FinanceQuickActionProps
       {...props}
     >
       <Icon className="h-5 w-5 shrink-0 text-primary" />
-      <span className="min-w-0">
-        <span className="block font-semibold">{title}</span>
-        <span className="block text-xs leading-snug text-muted-foreground">{description}</span>
+      <span className="min-w-0 overflow-hidden">
+        <span className="block break-words font-semibold">{title}</span>
+        <span className="block break-words text-xs leading-snug text-muted-foreground">
+          {description}
+        </span>
       </span>
     </Button>
   ),
@@ -944,6 +1479,36 @@ function useFinanceDayClosure(branchId: string, businessDate: string, enabled: b
   });
 }
 
+function useFinanceAccountPositions(branchId: string) {
+  return useQuery({
+    queryKey: ["finance-account-positions", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_account_positions")
+        .select("*")
+        .eq("branch_id", branchId)
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as FinanceAccountPosition[];
+    },
+  });
+}
+
+function useFinanceObligations(branchId: string) {
+  return useQuery({
+    queryKey: ["finance-obligations", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_obligations")
+        .select("*")
+        .eq("branch_id", branchId)
+        .order("occurred_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as FinanceObligation[];
+    },
+  });
+}
+
 function defaultAccountId(accounts: FinanceAccount[], method: PaymentMethod | "none" | null) {
   if (!accounts.length || !method || method === "none") return "none";
   const activeAccounts = accounts.filter((account) => account.is_active);
@@ -952,21 +1517,21 @@ function defaultAccountId(accounts: FinanceAccount[], method: PaymentMethod | "n
     return (
       activeAccounts.find((account) => account.account_type === "counter_cash")?.id ??
       activeAccounts.find((account) => account.is_cash)?.id ??
-      activeAccounts[0].id
+      "none"
     );
+  }
+  if (method === "other") {
+    return activeAccounts.find((account) => account.account_type === "other")?.id ?? "none";
   }
   const preferredTypes =
     method === "wallet"
-      ? ["wallet", "online", "bank", "other"]
-      : method === "other"
-        ? ["other", "online", "bank", "wallet"]
-        : ["online", "bank", "wallet", "other"];
+      ? ["wallet", "online", "bank"]
+      : ["online", "bank", "wallet"];
   return (
     preferredTypes
       .map((type) => activeAccounts.find((account) => account.account_type === type))
       .find(Boolean)?.id ??
-    activeAccounts.find((account) => !account.is_cash)?.id ??
-    activeAccounts[0].id
+    "none"
   );
 }
 
@@ -1034,35 +1599,39 @@ function DayEndPanel({
   }, [closure, date]);
 
   const cashMovement = movements
-    .filter((movement) => movement.is_cash)
+    .filter(isCashMovement)
     .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
   const onlineMovement = movements
-    .filter((movement) => !movement.is_cash)
+    .filter(isOnlineMovement)
     .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
   const cashCollected = movements
-    .filter((movement) => movement.is_cash && movement.movement_type === "order_payment")
+    .filter((movement) => isCashMovement(movement) && movement.movement_type === "order_payment")
     .reduce((sum, movement) => sum + Math.max(0, Number(movement.amount || 0)), 0);
   const onlineCollected = movements
-    .filter((movement) => !movement.is_cash && movement.movement_type === "order_payment")
+    .filter((movement) => isOnlineMovement(movement) && movement.movement_type === "order_payment")
     .reduce((sum, movement) => sum + Math.max(0, Number(movement.amount || 0)), 0);
   const cashExpenses = Math.abs(
     movements
-      .filter((movement) => movement.is_cash && movement.movement_type === "expense")
+      .filter((movement) => isCashMovement(movement) && movement.movement_type === "expense")
       .reduce((sum, movement) => sum + Number(movement.amount || 0), 0),
   );
   const cashPurchases = Math.abs(
     movements
-      .filter((movement) => movement.is_cash && movement.movement_type === "purchase_payment")
+      .filter(
+        (movement) => isCashMovement(movement) && movement.movement_type === "purchase_payment",
+      )
       .reduce((sum, movement) => sum + Number(movement.amount || 0), 0),
   );
   const onlineExpenses = Math.abs(
     movements
-      .filter((movement) => !movement.is_cash && movement.movement_type === "expense")
+      .filter((movement) => isOnlineMovement(movement) && movement.movement_type === "expense")
       .reduce((sum, movement) => sum + Number(movement.amount || 0), 0),
   );
   const onlinePurchases = Math.abs(
     movements
-      .filter((movement) => !movement.is_cash && movement.movement_type === "purchase_payment")
+      .filter(
+        (movement) => isOnlineMovement(movement) && movement.movement_type === "purchase_payment",
+      )
       .reduce((sum, movement) => sum + Number(movement.amount || 0), 0),
   );
   const openingCashAmount = Number(openingCash || 0);
@@ -1357,6 +1926,8 @@ function ExpenseRow({
   branchId,
   categories,
   accounts,
+  accountBalances,
+  businessDayStart,
   accountName,
   manager,
   symbol,
@@ -1365,6 +1936,8 @@ function ExpenseRow({
   branchId: string;
   categories: ExpenseCategory[];
   accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
+  businessDayStart: string;
   accountName?: string | null;
   manager: boolean;
   symbol: string;
@@ -1380,6 +1953,8 @@ function ExpenseRow({
       qc.invalidateQueries({ queryKey: ["operational-expenses"] });
       qc.invalidateQueries({ queryKey: ["finance-movements"] });
       qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
+      qc.invalidateQueries({ queryKey: ["finance-account-positions"] });
+      qc.invalidateQueries({ queryKey: ["finance-obligations"] });
     }
   }
 
@@ -1412,6 +1987,8 @@ function ExpenseRow({
               branchId={branchId}
               categories={categories}
               accounts={accounts}
+              accountBalances={accountBalances}
+              businessDayStart={businessDayStart}
               expense={expense}
               symbol={symbol}
             />
@@ -1429,6 +2006,7 @@ function FinanceTransferDialog({
   branchId,
   restaurantId,
   accounts,
+  accountBalances,
   businessDayStart,
   symbol,
   trigger,
@@ -1437,6 +2015,7 @@ function FinanceTransferDialog({
   branchId: string;
   restaurantId: string;
   accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
   businessDayStart: string;
   symbol: string;
   trigger?: ReactNode;
@@ -1524,6 +2103,20 @@ function FinanceTransferDialog({
       toast.error(parsed.error.issues[0].message);
       return;
     }
+    const source = accounts.find((account) => account.id === parsed.data.from_account_id);
+    if (source && accountRequiresBalance(source)) {
+      const available = accountBalances[source.id];
+      if (available == null) {
+        toast.error("Finance balance is still loading. Press Refresh, then try again.");
+        return;
+      }
+      if (parsed.data.amount > available + 0.001) {
+        toast.error(
+          `${source.name} has ${formatMoney(available, symbol)} available. Record this as pocket/credit/backup money instead.`,
+        );
+        return;
+      }
+    }
 
     setLoading(true);
     const { error } = await db.from("finance_transfers").insert({
@@ -1537,9 +2130,20 @@ function FinanceTransferDialog({
       toast.success("Money transfer recorded");
       qc.invalidateQueries({ queryKey: ["finance-movements"] });
       qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
+      qc.invalidateQueries({ queryKey: ["finance-account-positions"] });
+      qc.invalidateQueries({ queryKey: ["finance-obligations"] });
       setOpen(false);
     }
   }
+
+  const fromAccount = accounts.find((account) => account.id === f.from_account_id);
+  const toAccount = accounts.find((account) => account.id === f.to_account_id);
+  const fromBalance =
+    fromAccount && accountRequiresBalance(fromAccount)
+      ? (accountBalances[fromAccount.id] ?? 0)
+      : null;
+  const toBalance =
+    toAccount && accountRequiresBalance(toAccount) ? (accountBalances[toAccount.id] ?? 0) : null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -1638,6 +2242,11 @@ function FinanceTransferDialog({
                     ))}
                 </SelectContent>
               </Select>
+              {fromBalance !== null && (
+                <p className="text-xs text-muted-foreground">
+                  Available: {formatMoney(fromBalance, symbol)}
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>To</Label>
@@ -1659,6 +2268,11 @@ function FinanceTransferDialog({
                     ))}
                 </SelectContent>
               </Select>
+              {toBalance !== null && (
+                <p className="text-xs text-muted-foreground">
+                  Current balance: {formatMoney(toBalance, symbol)}
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>Amount ({symbol})</Label>
@@ -1703,6 +2317,8 @@ function ExpenseDialog({
   branchId,
   categories,
   accounts,
+  accountBalances,
+  businessDayStart,
   expense,
   symbol,
   trigger,
@@ -1710,6 +2326,8 @@ function ExpenseDialog({
   branchId: string;
   categories: ExpenseCategory[];
   accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
+  businessDayStart: string;
   expense?: Expense;
   symbol: string;
   trigger?: ReactNode;
@@ -1717,10 +2335,10 @@ function ExpenseDialog({
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [f, setF] = useState({
+  const [f, setF] = useState<ExpenseFormState>({
     title: expense?.title ?? "",
     category_id: expense?.category_id ?? "none",
-    expense_date: toDateInputValue(expense?.expense_date) || pakistanDateInputValue(),
+    expense_date: toDateInputValue(expense?.expense_date) || businessDateInputValue(businessDayStart),
     vendor: expense?.vendor ?? "",
     reference_no: expense?.reference_no ?? "",
     payment_method: expense?.payment_method ?? "cash",
@@ -1768,6 +2386,25 @@ function ExpenseDialog({
       toast.error(parsed.error.issues[0].message);
       return;
     }
+    const source = accounts.find((account) => account.id === parsed.data.finance_account_id);
+    if (parsed.data.status === "paid" && source && accountRequiresBalance(source)) {
+      const existingCredit =
+        expense?.status === "paid" && expense.finance_account_id === source.id
+          ? Number(expense.amount || 0)
+          : 0;
+      const currentBalance = accountBalances[source.id];
+      if (currentBalance == null) {
+        toast.error("Finance balance is still loading. Press Refresh, then try again.");
+        return;
+      }
+      const available = currentBalance + existingCredit;
+      if (parsed.data.amount > available + 0.001) {
+        toast.error(
+          `${source.name} has ${formatMoney(available, symbol)} available. Mark this expense as due or use pocket/backup money.`,
+        );
+        return;
+      }
+    }
     setLoading(true);
     const payload = { ...parsed.data, branch_id: branchId };
     const { error } = expense
@@ -1780,9 +2417,17 @@ function ExpenseDialog({
       qc.invalidateQueries({ queryKey: ["operational-expenses"] });
       qc.invalidateQueries({ queryKey: ["finance-movements"] });
       qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
+      qc.invalidateQueries({ queryKey: ["finance-account-positions"] });
+      qc.invalidateQueries({ queryKey: ["finance-obligations"] });
       setOpen(false);
     }
   }
+
+  const selectedAccount = accounts.find((account) => account.id === f.finance_account_id);
+  const selectedAccountBalance =
+    selectedAccount && accountRequiresBalance(selectedAccount)
+      ? (accountBalances[selectedAccount.id] ?? 0)
+      : null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -1913,7 +2558,7 @@ function ExpenseDialog({
                   <SelectItem value="card">Card</SelectItem>
                   <SelectItem value="upi">UPI</SelectItem>
                   <SelectItem value="wallet">Wallet</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  <SelectItem value="other">Other / old sale / pocket</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1939,6 +2584,21 @@ function ExpenseDialog({
                     ))}
                 </SelectContent>
               </Select>
+              {selectedAccountBalance !== null && f.status === "paid" && (
+                <p className="text-xs text-muted-foreground">
+                  Available now: {formatMoney(selectedAccountBalance, symbol)}
+                </p>
+              )}
+              {selectedAccount?.account_type === "other" && f.status === "paid" && (
+                <p className="text-xs text-muted-foreground">
+                  External, old-sale, or backup source. This will not reduce Counter Cash or Online.
+                </p>
+              )}
+              {f.status !== "paid" && (
+                <p className="text-xs text-muted-foreground">
+                  Due expenses stay in payables until you mark them paid.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>Paid to</Label>
@@ -2130,7 +2790,7 @@ function FinanceSourcesPanel({
               <div className="truncate font-medium">{account.name}</div>
               <div className="truncate text-xs text-muted-foreground">
                 {sourceTypeLabel(account.account_type)}
-                {account.is_cash ? " · cash drawer" : ""}
+                {account.is_cash ? " - cash drawer" : ""}
               </div>
             </div>
             {!account.is_active && <Badge variant="outline">Inactive</Badge>}
@@ -2198,6 +2858,7 @@ function FinanceAccountDialog({
     else {
       toast.success("Payment source saved");
       qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+      qc.invalidateQueries({ queryKey: ["finance-account-positions"] });
       setOpen(false);
     }
   }
@@ -2242,7 +2903,7 @@ function FinanceAccountDialog({
                   <SelectItem value="online">Online</SelectItem>
                   <SelectItem value="bank">Bank</SelectItem>
                   <SelectItem value="wallet">Wallet</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  <SelectItem value="other">Other / backup / old sale</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -2291,6 +2952,158 @@ function FinanceAccountDialog({
   );
 }
 
+function renderFinanceMovementRaseedHtml({
+  movement,
+  branchName,
+  symbol,
+}: {
+  movement: FinanceMovement;
+  branchName: string;
+  symbol: string;
+}) {
+  const amount = Number(movement.amount || 0);
+  const direction = financeMovementDirection(movement);
+  const rows = [
+    ["Date", reportDateTime(movement.occurred_at)],
+    ["Type", movementTypeLabel(movement.movement_type)],
+    ["Direction", direction],
+    ["Source", movement.account_name || "Unknown source"],
+    ["Amount", formatMoney(Math.abs(amount), symbol)],
+    ["Method", movement.payment_method || "-"],
+    ["Reference", movement.reference || "-"],
+    ["Details", movement.title || "-"],
+    ["Record", movement.id.slice(0, 8)],
+  ];
+
+  return `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Finance Raseed</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        color: #000;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+        line-height: 1.25;
+      }
+      .slip {
+        width: 72mm;
+        max-width: 72mm;
+        padding: 4mm 3mm;
+      }
+      .center { text-align: center; }
+      .brand {
+        font-family: Georgia, serif;
+        font-size: 25px;
+        font-weight: 800;
+        letter-spacing: .02em;
+        line-height: 1;
+      }
+      .sub {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .28em;
+        text-transform: lowercase;
+      }
+      .title {
+        border-bottom: 1px dashed #000;
+        border-top: 1px dashed #000;
+        font-size: 14px;
+        font-weight: 800;
+        margin: 8px 0;
+        padding: 5px 0;
+        text-transform: uppercase;
+      }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 3px 0; vertical-align: top; }
+      td:first-child {
+        color: #333;
+        font-size: 10px;
+        text-transform: uppercase;
+        width: 28%;
+      }
+      td:last-child {
+        font-weight: 700;
+        text-align: right;
+        word-break: break-word;
+      }
+      .amount {
+        border-bottom: 2px solid #000;
+        border-top: 2px solid #000;
+        font-size: 18px;
+        font-weight: 900;
+        margin: 8px 0;
+        padding: 6px 0;
+        text-align: center;
+      }
+      .signatures {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .line {
+        border-top: 1px solid #000;
+        padding-top: 3px;
+        text-align: center;
+      }
+      .note {
+        border-top: 1px dashed #000;
+        font-size: 10px;
+        margin-top: 12px;
+        padding-top: 6px;
+        text-align: center;
+      }
+      @media print {
+        @page { size: 80mm auto; margin: 0; }
+        body { width: 72mm; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="slip">
+      <div class="center">
+        <div class="brand">angaar</div>
+        <div class="sub">kitchen</div>
+        <div>${escapeHtml(branchName)}</div>
+      </div>
+      <div class="title center">Finance Raseed</div>
+      <table>
+        <tbody>
+          ${rows
+            .filter(([, value]) => value !== "")
+            .map(
+              ([label, value]) =>
+                `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <div class="amount">${escapeHtml(direction)} - ${escapeHtml(formatMoney(Math.abs(amount), symbol))}</div>
+      <div class="signatures">
+        <div class="line">Given by</div>
+        <div class="line">Received by</div>
+        <div class="line">Verified by</div>
+      </div>
+      <div class="note">Keep this raseed with the closing records.</div>
+    </main>
+  </body>
+</html>`;
+}
+
+function financeMovementDirection(movement: FinanceMovement) {
+  if (Number(movement.amount || 0) < 0) return "Given / Paid";
+  if (movement.movement_type === "transfer_in" || movement.movement_type === "order_payment") {
+    return "Received";
+  }
+  return "Movement";
+}
+
 function openFinanceControlReport({
   branchName,
   businessDayStart,
@@ -2300,6 +3113,8 @@ function openFinanceControlReport({
   accounts,
   movements,
   closure,
+  positions,
+  obligations,
   ownerWhatsAppPhone,
 }: {
   branchName: string;
@@ -2310,16 +3125,18 @@ function openFinanceControlReport({
   accounts: FinanceAccount[];
   movements: FinanceMovement[];
   closure: FinanceDayClosure | null;
+  positions: FinanceAccountPosition[];
+  obligations: FinanceObligation[];
   ownerWhatsAppPhone: string;
 }) {
   const sourceRows = buildFinanceSourceRows(accounts, movements);
   const singleDay = startDate === endDate;
   const shiftWindow = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
   const cashMovement = movements
-    .filter((movement) => movement.is_cash)
+    .filter(isCashMovement)
     .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
   const onlineMovement = movements
-    .filter((movement) => !movement.is_cash)
+    .filter(isOnlineMovement)
     .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
   const openingCash = singleDay ? Number(closure?.opening_cash ?? 0) : 0;
   const openingOnline = singleDay ? Number(closure?.opening_online ?? 0) : 0;
@@ -2337,6 +3154,47 @@ function openFinanceControlReport({
       (totals[movement.movement_type] ?? 0) + Number(movement.amount || 0);
     return totals;
   }, {});
+  const cashPosition = positions
+    .filter(isCashPosition)
+    .reduce((sum, position) => sum + Number(position.balance || 0), 0);
+  const onlinePosition = positions
+    .filter(isOnlinePosition)
+    .reduce((sum, position) => sum + Number(position.balance || 0), 0);
+  const receivableObligations = obligations.filter(
+    (obligation) => obligation.obligation_type === "receivable",
+  );
+  const payableObligations = obligations.filter(
+    (obligation) => obligation.obligation_type === "payable",
+  );
+  const pendingOrderObligations = receivableObligations.filter(
+    (obligation) => obligation.source_type === "order",
+  );
+  const receivableTotal = receivableObligations.reduce(
+    (sum, obligation) => sum + Number(obligation.amount || 0),
+    0,
+  );
+  const payableTotal = payableObligations.reduce(
+    (sum, obligation) => sum + Number(obligation.amount || 0),
+    0,
+  );
+  const pendingOrderTotal = pendingOrderObligations.reduce(
+    (sum, obligation) => sum + Number(obligation.amount || 0),
+    0,
+  );
+  const obligationRows = [...obligations]
+    .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))
+    .map(
+      (obligation) => `
+        <tr>
+          <td>${escapeHtml(obligation.obligation_type === "receivable" ? "Collect" : "Pay")}</td>
+          <td>${escapeHtml(sourceObligationLabel(obligation.source_type))}</td>
+          <td>${escapeHtml(obligation.counterparty_name)}</td>
+          <td>${escapeHtml(obligation.reference ?? "")}</td>
+          <td>${escapeHtml(obligation.status)}</td>
+          <td class="num strong">${escapeHtml(formatMoney(Number(obligation.amount || 0), symbol))}</td>
+        </tr>`,
+    )
+    .join("");
 
   const printWindow = window.open("", "_blank", "width=1100,height=800");
   if (!printWindow) {
@@ -2367,6 +3225,12 @@ function openFinanceControlReport({
     cashDifference,
     onlineDifference,
     sourceRows,
+    cashPosition,
+    onlinePosition,
+    receivableTotal,
+    payableTotal,
+    pendingOrderTotal,
+    pendingOrderCount: pendingOrderObligations.length,
     singleDay,
   });
   const row = (label: string, value: string, tone = "") => `
@@ -2553,6 +3417,10 @@ function openFinanceControlReport({
         ${row("Online movement", formatMoney(onlineMovement, symbol))}
         ${row("Expected online", singleDay ? formatMoney(expectedOnline, symbol) : formatMoney(onlineMovement, symbol))}
         ${row("Online difference", singleDay ? money(onlineDifference) : "Period view", onlineDifference ? "warn" : "")}
+        ${row("Cash right now", formatMoney(cashPosition, symbol))}
+        ${row("Online right now", formatMoney(onlinePosition, symbol))}
+        ${row("Pending orders", `${pendingOrderObligations.length} / ${formatMoney(pendingOrderTotal, symbol)}`, pendingOrderTotal ? "warn" : "")}
+        ${row("Need to pay", formatMoney(payableTotal, symbol), payableTotal ? "warn" : "")}
       </section>
 
       <div class="note">
@@ -2582,6 +3450,23 @@ function openFinanceControlReport({
           </tr>
         </thead>
         <tbody>${sourceTable}</tbody>
+      </table>
+
+      <h2>Open Dues and Payables</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Source</th>
+            <th>Person / vendor</th>
+            <th>Reference</th>
+            <th>Status</th>
+            <th class="num">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${obligationRows || `<tr><td colspan="6" class="empty">No open dues or payables.</td></tr>`}
+        </tbody>
       </table>
 
       <h2>Every Finance Movement</h2>
@@ -2630,6 +3515,12 @@ function buildFinanceReportWhatsAppHref({
   cashDifference,
   onlineDifference,
   sourceRows,
+  cashPosition,
+  onlinePosition,
+  receivableTotal,
+  payableTotal,
+  pendingOrderTotal,
+  pendingOrderCount,
   singleDay,
 }: {
   phone: string;
@@ -2647,6 +3538,12 @@ function buildFinanceReportWhatsAppHref({
   cashDifference: number | null;
   onlineDifference: number | null;
   sourceRows: FinanceSourceRow[];
+  cashPosition: number;
+  onlinePosition: number;
+  receivableTotal: number;
+  payableTotal: number;
+  pendingOrderTotal: number;
+  pendingOrderCount: number;
   singleDay: boolean;
 }) {
   const period = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
@@ -2679,6 +3576,12 @@ function buildFinanceReportWhatsAppHref({
     singleDay
       ? `Online difference: ${onlineDifference == null ? "not counted" : formatMoney(onlineDifference, symbol)}`
       : "Online difference: period view",
+    "",
+    `Cash right now: ${formatMoney(cashPosition, symbol)}`,
+    `Online right now: ${formatMoney(onlinePosition, symbol)}`,
+    `Need to collect: ${formatMoney(receivableTotal, symbol)}`,
+    `Pending orders: ${pendingOrderCount} orders / ${formatMoney(pendingOrderTotal, symbol)}`,
+    `Need to pay: ${formatMoney(payableTotal, symbol)}`,
     "",
     "Top sources:",
     topSources || "No finance movements.",

@@ -11,7 +11,7 @@ import {
 } from "@/lib/postgres-data.functions";
 
 type QueryError = { message: string };
-type QueryResult<T = unknown> = { data: T | null; error: QueryError | null; count?: number | null };
+type QueryResult<T = any> = { data: T | null; error: QueryError | null; count?: number | null };
 type Filter = {
   op: "eq" | "neq" | "gte" | "lte" | "lt" | "gt" | "in";
   column: string;
@@ -19,12 +19,40 @@ type Filter = {
 };
 type Order = { column: string; ascending: boolean };
 
-export const appDb = {
+type AppDbQuery<T = any> = PromiseLike<QueryResult<T>> & {
+  select(columns?: string, options?: { count?: "exact"; head?: boolean }): AppDbQuery<T>;
+  insert(values: unknown): AppDbQuery<T>;
+  update(values: unknown): AppDbQuery<T>;
+  delete(): AppDbQuery<T>;
+  upsert(values: unknown, options?: { onConflict?: string }): AppDbQuery<T>;
+  eq(column: string, value: unknown): AppDbQuery<T>;
+  neq(column: string, value: unknown): AppDbQuery<T>;
+  gte(column: string, value: unknown): AppDbQuery<T>;
+  lte(column: string, value: unknown): AppDbQuery<T>;
+  lt(column: string, value: unknown): AppDbQuery<T>;
+  gt(column: string, value: unknown): AppDbQuery<T>;
+  in(column: string, value: unknown[]): AppDbQuery<T>;
+  order(column: string, options?: { ascending?: boolean }): AppDbQuery<T>;
+  limit(value: number): AppDbQuery<T>;
+  single(): AppDbQuery<T>;
+  maybeSingle(): AppDbQuery<T>;
+};
+
+type AppDbClient = {
+  from(table: string): AppDbQuery;
+  rpc(fn: string, args?: Record<string, unknown>): PromiseLike<QueryResult>;
+};
+
+export const appDb: AppDbClient = {
   from(table: string) {
-    return isPostgresAuthEnabled() ? new PostgresQuery(table) : supabase.from(table as never);
+    return isPostgresAuthEnabled()
+      ? new PostgresQuery(table)
+      : (supabase.from(table as never) as unknown as AppDbQuery);
   },
   rpc(fn: string, args: Record<string, unknown> = {}) {
-    if (!isPostgresAuthEnabled()) return supabase.rpc(fn as never, args as never);
+    if (!isPostgresAuthEnabled()) {
+      return supabase.rpc(fn as never, args as never) as unknown as PromiseLike<QueryResult>;
+    }
     return withResult(() => postgresRpc({ data: { fn, args }, headers: authHeaders() }));
   },
 };
@@ -236,7 +264,7 @@ async function withResult<T>(fn: () => Promise<T>): Promise<QueryResult<T>> {
   }
 }
 
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   const token =
     typeof window !== "undefined"
       ? window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY)

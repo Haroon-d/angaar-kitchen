@@ -23,7 +23,7 @@ export default defineConfig({
     build: {
       chunkSizeWarningLimit: 900,
       rollupOptions: {
-        onwarn(warning, defaultHandler) {
+        onwarn(warning: { message?: string }, defaultHandler: any) {
           const message = warning.message ?? "";
           if (message.includes("Module level directives") && message.includes('"use client"')) {
             return;

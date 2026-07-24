@@ -45,13 +45,14 @@ export class BrowserPrintDriver implements PrinterDriver {
         const waitForAssets = async () => {
           const printDoc = iframe.contentDocument;
           await printDoc?.fonts?.ready;
-          const images = Array.from(printDoc?.images ?? []);
+          const images = Array.from(printDoc?.images ?? []) as HTMLImageElement[];
           await Promise.all(images.map((img) => {
             if (img.complete && img.naturalWidth > 0) return Promise.resolve();
             if ("decode" in img) return img.decode().catch(() => undefined);
             return new Promise<void>((res) => {
-              img.onload = () => res();
-              img.onerror = () => res();
+              const image = img as HTMLImageElement;
+              image.onload = () => res();
+              image.onerror = () => res();
             });
           }));
         };

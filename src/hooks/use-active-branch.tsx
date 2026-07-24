@@ -23,7 +23,7 @@ type Branch = {
   code: string;
   address: string | null;
   phone: string | null;
-  delivery_fee: number | string;
+  delivery_fee?: number | string | null;
   is_active: boolean;
 };
 

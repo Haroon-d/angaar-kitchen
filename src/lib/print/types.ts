@@ -35,7 +35,7 @@ export type ReceiptData = {
   // Order
   orderNo: string;
   orderId: string;
-  diningType: "dine_in" | "takeaway" | "delivery";
+  diningType: "dine_in" | "takeaway" | "delivery" | "outdoor";
   tableLabel?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;

@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { PaperSize, ReceiptData } from "@/lib/print/types";
 import { formatMoney, formatDate } from "@/lib/format";
 
@@ -6,6 +6,7 @@ const DINING_LABEL: Record<ReceiptData["diningType"], string> = {
   dine_in: "DINE IN",
   takeaway: "TAKEAWAY",
   delivery: "DELIVERY",
+  outdoor: "OUTDOOR",
 };
 
 const DEFAULT_ADDRESS = "GT Road Near Punjab College Kamoke";
@@ -275,7 +276,7 @@ function UnpaidStamp({ compact }: { compact: boolean }) {
   );
 }
 
-function FineLine({ children }: { children: string }) {
+function FineLine({ children }: { children: ReactNode }) {
   return (
     <div
       style={{

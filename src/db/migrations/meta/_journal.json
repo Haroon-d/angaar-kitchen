@@ -99,6 +99,20 @@
       "when": 1784059200000,
       "tag": "0013_inventory_purchase_payment_source",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784302200000,
+      "tag": "0014_supplier_payment_finance_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1784788800000,
+      "tag": "0015_add_outdoor_dining_type",
+      "breakpoints": true
     }
   ]
 }

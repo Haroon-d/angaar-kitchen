@@ -25,11 +25,12 @@ import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { useMyRoles, isManager } from "@/hooks/use-auth";
 import {
+  businessDateInputValue,
+  businessDateRangeUtcBounds,
   formatDate,
   formatMoney,
   formatPakistanDateLabel,
   pakistanDateInputValue,
-  pakistanDateRangeUtcBounds,
 } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,19 @@ type RecipeMode = "per_item" | "batch";
 type MovementType = "adjustment" | "waste" | "correction" | "staff_meal" | "damage";
 type AdjustmentReason = "waste" | "damage" | "correction" | "staff_meal" | "other";
 
+type InventoryItemRow = {
+  id: string;
+  name: string;
+  branch_id: string;
+  base_unit: BaseUnit;
+  display_unit?: EntryUnit | null;
+  display_unit_factor?: number | string | null;
+  current_qty?: number | string | null;
+  reorder_level?: number | string | null;
+  average_cost?: number | string | null;
+  is_active?: boolean | null;
+};
+
 const db = supabase as any;
 
 function InventoryPage() {
@@ -89,6 +103,12 @@ function InventoryPage() {
   if (!branch || !restaurant) {
     return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
   }
+
+  const businessDayStart =
+    ((branch as { business_day_start_time?: string }).business_day_start_time ?? "10:00").slice(
+      0,
+      5,
+    );
 
   return (
     <div className="min-w-0 space-y-6 overflow-x-hidden p-4 sm:p-8">
@@ -145,6 +165,7 @@ function InventoryPage() {
             restaurantId={restaurant.id}
             manager={manager}
             symbol={restaurant.currency_symbol}
+            businessDayStart={businessDayStart}
           />
         </TabsContent>
         <TabsContent value="recipes" className="mt-6">
@@ -162,13 +183,18 @@ function InventoryPage() {
             restaurantId={restaurant.id}
             manager={manager}
             symbol={restaurant.currency_symbol}
+            businessDayStart={businessDayStart}
           />
         </TabsContent>
         <TabsContent value="control" className="mt-6">
           <InventoryControlTab branchId={branch.id} manager={manager} />
         </TabsContent>
         <TabsContent value="reports" className="mt-6">
-          <ReportsTab branchId={branch.id} symbol={restaurant.currency_symbol} />
+          <ReportsTab
+            branchId={branch.id}
+            symbol={restaurant.currency_symbol}
+            businessDayStart={businessDayStart}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -183,7 +209,7 @@ function useInventoryItems(branchId: string, activeOnly = false) {
       if (activeOnly) q = q.eq("is_active", true);
       const { data, error } = await q;
       if (error) throw error;
-      return data ?? [];
+      return (data ?? []) as InventoryItemRow[];
     },
   });
 }
@@ -204,11 +230,7 @@ function unitOptionLabel(unit: EntryUnit) {
   return unitDefinition(unit)?.label ?? unit;
 }
 
-function factorForUnit(
-  baseUnit: BaseUnit,
-  entryUnit: EntryUnit,
-  factor?: number | string | null,
-) {
+function factorForUnit(baseUnit: BaseUnit, entryUnit: EntryUnit, factor?: number | string | null) {
   return unitFactorToBase(baseUnit, entryUnit, factor);
 }
 
@@ -523,7 +545,12 @@ function IngredientDialog({ branchId, item }: { branchId: string; item?: any }) 
       quantityFromBase(item?.current_qty ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
     ),
     reorder_level: String(
-      quantityFromBase(item?.reorder_level ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
+      quantityFromBase(
+        item?.reorder_level ?? "0",
+        initialBaseUnit,
+        initialEntryUnit,
+        initialFactor,
+      ),
     ),
     average_cost: String(
       costFromBase(item?.average_cost ?? "0", initialBaseUnit, initialEntryUnit, initialFactor),
@@ -755,11 +782,13 @@ function PurchasesTab({
   restaurantId,
   manager,
   symbol,
+  businessDayStart,
 }: {
   branchId: string;
   restaurantId: string;
   manager: boolean;
   symbol: string;
+  businessDayStart: string;
 }) {
   const qc = useQueryClient();
   const itemsQ = useInventoryItems(branchId, true);
@@ -819,11 +848,14 @@ function PurchasesTab({
     qc.invalidateQueries({ queryKey: ["inventory-movements"] });
     qc.invalidateQueries({ queryKey: ["inventory-reports"] });
     qc.invalidateQueries({ queryKey: ["finance-movements"] });
+    qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
   }
 
   async function deletePurchase(id: string) {
     void id;
-    toast.error("Purchases are ledger history. Use Adjustments or Physical Counts to correct stock.");
+    toast.error(
+      "Purchases are ledger history. Use Adjustments or Physical Counts to correct stock.",
+    );
   }
 
   return (
@@ -919,6 +951,7 @@ function PurchasesTab({
               financeAccounts={financeAccountsQ.data ?? []}
               onAddSupplier={addSupplier}
               onSaved={refreshPurchases}
+              businessDayStart={businessDayStart}
             />
           ) : (
             <p className="text-sm text-muted-foreground">
@@ -1096,7 +1129,9 @@ function PurchaseEditDialog(props: {
   trigger?: React.ReactNode;
 }) {
   const explainLockedPurchase = () =>
-    toast.error("Purchases are locked ledger history. Correct stock through Counts or Adjustments.");
+    toast.error(
+      "Purchases are locked ledger history. Correct stock through Counts or Adjustments.",
+    );
   if (props.trigger) {
     return (
       <span className="inline-flex" onClick={explainLockedPurchase}>
@@ -1124,13 +1159,16 @@ function PurchaseForm(props: {
   financeAccounts: any[];
   onAddSupplier: (name: string) => Promise<void>;
   onSaved: () => void;
+  businessDayStart: string;
   purchase?: any;
 }) {
   const purchaseLines = props.purchase?.inventory_purchase_lines ?? [];
   const [supplier, setSupplier] = useState(props.purchase?.supplier_id ?? "none");
   const [newSupplier, setNewSupplier] = useState("");
   const [invoice, setInvoice] = useState(props.purchase?.invoice_no ?? "");
-  const [date, setDate] = useState(props.purchase?.purchase_date ?? pakistanDateInputValue());
+  const [date, setDate] = useState(
+    props.purchase?.purchase_date ?? businessDateInputValue(props.businessDayStart),
+  );
   const [financeAccount, setFinanceAccount] = useState(
     props.purchase?.finance_account_id ??
       props.financeAccounts.find((account) => account.account_type === "counter_cash")?.id ??
@@ -1429,7 +1467,10 @@ function PurchaseForm(props: {
         {lines.map((line, idx) => {
           const item = itemMap.get(line.inventory_item_id);
           return (
-            <div key={idx} className="max-w-full overflow-x-auto rounded-lg border border-border p-0">
+            <div
+              key={idx}
+              className="max-w-full overflow-x-auto rounded-lg border border-border p-0"
+            >
               <div className="grid min-w-[600px] grid-cols-[minmax(0,2.2fr)_72px_82px_82px_86px_36px] gap-2 p-3">
                 <Select
                   value={line.inventory_item_id}
@@ -1487,7 +1528,9 @@ function PurchaseForm(props: {
                   type="number"
                   step="0.001"
                   disabled={!isPackagingUnit(line.unit)}
-                  placeholder={isPackagingUnit(line.unit) && item ? `per ${unitLabel(item.base_unit)}` : "Auto"}
+                  placeholder={
+                    isPackagingUnit(line.unit) && item ? `per ${unitLabel(item.base_unit)}` : "Auto"
+                  }
                   value={line.pack_size}
                   onChange={(e) => patchLine(idx, { pack_size: e.target.value })}
                 />
@@ -1559,7 +1602,9 @@ function RecipesTab({
     queryFn: async () => {
       const { data, error } = await db
         .from("inventory_recipes")
-        .select("*, inventory_items(name, base_unit, average_cost, display_unit, display_unit_factor)")
+        .select(
+          "*, inventory_items(name, base_unit, average_cost, display_unit, display_unit_factor)",
+        )
         .eq("menu_item_id", selected)
         .order("created_at");
       if (error) throw error;
@@ -1601,7 +1646,12 @@ function RecipesTab({
       return;
     }
     const factor = factorForUnit(selectedIngredient.base_unit, entryUnit, conversionFactor);
-    const batchBaseQty = quantityToBase(rawQty, selectedIngredient.base_unit, entryUnit, conversionFactor);
+    const batchBaseQty = quantityToBase(
+      rawQty,
+      selectedIngredient.base_unit,
+      entryUnit,
+      conversionFactor,
+    );
     const perItemBaseQty = batchBaseQty / yieldQty;
     const perItemEntryQty = rawQty / yieldQty;
     const { error } = await db.from("inventory_recipes").upsert(
@@ -1672,7 +1722,8 @@ function RecipesTab({
     setQty(
       String(
         mode === "batch"
-          ? (row.batch_entry_quantity ?? Number(row.entry_quantity ?? 0) * Number(row.batch_yield ?? 1))
+          ? (row.batch_entry_quantity ??
+              Number(row.entry_quantity ?? 0) * Number(row.batch_yield ?? 1))
           : (row.entry_quantity ?? quantityFromBase(row.quantity, unit, preferred, factor)),
       ),
     );
@@ -1768,8 +1819,8 @@ function RecipesTab({
         <CardHeader>
           <CardTitle>Recipe</CardTitle>
           <CardDescription>
-            Use batch recipes when you cook once and sell many portions. Example: 2 kg rice makes
-            16 plates, so the system deducts 125 g on each sale.
+            Use batch recipes when you cook once and sell many portions. Example: 2 kg rice makes 16
+            plates, so the system deducts 125 g on each sale.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -1826,7 +1877,9 @@ function RecipesTab({
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>{recipeMode === "batch" ? "Ingredient quantity" : "Qty per sale item"}</Label>
+                <Label>
+                  {recipeMode === "batch" ? "Ingredient quantity" : "Qty per sale item"}
+                </Label>
                 <Input
                   type="number"
                   step="0.001"
@@ -1931,65 +1984,76 @@ function RecipesTab({
             <div className="space-y-2">
               {recipesQ.data?.map((r: any) => {
                 const fallbackItem = inventoryItemsById.get(r.inventory_item_id);
-                const rowBase = (r.inventory_items?.base_unit ?? fallbackItem?.base_unit ?? "g") as BaseUnit;
+                const rowBase = (r.inventory_items?.base_unit ??
+                  fallbackItem?.base_unit ??
+                  "g") as BaseUnit;
                 const rowUnit = (r.entry_unit || preferredEntryUnit(rowBase)) as EntryUnit;
                 const rowFactor = r.conversion_factor ?? factorInputValue(rowBase, rowUnit);
                 const rowMode = r.recipe_mode === "batch" ? "batch" : "per_item";
                 const batchQty = Number(r.batch_entry_quantity ?? r.entry_quantity ?? 0);
                 const batchYieldValue = Number(r.batch_yield ?? 1);
                 const batchUnit = (r.batch_entry_unit || rowUnit) as EntryUnit;
-                const ingredientName = r.inventory_items?.name ?? fallbackItem?.name ?? "Deleted ingredient";
-                const averageCost = Number(r.inventory_items?.average_cost ?? fallbackItem?.average_cost ?? 0);
+                const ingredientName =
+                  r.inventory_items?.name ?? fallbackItem?.name ?? "Deleted ingredient";
+                const averageCost = Number(
+                  r.inventory_items?.average_cost ?? fallbackItem?.average_cost ?? 0,
+                );
                 return (
-                <div
-                  key={r.id}
-                  className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto]"
-                >
-                  <div className="min-w-0 space-y-1">
-                    <div className="truncate text-base font-semibold">{ingredientName}</div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        Cost {formatMoney(Number(r.quantity) * averageCost, symbol)} per sale item
-                      </span>
-                      <span>Stock reduces {qtyLabel(r.quantity, rowBase)} per sale</span>
-                      {rowMode === "batch" && (
+                  <div
+                    key={r.id}
+                    className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_auto]"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="truncate text-base font-semibold">{ingredientName}</div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                         <span>
-                          Batch: {batchQty.toLocaleString(undefined, { maximumFractionDigits: 3 })}{" "}
-                          {shortUnitLabel(batchUnit)} makes{" "}
-                          {batchYieldValue.toLocaleString(undefined, {
-                            maximumFractionDigits: 3,
-                          })}{" "}
-                          sale items
+                          Cost {formatMoney(Number(r.quantity) * averageCost, symbol)} per sale item
                         </span>
+                        <span>Stock reduces {qtyLabel(r.quantity, rowBase)} per sale</span>
+                        {rowMode === "batch" && (
+                          <span>
+                            Batch:{" "}
+                            {batchQty.toLocaleString(undefined, { maximumFractionDigits: 3 })}{" "}
+                            {shortUnitLabel(batchUnit)} makes{" "}
+                            {batchYieldValue.toLocaleString(undefined, {
+                              maximumFractionDigits: 3,
+                            })}{" "}
+                            sale items
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 sm:justify-end">
+                      <div className="text-right">
+                        <div className="font-mono text-lg font-semibold">
+                          {rowMode === "batch"
+                            ? `${Number(r.entry_quantity ?? 0).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
+                            : r.entry_quantity
+                              ? `${Number(r.entry_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
+                              : qtyLabel(
+                                  r.quantity,
+                                  r.inventory_items?.base_unit,
+                                  rowUnit,
+                                  rowFactor,
+                                )}
+                        </div>
+                        {rowMode === "batch" && (
+                          <div className="text-xs text-muted-foreground">per item</div>
+                        )}
+                      </div>
+                      {manager && (
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="icon" onClick={() => editRecipe(r)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center justify-between gap-3 sm:justify-end">
-                    <div className="text-right">
-                      <div className="font-mono text-lg font-semibold">
-                        {rowMode === "batch"
-                          ? `${Number(r.entry_quantity ?? 0).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
-                          : r.entry_quantity
-                          ? `${Number(r.entry_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(rowUnit)}`
-                          : qtyLabel(r.quantity, r.inventory_items?.base_unit, rowUnit, rowFactor)}
-                      </div>
-                      {rowMode === "batch" && (
-                        <div className="text-xs text-muted-foreground">per item</div>
-                      )}
-                    </div>
-                    {manager && (
-                      <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="icon" onClick={() => editRecipe(r)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={() => removeRecipe(r.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
+                );
               })}
               {recipesQ.data?.length === 0 && (
                 <div className="py-12 text-center text-muted-foreground">
@@ -2141,7 +2205,7 @@ function AdjustmentsTab({ branchId, manager }: { branchId: string; manager: bool
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(selected ? entryUnitsForBase(selected.base_unit) : ["kg", "g", "pack"]).map(
+                  {(selected ? entryUnitsForBase(selected.base_unit) : (["kg", "g", "pack"] as EntryUnit[])).map(
                     (u) => (
                       <SelectItem key={u} value={u}>
                         {unitOptionLabel(u)}
@@ -2228,24 +2292,37 @@ function CountsTab({
         line.counted_unit,
         line.conversion_factor,
       );
-      return sum + Math.abs(countedBase - Number(item.current_qty || 0)) * Number(item.average_cost || 0);
+      return (
+        sum + Math.abs(countedBase - Number(item.current_qty || 0)) * Number(item.average_cost || 0)
+      );
     } catch {
       return sum;
     }
   }, 0);
 
   function addLine(item?: any) {
-    const target = item ?? itemsQ.data?.find((entry: any) => !lines.some((line) => line.inventory_item_id === entry.id));
+    const target =
+      item ??
+      itemsQ.data?.find((entry: any) => !lines.some((line) => line.inventory_item_id === entry.id));
     const unit = target ? displayUnitForItem(target) : "kg";
     setLines((current) => [
       ...current,
       {
         inventory_item_id: target?.id ?? "",
         counted_quantity: target
-          ? String(quantityFromBase(target.current_qty, target.base_unit, unit, target.display_unit_factor))
+          ? String(
+              quantityFromBase(
+                target.current_qty,
+                target.base_unit,
+                unit,
+                target.display_unit_factor,
+              ),
+            )
           : "0",
         counted_unit: unit,
-        conversion_factor: target ? factorInputValue(target.base_unit, unit, target.display_unit_factor) : "",
+        conversion_factor: target
+          ? factorInputValue(target.base_unit, unit, target.display_unit_factor)
+          : "",
       },
     ]);
   }
@@ -2273,7 +2350,9 @@ function CountsTab({
   async function applyCount(e: React.FormEvent) {
     e.preventDefault();
     if (!manager) return;
-    const clean = lines.filter((line) => line.inventory_item_id && Number(line.counted_quantity) >= 0);
+    const clean = lines.filter(
+      (line) => line.inventory_item_id && Number(line.counted_quantity) >= 0,
+    );
     if (!clean.length) {
       toast.error("Add at least one counted ingredient");
       return;
@@ -2291,7 +2370,11 @@ function CountsTab({
             inventory_item_id: line.inventory_item_id,
             counted_quantity: Number(line.counted_quantity),
             counted_unit: line.counted_unit,
-            conversion_factor: factorForUnit(item.base_unit, line.counted_unit, line.conversion_factor),
+            conversion_factor: factorForUnit(
+              item.base_unit,
+              line.counted_unit,
+              line.conversion_factor,
+            ),
           };
         }),
       });
@@ -2325,7 +2408,11 @@ function CountsTab({
               <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto_auto] sm:items-end">
                 <div className="space-y-1.5">
                   <Label>Count date</Label>
-                  <Input type="date" value={countDate} onChange={(e) => setCountDate(e.target.value)} />
+                  <Input
+                    type="date"
+                    value={countDate}
+                    onChange={(e) => setCountDate(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Notes</Label>
@@ -2357,7 +2444,10 @@ function CountsTab({
                         }
                       })()
                     : 0;
-                  const variance = item && Number.isFinite(countedBase) ? countedBase - Number(item.current_qty || 0) : 0;
+                  const variance =
+                    item && Number.isFinite(countedBase)
+                      ? countedBase - Number(item.current_qty || 0)
+                      : 0;
                   return (
                     <div key={index} className="rounded-lg border border-border p-3">
                       <div className="grid min-w-0 gap-2 md:grid-cols-[minmax(0,2fr)_120px_120px_120px_42px]">
@@ -2365,15 +2455,28 @@ function CountsTab({
                           value={line.inventory_item_id}
                           onValueChange={(value) => {
                             const nextItem = itemMap.get(value);
-                            const unit = nextItem ? displayUnitForItem(nextItem) : line.counted_unit;
+                            const unit = nextItem
+                              ? displayUnitForItem(nextItem)
+                              : line.counted_unit;
                             patchLine(index, {
                               inventory_item_id: value,
                               counted_unit: unit,
                               counted_quantity: nextItem
-                                ? String(quantityFromBase(nextItem.current_qty, nextItem.base_unit, unit, nextItem.display_unit_factor))
+                                ? String(
+                                    quantityFromBase(
+                                      nextItem.current_qty,
+                                      nextItem.base_unit,
+                                      unit,
+                                      nextItem.display_unit_factor,
+                                    ),
+                                  )
                                 : line.counted_quantity,
                               conversion_factor: nextItem
-                                ? factorInputValue(nextItem.base_unit, unit, nextItem.display_unit_factor)
+                                ? factorInputValue(
+                                    nextItem.base_unit,
+                                    unit,
+                                    nextItem.display_unit_factor,
+                                  )
                                 : line.conversion_factor,
                             });
                           }}
@@ -2401,7 +2504,9 @@ function CountsTab({
                           onValueChange={(value: EntryUnit) => {
                             patchLine(index, {
                               counted_unit: value,
-                              conversion_factor: item ? factorInputValue(item.base_unit, value, item.display_unit_factor) : "",
+                              conversion_factor: item
+                                ? factorInputValue(item.base_unit, value, item.display_unit_factor)
+                                : "",
                             });
                           }}
                         >
@@ -2409,18 +2514,24 @@ function CountsTab({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {(item ? entryUnitsForBase(item.base_unit) : ["kg", "g", "pack"]).map((unit) => (
-                              <SelectItem key={unit} value={unit}>
-                                {shortUnitLabel(unit)}
-                              </SelectItem>
-                            ))}
+                            {(item ? entryUnitsForBase(item.base_unit) : ["kg", "g", "pack"]).map(
+                              (unit) => (
+                                <SelectItem key={unit} value={unit}>
+                                  {shortUnitLabel(unit)}
+                                </SelectItem>
+                              ),
+                            )}
                           </SelectContent>
                         </Select>
                         <Input
                           type="number"
                           step="0.001"
                           disabled={!isPackagingUnit(line.counted_unit)}
-                          placeholder={isPackagingUnit(line.counted_unit) && item ? `per ${unitLabel(item.base_unit)}` : "Auto"}
+                          placeholder={
+                            isPackagingUnit(line.counted_unit) && item
+                              ? `per ${unitLabel(item.base_unit)}`
+                              : "Auto"
+                          }
                           value={line.conversion_factor}
                           onChange={(e) => patchLine(index, { conversion_factor: e.target.value })}
                         />
@@ -2428,15 +2539,29 @@ function CountsTab({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          onClick={() => setLines((current) => current.filter((_, i) => i !== index))}
+                          onClick={() =>
+                            setLines((current) => current.filter((_, i) => i !== index))
+                          }
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                       {item && (
                         <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                          <span>System: {qtyLabel(item.current_qty, item.base_unit, item.display_unit, item.display_unit_factor)}</span>
-                          <span className={variance < 0 ? "text-destructive" : variance > 0 ? "text-success" : ""}>
+                          <span>
+                            System:{" "}
+                            {qtyLabel(
+                              item.current_qty,
+                              item.base_unit,
+                              item.display_unit,
+                              item.display_unit_factor,
+                            )}
+                          </span>
+                          <span
+                            className={
+                              variance < 0 ? "text-destructive" : variance > 0 ? "text-success" : ""
+                            }
+                          >
                             Variance: {qtyLabel(variance, item.base_unit)}
                           </span>
                         </div>
@@ -2453,7 +2578,9 @@ function CountsTab({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm text-muted-foreground">
                   Estimated variance value:{" "}
-                  <span className="font-mono text-foreground">{formatMoney(totalVarianceValue, symbol)}</span>
+                  <span className="font-mono text-foreground">
+                    {formatMoney(totalVarianceValue, symbol)}
+                  </span>
                 </div>
                 <Button type="submit" disabled={loading || lines.length === 0}>
                   {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -2462,7 +2589,9 @@ function CountsTab({
               </div>
             </form>
           ) : (
-            <p className="text-sm text-muted-foreground">Only managers and owners can apply stock counts.</p>
+            <p className="text-sm text-muted-foreground">
+              Only managers and owners can apply stock counts.
+            </p>
           )}
         </CardContent>
       </Card>
@@ -2484,7 +2613,9 @@ function CountsTab({
               {count.notes && <div className="mt-1 text-muted-foreground">{count.notes}</div>}
             </div>
           ))}
-          {countsQ.data?.length === 0 && <div className="py-10 text-center text-muted-foreground">No counts yet.</div>}
+          {countsQ.data?.length === 0 && (
+            <div className="py-10 text-center text-muted-foreground">No counts yet.</div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -2496,11 +2627,13 @@ function SupplierLedgerTab({
   restaurantId,
   manager,
   symbol,
+  businessDayStart,
 }: {
   branchId: string;
   restaurantId: string;
   manager: boolean;
   symbol: string;
+  businessDayStart: string;
 }) {
   const qc = useQueryClient();
   const suppliersQ = useQuery({
@@ -2529,16 +2662,44 @@ function SupplierLedgerTab({
       return data ?? [];
     },
   });
+  const financeAccountsQ = useQuery({
+    queryKey: ["finance-accounts", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("finance_accounts")
+        .select("*")
+        .eq("branch_id", branchId)
+        .eq("is_active", true)
+        .order("sort_order")
+        .order("name");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
   const [supplier, setSupplier] = useState("");
   const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(pakistanDateInputValue());
+  const [date, setDate] = useState(businessDateInputValue(businessDayStart));
+  const [financeAccount, setFinanceAccount] = useState("");
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
-  const supplierById = new Map((suppliersQ.data ?? []).map((entry: any) => [entry.id, entry]));
+  const supplierById = new Map<string, any>((suppliersQ.data ?? []).map((entry: any) => [entry.id, entry]));
+  const financeAccountById = new Map<string, any>(
+    (financeAccountsQ.data ?? []).map((entry: any) => [entry.id, entry]),
+  );
+  useEffect(() => {
+    if (financeAccount || !financeAccountsQ.data?.length) return;
+    const defaultSource =
+      financeAccountsQ.data.find((account: any) => account.account_type === "counter_cash") ??
+      financeAccountsQ.data[0];
+    setFinanceAccount(defaultSource.id);
+  }, [financeAccount, financeAccountsQ.data]);
   const balances = new Map<string, number>();
   for (const entry of ledgerQ.data ?? []) {
-    balances.set(entry.supplier_id, (balances.get(entry.supplier_id) ?? 0) + Number(entry.amount || 0));
+    balances.set(
+      entry.supplier_id,
+      (balances.get(entry.supplier_id) ?? 0) + Number(entry.amount || 0),
+    );
   }
   const selectedEntries = supplier
     ? (ledgerQ.data ?? []).filter((entry: any) => entry.supplier_id === supplier)
@@ -2552,6 +2713,7 @@ function SupplierLedgerTab({
       const { error } = await db.rpc("record_supplier_payment", {
         _branch: branchId,
         _supplier: supplier,
+        _finance_account: financeAccount,
         _amount: Number(amount),
         _date: date,
         _reference: reference,
@@ -2563,6 +2725,8 @@ function SupplierLedgerTab({
       setReference("");
       setNotes("");
       qc.invalidateQueries({ queryKey: ["supplier-ledger"] });
+      qc.invalidateQueries({ queryKey: ["finance-movements"] });
+      qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
     } catch (err: any) {
       toast.error(err.message ?? "Failed to record supplier payment");
     } finally {
@@ -2601,7 +2765,9 @@ function SupplierLedgerTab({
                 }`}
               >
                 <span className="font-medium">{entry.name}</span>
-                <span className="font-mono">{formatMoney(balances.get(entry.id) ?? 0, symbol)}</span>
+                <span className="font-mono">
+                  {formatMoney(balances.get(entry.id) ?? 0, symbol)}
+                </span>
               </button>
             ))}
             {suppliersQ.data?.length === 0 && (
@@ -2609,7 +2775,10 @@ function SupplierLedgerTab({
             )}
           </div>
           {manager && (
-            <form onSubmit={recordPayment} className="space-y-3 rounded-lg border border-border p-3">
+            <form
+              onSubmit={recordPayment}
+              className="space-y-3 rounded-lg border border-border p-3"
+            >
               <div className="font-medium">Record payment</div>
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
               <Input
@@ -2620,9 +2789,33 @@ function SupplierLedgerTab({
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
               />
-              <Input placeholder="Reference" value={reference} onChange={(e) => setReference(e.target.value)} />
-              <Textarea rows={2} placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-              <Button type="submit" disabled={loading || !supplier || Number(amount) <= 0}>
+              <Select value={financeAccount} onValueChange={setFinanceAccount}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Paid from" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(financeAccountsQ.data ?? []).map((account: any) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Reference"
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+              />
+              <Textarea
+                rows={2}
+                placeholder="Notes"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+              />
+              <Button
+                type="submit"
+                disabled={loading || !supplier || !financeAccount || Number(amount) <= 0}
+              >
                 {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save payment
               </Button>
@@ -2638,12 +2831,13 @@ function SupplierLedgerTab({
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
-            <table className="min-w-[760px] w-full text-sm">
+            <table className="min-w-[860px] w-full text-sm">
               <thead className="text-left text-xs uppercase text-muted-foreground">
                 <tr>
                   <th className="py-2 pr-4">Date</th>
                   <th className="pr-4">Supplier</th>
                   <th className="pr-4">Type</th>
+                  <th className="pr-4">Paid from</th>
                   <th className="pr-4">Reference</th>
                   <th className="text-right">Amount</th>
                 </tr>
@@ -2652,17 +2846,27 @@ function SupplierLedgerTab({
                 {selectedEntries.map((entry: any) => (
                   <tr key={entry.id} className="border-t border-border">
                     <td className="py-2 pr-4">{formatDate(entry.occurred_on)}</td>
-                    <td className="pr-4">{supplierById.get(entry.supplier_id)?.name ?? "Supplier"}</td>
+                    <td className="pr-4">
+                      {supplierById.get(entry.supplier_id)?.name ?? "Supplier"}
+                    </td>
                     <td className="pr-4 capitalize">{entry.entry_type}</td>
+                    <td className="pr-4 text-muted-foreground">
+                      {entry.finance_account_id
+                        ? (financeAccountById.get(entry.finance_account_id)?.name ??
+                          "Payment source")
+                        : "-"}
+                    </td>
                     <td className="pr-4 text-muted-foreground">{entry.reference_no || "-"}</td>
-                    <td className={`text-right font-mono ${Number(entry.amount) < 0 ? "text-success" : "text-primary"}`}>
+                    <td
+                      className={`text-right font-mono ${Number(entry.amount) < 0 ? "text-success" : "text-primary"}`}
+                    >
                       {formatMoney(entry.amount, symbol)}
                     </td>
                   </tr>
                 ))}
                 {selectedEntries.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center text-muted-foreground">
+                    <td colSpan={6} className="py-10 text-center text-muted-foreground">
                       No supplier ledger entries.
                     </td>
                   </tr>
@@ -2724,7 +2928,8 @@ function InventoryControlTab({ branchId, manager }: { branchId: string; manager:
       <CardHeader>
         <CardTitle>Inventory controls</CardTitle>
         <CardDescription>
-          Lock old periods after audit so staff cannot backdate purchases, waste, or order inventory reversals.
+          Lock old periods after audit so staff cannot backdate purchases, waste, or order inventory
+          reversals.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -2734,7 +2939,8 @@ function InventoryControlTab({ branchId, manager }: { branchId: string; manager:
               <Label>Lock inventory before</Label>
               <Input type="date" value={lockDate} onChange={(e) => setLockDate(e.target.value)} />
               <p className="text-sm text-muted-foreground">
-                Example: choose today after closing yesterday. Any inventory transaction before this date must be corrected in the current period.
+                Example: choose today after closing yesterday. Any inventory transaction before this
+                date must be corrected in the current period.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -2748,15 +2954,25 @@ function InventoryControlTab({ branchId, manager }: { branchId: string; manager:
             </div>
           </form>
         ) : (
-          <p className="text-sm text-muted-foreground">Only managers and owners can change inventory locks.</p>
+          <p className="text-sm text-muted-foreground">
+            Only managers and owners can change inventory locks.
+          </p>
         )}
       </CardContent>
     </Card>
   );
 }
 
-function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) {
-  const todayValue = pakistanDateInputValue();
+function ReportsTab({
+  branchId,
+  symbol,
+  businessDayStart,
+}: {
+  branchId: string;
+  symbol: string;
+  businessDayStart: string;
+}) {
+  const todayValue = businessDateInputValue(businessDayStart);
   const [startDate, setStartDate] = useState(todayValue);
   const [endDate, setEndDate] = useState(todayValue);
 
@@ -2773,9 +2989,9 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
     },
   });
   const movementsQ = useQuery({
-    queryKey: ["inventory-movements", branchId, startDate, endDate],
+    queryKey: ["inventory-movements", branchId, startDate, endDate, businessDayStart],
     queryFn: async () => {
-      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const bounds = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
       const { data, error } = await db
         .from("inventory_movements")
         .select("*, inventory_items(name, base_unit)")
@@ -2801,9 +3017,9 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
     },
   });
   const performanceQ = useQuery({
-    queryKey: ["inventory-reports", "performance", branchId, startDate, endDate],
+    queryKey: ["inventory-reports", "performance", branchId, startDate, endDate, businessDayStart],
     queryFn: async () => {
-      const bounds = pakistanDateRangeUtcBounds(startDate, endDate);
+      const bounds = businessDateRangeUtcBounds(startDate, endDate, businessDayStart);
       const { data, error } = await db
         .from("inventory_menu_performance")
         .select("*")
@@ -2881,7 +3097,7 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
             <Button
               variant="outline"
               onClick={() => {
-                const dateStr = pakistanDateInputValue();
+                const dateStr = businessDateInputValue(businessDayStart);
                 setStartDate(dateStr);
                 setEndDate(dateStr);
               }}
@@ -2912,194 +3128,195 @@ function ReportsTab({ branchId, symbol }: { branchId: string; symbol: string }) 
       </div>
 
       <div className="grid min-w-0 gap-6 xl:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>Low stock</CardTitle>
-          <CardDescription>Ingredients at or below reorder level.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {lowQ.data?.map((i: any) => (
-            <div
-              key={i.id}
-              className="flex items-center justify-between rounded-lg border border-border p-3"
-            >
-              <div>
-                <div className="font-medium">{i.name}</div>
-                <div className="text-xs text-muted-foreground">{i.category || i.base_unit}</div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Low stock</CardTitle>
+            <CardDescription>Ingredients at or below reorder level.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {lowQ.data?.map((i: any) => (
+              <div
+                key={i.id}
+                className="flex items-center justify-between rounded-lg border border-border p-3"
+              >
+                <div>
+                  <div className="font-medium">{i.name}</div>
+                  <div className="text-xs text-muted-foreground">{i.category || i.base_unit}</div>
+                </div>
+                <div className="text-right font-mono text-amber-300">
+                  {qtyLabel(i.current_qty, i.base_unit, i.display_unit, i.display_unit_factor)}
+                </div>
               </div>
-              <div className="text-right font-mono text-amber-300">
-                {qtyLabel(i.current_qty, i.base_unit, i.display_unit, i.display_unit_factor)}
+            ))}
+            {lowQ.data?.length === 0 && (
+              <div className="py-10 text-center text-muted-foreground">No low stock items.</div>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Food cost</CardTitle>
+            <CardDescription>Recipe cost against menu price.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {costsQ.data?.map((m: any) => (
+              <div
+                key={m.menu_item_id}
+                className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg border border-border p-3 text-sm"
+              >
+                <div className="font-medium">{m.name}</div>
+                <div className="font-mono">{formatMoney(m.recipe_cost, symbol)}</div>
+                <div className="font-mono text-muted-foreground">
+                  {Number(m.food_cost_percent).toFixed(1)}%
+                </div>
               </div>
-            </div>
-          ))}
-          {lowQ.data?.length === 0 && (
-            <div className="py-10 text-center text-muted-foreground">No low stock items.</div>
-          )}
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Food cost</CardTitle>
-          <CardDescription>Recipe cost against menu price.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {costsQ.data?.map((m: any) => (
-            <div
-              key={m.menu_item_id}
-              className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg border border-border p-3 text-sm"
-            >
-              <div className="font-medium">{m.name}</div>
-              <div className="font-mono">{formatMoney(m.recipe_cost, symbol)}</div>
-              <div className="font-mono text-muted-foreground">
-                {Number(m.food_cost_percent).toFixed(1)}%
-              </div>
-            </div>
-          ))}
-          {costsQ.data?.length === 0 && (
-            <div className="py-10 text-center text-muted-foreground">No food-cost data yet.</div>
-          )}
-        </CardContent>
-      </Card>
-      <Card className="xl:col-span-2">
-        <CardHeader>
-          <CardTitle>Dish performance</CardTitle>
-          <CardDescription>
-            Sales, estimated recipe cost, and gross profit by dish for {periodLabel}.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {performanceQ.isLoading ? (
-            <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-[820px] w-full text-sm">
-                <thead className="text-left text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="py-2 pr-4">Dish</th>
-                    <th className="pr-4 text-right">Sold</th>
-                    <th className="pr-4 text-right">Revenue</th>
-                    <th className="pr-4 text-right">Food cost</th>
-                    <th className="pr-4 text-right">Profit</th>
-                    <th className="text-right">Margin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {performanceQ.data?.map((dish: any) => (
-                    <tr key={dish.menu_item_id} className="border-t border-border">
-                      <td className="py-2 pr-4 font-medium">{dish.name}</td>
-                      <td className="pr-4 text-right font-mono">
-                        {Number(dish.qty_sold || 0).toLocaleString(undefined, {
-                          maximumFractionDigits: 2,
-                        })}
-                      </td>
-                      <td className="pr-4 text-right font-mono">
-                        {formatMoney(dish.revenue, symbol)}
-                      </td>
-                      <td className="pr-4 text-right font-mono">
-                        {formatMoney(dish.theoretical_food_cost, symbol)}
-                      </td>
-                      <td className="pr-4 text-right font-mono text-primary">
-                        {formatMoney(dish.gross_profit, symbol)}
-                      </td>
-                      <td className="text-right font-mono">
-                        {Number(dish.gross_margin_percent || 0).toFixed(1)}%
-                      </td>
-                    </tr>
-                  ))}
-                  {performanceQ.data?.length === 0 && (
+            ))}
+            {costsQ.data?.length === 0 && (
+              <div className="py-10 text-center text-muted-foreground">No food-cost data yet.</div>
+            )}
+          </CardContent>
+        </Card>
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <CardTitle>Dish performance</CardTitle>
+            <CardDescription>
+              Sales, estimated recipe cost, and gross profit by dish for {periodLabel}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {performanceQ.isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[820px] w-full text-sm">
+                  <thead className="text-left text-xs uppercase text-muted-foreground">
                     <tr>
-                      <td colSpan={6} className="py-10 text-center text-muted-foreground">
-                        No sales performance yet.
-                      </td>
+                      <th className="py-2 pr-4">Dish</th>
+                      <th className="pr-4 text-right">Sold</th>
+                      <th className="pr-4 text-right">Revenue</th>
+                      <th className="pr-4 text-right">Food cost</th>
+                      <th className="pr-4 text-right">Profit</th>
+                      <th className="text-right">Margin</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      <Card className="xl:col-span-2">
-        <CardHeader>
-          <CardTitle>Movement ledger</CardTitle>
-          <CardDescription>
-            Stock changes from purchases, POS sales, and adjustments in the selected period.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {movementsQ.isLoading ? (
-            <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-[860px] w-full text-sm">
-                <thead className="text-left text-xs uppercase text-muted-foreground">
-                  <tr>
-                    <th className="py-2 pr-4">Time</th>
-                    <th className="pr-4">Ingredient</th>
-                    <th className="pr-4">Type</th>
-                    <th className="pr-4">Delta</th>
-                    <th className="pr-4">After</th>
-                    <th className="pr-4">Purchase</th>
-                    <th>Note</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {movementsQ.data?.map((m: any) => (
-                    <tr key={m.id} className="border-t border-border">
-                      <td className="py-2 pr-4 text-muted-foreground">
-                        {formatDate(m.created_at)}
-                      </td>
-                      <td className="pr-4">{m.inventory_items?.name}</td>
-                      <td className="pr-4 capitalize">
-                        {String(m.movement_type).replace("_", " ")}
-                      </td>
-                      <td
-                        className={`pr-4 font-mono ${Number(m.quantity_delta) < 0 ? "text-destructive" : "text-success"}`}
-                      >
-                        {m.entered_quantity && m.entered_unit
-                          ? `${Number(m.entered_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(m.entered_unit)}`
-                          : qtyLabel(m.quantity_delta, m.inventory_items?.base_unit)}
-                      </td>
-                      <td className="pr-4 font-mono">
-                        {qtyLabel(m.after_qty, m.inventory_items?.base_unit)}
-                      </td>
-                      <td className="pr-4">
-                        {m.related_purchase_id ? (
-                          <PurchaseDetailsDialog
-                            purchaseId={m.related_purchase_id}
-                            manager={false}
-                            symbol={symbol}
-                            items={[]}
-                            suppliers={[]}
-                            onSaved={() => {}}
-                            onDelete={() => {}}
-                            trigger={
-                              <Button type="button" variant="ghost" size="sm">
-                                <Eye className="mr-2 h-4 w-4" />
-                                View
-                              </Button>
-                            }
-                          />
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
-                      </td>
-                      <td className="text-muted-foreground">{m.note}</td>
-                    </tr>
-                  ))}
-                  {movementsQ.data?.length === 0 && (
+                  </thead>
+                  <tbody>
+                    {performanceQ.data?.map((dish: any) => (
+                      <tr key={dish.menu_item_id} className="border-t border-border">
+                        <td className="py-2 pr-4 font-medium">{dish.name}</td>
+                        <td className="pr-4 text-right font-mono">
+                          {Number(dish.qty_sold || 0).toLocaleString(undefined, {
+                            maximumFractionDigits: 2,
+                          })}
+                        </td>
+                        <td className="pr-4 text-right font-mono">
+                          {formatMoney(dish.revenue, symbol)}
+                        </td>
+                        <td className="pr-4 text-right font-mono">
+                          {formatMoney(dish.theoretical_food_cost, symbol)}
+                        </td>
+                        <td className="pr-4 text-right font-mono text-primary">
+                          {formatMoney(dish.gross_profit, symbol)}
+                        </td>
+                        <td className="text-right font-mono">
+                          {Number(dish.gross_margin_percent || 0).toFixed(1)}%
+                        </td>
+                      </tr>
+                    ))}
+                    {performanceQ.data?.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-10 text-center text-muted-foreground">
+                          No sales performance yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <CardTitle>Movement ledger</CardTitle>
+            <CardDescription>
+              Stock changes from purchases, POS sales, and adjustments in the selected period.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {movementsQ.isLoading ? (
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[860px] w-full text-sm">
+                  <thead className="text-left text-xs uppercase text-muted-foreground">
                     <tr>
-                      <td colSpan={7} className="py-10 text-center text-muted-foreground">
-                        No stock movements in this period.
-                      </td>
+                      <th className="py-2 pr-4">Time</th>
+                      <th className="pr-4">Ingredient</th>
+                      <th className="pr-4">Type</th>
+                      <th className="pr-4">Delta</th>
+                      <th className="pr-4">After</th>
+                      <th className="pr-4">Purchase</th>
+                      <th>Note</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  </thead>
+                  <tbody>
+                    {movementsQ.data?.map((m: any) => (
+                      <tr key={m.id} className="border-t border-border">
+                        <td className="py-2 pr-4 text-muted-foreground">
+                          {formatDate(m.created_at)}
+                        </td>
+                        <td className="pr-4">{m.inventory_items?.name}</td>
+                        <td className="pr-4 capitalize">
+                          {String(m.movement_type).replace("_", " ")}
+                        </td>
+                        <td
+                          className={`pr-4 font-mono ${Number(m.quantity_delta) < 0 ? "text-destructive" : "text-success"}`}
+                        >
+                          {m.entered_quantity && m.entered_unit
+                            ? `${Number(m.entered_quantity).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${shortUnitLabel(m.entered_unit)}`
+                            : qtyLabel(m.quantity_delta, m.inventory_items?.base_unit)}
+                        </td>
+                        <td className="pr-4 font-mono">
+                          {qtyLabel(m.after_qty, m.inventory_items?.base_unit)}
+                        </td>
+                        <td className="pr-4">
+                          {m.related_purchase_id ? (
+                            <PurchaseDetailsDialog
+                              purchaseId={m.related_purchase_id}
+                              manager={false}
+                              symbol={symbol}
+                              items={[]}
+                              suppliers={[]}
+                              financeAccounts={[]}
+                              onSaved={() => {}}
+                              onDelete={() => {}}
+                              trigger={
+                                <Button type="button" variant="ghost" size="sm">
+                                  <Eye className="mr-2 h-4 w-4" />
+                                  View
+                                </Button>
+                              }
+                            />
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </td>
+                        <td className="text-muted-foreground">{m.note}</td>
+                      </tr>
+                    ))}
+                    {movementsQ.data?.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="py-10 text-center text-muted-foreground">
+                          No stock movements in this period.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
