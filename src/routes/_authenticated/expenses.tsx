@@ -27,9 +27,6 @@ import { toast } from "sonner";
 import { appDb as supabase } from "@/lib/app-db";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isManager, useMyRoles } from "@/hooks/use-auth";
-import { PrintService } from "@/lib/print/print-service";
-import { usePrinterSettings } from "@/lib/print/settings";
-import type { PaperSize } from "@/lib/print/types";
 import {
   businessDateInputValue,
   businessDateRangeUtcBounds,
@@ -509,7 +506,6 @@ function ExpensesWorkspace({
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [printingReport, setPrintingReport] = useState(false);
-  const { settings: printerSettings } = usePrinterSettings(branchId);
 
   const categoriesQ = useExpenseCategories(branchId);
   const accountsQ = useFinanceAccounts(branchId);
@@ -762,7 +758,6 @@ function ExpensesWorkspace({
           movements={movementsQ.data ?? []}
           branchName={branchName}
           symbol={symbol}
-          paperSize={printerSettings.paperSize}
         />
       )}
 
@@ -854,6 +849,10 @@ function ExpensesWorkspace({
                             ? accountById.get(expense.finance_account_id)?.name
                             : null
                         }
+                        account={
+                          expense.finance_account_id ? accountById.get(expense.finance_account_id) : null
+                        }
+                        branchName={branchName}
                         manager={manager}
                         symbol={symbol}
                       />
@@ -1152,27 +1151,21 @@ function FinanceMovementProofPanel({
   movements,
   branchName,
   symbol,
-  paperSize,
 }: {
   movements: FinanceMovement[];
   branchName: string;
   symbol: string;
-  paperSize: PaperSize;
 }) {
   const [printingId, setPrintingId] = useState<string | null>(null);
   const recentMovements = movements.slice(0, 8);
 
-  async function printRaseed(movement: FinanceMovement) {
+  function printRaseed(movement: FinanceMovement) {
     setPrintingId(movement.id);
     try {
-      await PrintService.print({
-        kind: "receipt",
-        paperSize,
-        html: renderFinanceMovementRaseedHtml({ movement, branchName, symbol }),
-      });
-      toast.success("Finance raseed sent to printer");
+      openFinanceMovementRaseed({ movement, branchName, symbol });
+      toast.success("Finance raseed opened");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not print finance raseed");
+      toast.error(error instanceof Error ? error.message : "Could not open finance raseed");
     } finally {
       setPrintingId(null);
     }
@@ -1929,6 +1922,8 @@ function ExpenseRow({
   accountBalances,
   businessDayStart,
   accountName,
+  account,
+  branchName,
   manager,
   symbol,
 }: {
@@ -1939,6 +1934,8 @@ function ExpenseRow({
   accountBalances: FinanceAccountBalanceMap;
   businessDayStart: string;
   accountName?: string | null;
+  account?: FinanceAccount | null;
+  branchName: string;
   manager: boolean;
   symbol: string;
 }) {
@@ -1955,6 +1952,25 @@ function ExpenseRow({
       qc.invalidateQueries({ queryKey: ["finance-day-closure"] });
       qc.invalidateQueries({ queryKey: ["finance-account-positions"] });
       qc.invalidateQueries({ queryKey: ["finance-obligations"] });
+    }
+  }
+
+  function printExpenseRaseed() {
+    if (expense.status !== "paid") {
+      toast.error(
+        "Only paid expenses create a finance raseed. Mark it paid when money is actually given.",
+      );
+      return;
+    }
+    try {
+      openFinanceMovementRaseed({
+        branchName,
+        symbol,
+        movement: expenseToFinanceMovement(expense, accountName, account),
+      });
+      toast.success("Expense raseed opened");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not open expense raseed");
     }
   }
 
@@ -1992,6 +2008,16 @@ function ExpenseRow({
               expense={expense}
               symbol={symbol}
             />
+            {expense.status === "paid" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={printExpenseRaseed}
+                aria-label="Print finance raseed"
+              >
+                <Printer className="h-4 w-4" />
+              </Button>
+            )}
             <Button variant="ghost" size="icon" onClick={remove} aria-label="Delete expense">
               <Trash2 className="h-4 w-4" />
             </Button>
@@ -2950,6 +2976,47 @@ function FinanceAccountDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function expenseToFinanceMovement(
+  expense: Expense,
+  accountName: string | null | undefined,
+  account: FinanceAccount | null | undefined,
+): FinanceMovement {
+  return {
+    id: expense.id,
+    branch_id: expense.branch_id,
+    occurred_at: `${toDateInputValue(expense.expense_date)}T12:00:00+05:00`,
+    finance_account_id: expense.finance_account_id,
+    account_name: accountName || "External / old sale / pocket",
+    account_type: account?.account_type ?? "other",
+    is_cash: account?.is_cash ?? false,
+    movement_type: "expense",
+    title: expense.vendor ? `${expense.title} - ${expense.vendor}` : expense.title,
+    payment_method: expense.payment_method,
+    payment_kind: "expense",
+    amount: -Math.abs(Number(expense.amount || 0)),
+    reference: expense.reference_no,
+  };
+}
+
+function openFinanceMovementRaseed({
+  movement,
+  branchName,
+  symbol,
+}: {
+  movement: FinanceMovement;
+  branchName: string;
+  symbol: string;
+}) {
+  const win = window.open("", "_blank", "width=420,height=700");
+  if (!win) throw new Error("Allow popups to open the finance raseed.");
+
+  win.document.open();
+  win.document.write(renderFinanceMovementRaseedHtml({ movement, branchName, symbol }));
+  win.document.close();
+  win.focus();
+  win.setTimeout(() => win.print(), 250);
 }
 
 function renderFinanceMovementRaseedHtml({
