@@ -191,6 +191,7 @@ export const branches = pgTable(
     businessDayStartTime: time("business_day_start_time").default("10:00:00").notNull(),
     inventoryLockedBefore: timestamp("inventory_locked_before", { withTimezone: true }),
     customerDuesCutoffAt: timestamp("customer_dues_cutoff_at", { withTimezone: true }),
+    financeCutoverAt: timestamp("finance_cutover_at", { withTimezone: true }),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt,
     updatedAt,

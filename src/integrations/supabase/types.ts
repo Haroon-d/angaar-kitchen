@@ -132,9 +132,14 @@ export type Database = {
       branches: {
         Row: {
           address: string | null;
+          business_day_start_time: string;
           code: string;
           created_at: string;
+          customer_dues_cutoff_at: string | null;
+          delivery_fee: string;
+          finance_cutover_at: string | null;
           id: string;
+          inventory_locked_before: string | null;
           is_active: boolean;
           name: string;
           phone: string | null;
@@ -143,9 +148,14 @@ export type Database = {
         };
         Insert: {
           address?: string | null;
+          business_day_start_time?: string;
           code: string;
           created_at?: string;
+          customer_dues_cutoff_at?: string | null;
+          delivery_fee?: string;
+          finance_cutover_at?: string | null;
           id?: string;
+          inventory_locked_before?: string | null;
           is_active?: boolean;
           name: string;
           phone?: string | null;
@@ -154,9 +164,14 @@ export type Database = {
         };
         Update: {
           address?: string | null;
+          business_day_start_time?: string;
           code?: string;
           created_at?: string;
+          customer_dues_cutoff_at?: string | null;
+          delivery_fee?: string;
+          finance_cutover_at?: string | null;
           id?: string;
+          inventory_locked_before?: string | null;
           is_active?: boolean;
           name?: string;
           phone?: string | null;

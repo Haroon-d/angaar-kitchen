@@ -113,6 +113,13 @@
       "when": 1784788800000,
       "tag": "0015_add_outdoor_dining_type",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784958000000,
+      "tag": "0016_finance_cutover",
+      "breakpoints": true
     }
   ]
 }

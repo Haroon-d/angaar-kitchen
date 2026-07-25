@@ -274,6 +274,7 @@ const RPC_POLICIES: Record<string, readonly AppPermission[]> = {
   apply_inventory_count: ["inventory:manage"],
   record_supplier_payment: ["inventory:manage", "expenses:manage"],
   set_inventory_lock: ["inventory:manage", "settings:manage"],
+  set_finance_cutover: ["expenses:manage", "settings:manage"],
 };
 
 const FilterSchema = z.object({
@@ -457,7 +458,9 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         p.reference
       from payments p
       join orders o on o.id = p.order_id
+      join branches b on b.id = o.branch_id
       left join finance_accounts fa on fa.id = p.finance_account_id
+      where p.paid_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         e.id,
@@ -474,8 +477,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         (-e.amount)::numeric as amount,
         e.reference_no as reference
       from operational_expenses e
+      join branches b on b.id = e.branch_id
       left join finance_accounts fa on fa.id = e.finance_account_id
       where e.status = 'paid'
+        and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         ip.id,
@@ -492,8 +498,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         (-ip.total)::numeric as amount,
         ip.invoice_no as reference
       from inventory_purchases ip
+      join branches b on b.id = ip.branch_id
       left join finance_accounts fa on fa.id = ip.finance_account_id
       where ip.finance_account_id is not null
+        and ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         sle.id,
@@ -510,10 +519,13 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         sle.amount::numeric as amount,
         sle.reference_no as reference
       from supplier_ledger_entries sle
+      join branches b on b.id = sle.branch_id
       left join finance_accounts fa on fa.id = sle.finance_account_id
       left join suppliers s on s.id = sle.supplier_id
       where sle.entry_type = 'payment'
         and sle.finance_account_id is not null
+        and ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         t.id,
@@ -530,8 +542,10 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         (-t.amount)::numeric as amount,
         t.reference
       from finance_transfers t
+      join branches b on b.id = t.branch_id
       left join finance_accounts fa on fa.id = t.from_account_id
       where t.from_account_id is not null
+        and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         t.id,
@@ -548,8 +562,10 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         t.amount::numeric as amount,
         t.reference
       from finance_transfers t
+      join branches b on b.id = t.branch_id
       left join finance_accounts fa on fa.id = t.to_account_id
       where t.to_account_id is not null
+        and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       `,
       input,
     );
@@ -565,38 +581,53 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
           p.amount::numeric as amount
         from payments p
         join orders o on o.id = p.order_id
+        join branches b on b.id = o.branch_id
         where p.finance_account_id is not null
+          and p.paid_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
         union all
         select
           e.finance_account_id,
           ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
           (-e.amount)::numeric as amount
         from operational_expenses e
+        join branches b on b.id = e.branch_id
         where e.status = 'paid'
           and e.finance_account_id is not null
+          and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+            >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
         union all
         select
           ip.finance_account_id,
           ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
           (-ip.total)::numeric as amount
         from inventory_purchases ip
+        join branches b on b.id = ip.branch_id
         where ip.finance_account_id is not null
+          and ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+            >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
         union all
         select
           sle.finance_account_id,
           ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
           sle.amount::numeric as amount
         from supplier_ledger_entries sle
+        join branches b on b.id = sle.branch_id
         where sle.entry_type = 'payment'
           and sle.finance_account_id is not null
+          and ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi')
+            >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
         union all
         select t.from_account_id, t.occurred_at, (-t.amount)::numeric
         from finance_transfers t
+        join branches b on b.id = t.branch_id
         where t.from_account_id is not null
+          and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
         union all
         select t.to_account_id, t.occurred_at, t.amount::numeric
         from finance_transfers t
+        join branches b on b.id = t.branch_id
         where t.to_account_id is not null
+          and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       ),
       branch_day as (
         select
@@ -667,9 +698,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         o.created_at as occurred_at,
         o.notes
       from orders o
+      join branches b on b.id = o.branch_id
       where o.payment_status in ('pending', 'partial')
         and o.status not in ('cancelled', 'voided', 'refunded')
         and greatest(o.grand_total::numeric - coalesce(o.amount_paid, 0)::numeric, 0) > 0
+        and o.created_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         e.id,
@@ -684,8 +717,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
         e.notes
       from operational_expenses e
+      join branches b on b.id = e.branch_id
       where e.status = 'due'
         and e.amount::numeric > 0
+        and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         (s.id::text || ':' || sle.branch_id::text) as id,
@@ -700,7 +736,10 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         max(sle.created_at) as occurred_at,
         null::text as notes
       from supplier_ledger_entries sle
+      join branches b on b.id = sle.branch_id
       join suppliers s on s.id = sle.supplier_id
+      where ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi')
+        >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       group by s.id, sle.branch_id, s.name
       having sum(sle.amount)::numeric > 0
       `,
@@ -928,6 +967,8 @@ async function runRpc(fn: string, args: Record<string, unknown>, actorId: string
       return recordSupplierPayment(args, actorId);
     case "set_inventory_lock":
       return setInventoryLock(args, actorId);
+    case "set_finance_cutover":
+      return setFinanceCutover(args, actorId);
     default:
       throw new Error(`PostgreSQL RPC is not wired yet: ${fn}`);
   }
@@ -1841,6 +1882,29 @@ async function setInventoryLock(args: Record<string, unknown>, actorId: string) 
   );
   if (!result.rowCount) throw new Error("Branch was not found or you do not have access.");
   return { data: { lockedBefore: result.rows[0].inventory_locked_before } };
+}
+
+async function setFinanceCutover(args: Record<string, unknown>, actorId: string) {
+  const branchId = String(args._branch ?? "");
+  const cutoverAt = nullableText(args._cutover_at);
+  if (!branchId) throw new Error("Branch is required.");
+
+  const result = await pgPool.query(
+    `update branches b
+     set finance_cutover_at = $2,
+         updated_at = now()
+     where b.id = $1
+       and exists (
+         select 1 from user_roles ur
+         where ur.user_id = $3
+           and ur.restaurant_id = b.restaurant_id
+           and (ur.branch_id is null or ur.branch_id = b.id)
+       )
+     returning finance_cutover_at`,
+    [branchId, cutoverAt, actorId],
+  );
+  if (!result.rowCount) throw new Error("Branch was not found or you do not have access.");
+  return { data: { cutoverAt: result.rows[0].finance_cutover_at } };
 }
 
 async function getMenuItemStockStatus(args: Record<string, unknown>) {
