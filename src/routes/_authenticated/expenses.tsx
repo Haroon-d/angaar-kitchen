@@ -513,6 +513,7 @@ function ExpensesWorkspace({
   const closureQ = useFinanceDayClosure(branchId, startDate, startDate === endDate);
   const positionsQ = useFinanceAccountPositions(branchId);
   const obligationsQ = useFinanceObligations(branchId);
+  const dueExpensesQ = useDueExpenseObligations(branchId);
   const expensesQ = useQuery({
     queryKey: ["operational-expenses", branchId, startDate, endDate],
     queryFn: async () => {
@@ -532,7 +533,10 @@ function ExpensesWorkspace({
   const expenses = useMemo(() => expensesQ.data ?? [], [expensesQ.data]);
   const accounts = useMemo(() => accountsQ.data ?? [], [accountsQ.data]);
   const positions = useMemo(() => positionsQ.data ?? [], [positionsQ.data]);
-  const obligations = useMemo(() => obligationsQ.data ?? [], [obligationsQ.data]);
+  const obligations = useMemo(
+    () => mergeFinanceObligations(obligationsQ.data ?? [], dueExpensesQ.data ?? []),
+    [dueExpensesQ.data, obligationsQ.data],
+  );
   const currentAccountBalances = useMemo(
     () => buildCurrentAccountBalances(positions),
     [positions],
@@ -611,6 +615,7 @@ function ExpensesWorkspace({
     await Promise.all([
       positionsQ.refetch(),
       obligationsQ.refetch(),
+      dueExpensesQ.refetch(),
       movementsQ.refetch(),
       closureQ.refetch(),
       expensesQ.refetch(),
@@ -628,12 +633,14 @@ function ExpensesWorkspace({
         latestClosure,
         latestPositions,
         latestObligations,
+        latestDueExpenseObligations,
       ] = await Promise.all([
         accountsQ.refetch(),
         movementsQ.refetch(),
         startDate === endDate ? closureQ.refetch() : Promise.resolve({ data: null }),
         positionsQ.refetch(),
         obligationsQ.refetch(),
+        dueExpensesQ.refetch(),
       ]);
 
       openFinanceControlReport({
@@ -646,7 +653,10 @@ function ExpensesWorkspace({
         movements: latestMovements.data ?? movementsQ.data ?? [],
         closure: latestClosure.data ?? null,
         positions: latestPositions.data ?? positions,
-        obligations: latestObligations.data ?? obligations,
+        obligations: mergeFinanceObligations(
+          latestObligations.data ?? obligationsQ.data ?? [],
+          latestDueExpenseObligations.data ?? dueExpensesQ.data ?? [],
+        ),
         ownerWhatsAppPhone,
       });
     } catch (error) {
@@ -689,7 +699,7 @@ function ExpensesWorkspace({
           receivableTotal={receivableTotal}
           payableTotal={payableTotal}
           symbol={symbol}
-          loading={positionsQ.isLoading || obligationsQ.isLoading}
+          loading={positionsQ.isLoading || obligationsQ.isLoading || dueExpensesQ.isLoading}
           onRefresh={refreshFinanceTruth}
         />
       )}
@@ -1524,6 +1534,57 @@ function useFinanceObligations(branchId: string) {
       return (data ?? []) as FinanceObligation[];
     },
   });
+}
+
+function useDueExpenseObligations(branchId: string) {
+  return useQuery({
+    queryKey: ["due-expense-obligations", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("operational_expenses")
+        .select("id, branch_id, expense_date, title, vendor, reference_no, status, amount, notes")
+        .eq("branch_id", branchId)
+        .eq("status", "due")
+        .order("expense_date", { ascending: false })
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return ((data ?? []) as Expense[]).map(expenseToPayableObligation);
+    },
+  });
+}
+
+function mergeFinanceObligations(
+  feedObligations: FinanceObligation[],
+  dueExpenseObligations: FinanceObligation[],
+) {
+  const merged = [...feedObligations];
+  const existing = new Set(
+    feedObligations.map((obligation) => `${obligation.source_type}:${obligation.source_id}`),
+  );
+  for (const obligation of dueExpenseObligations) {
+    const key = `${obligation.source_type}:${obligation.source_id}`;
+    if (!existing.has(key)) merged.push(obligation);
+  }
+  return merged.sort(
+    (a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime(),
+  );
+}
+
+function expenseToPayableObligation(expense: Expense): FinanceObligation {
+  const expenseDate = toDateInputValue(expense.expense_date) || businessDateInputValue();
+  return {
+    id: expense.id,
+    branch_id: expense.branch_id,
+    obligation_type: "payable",
+    source_type: "expense",
+    source_id: expense.id,
+    counterparty_name: expense.vendor?.trim() || expense.title || "Expense due",
+    reference: expense.reference_no || expense.title || null,
+    amount: expense.amount,
+    status: expense.status,
+    occurred_at: new Date(`${expenseDate}T12:00:00+05:00`).toISOString(),
+    notes: expense.notes,
+  };
 }
 
 function defaultAccountId(accounts: FinanceAccount[], method: PaymentMethod | "none" | null) {
