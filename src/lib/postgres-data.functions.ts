@@ -772,11 +772,8 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi') as occurred_at,
         e.notes
       from operational_expenses e
-      join branches b on b.id = e.branch_id
       where e.status = 'due'
         and e.amount::numeric > 0
-        and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
-          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
         (s.id::text || ':' || sle.branch_id::text) as id,
