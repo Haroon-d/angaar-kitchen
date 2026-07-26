@@ -779,6 +779,37 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
           >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
+        (ct.branch_id::text || ':credit:' || md5(ct.counterparty_key)) as id,
+        ct.branch_id,
+        'receivable'::text as obligation_type,
+        'credit'::text as source_type,
+        (ct.branch_id::text || ':credit:' || md5(ct.counterparty_key)) as source_id,
+        ct.counterparty_name,
+        ct.counterparty_name as reference,
+        sum(ct.amount)::numeric as amount,
+        'due'::text as status,
+        max(ct.occurred_at) as occurred_at,
+        'Money/credit given outside POS'::text as notes
+      from (
+        select
+          t.branch_id,
+          t.occurred_at,
+          lower(coalesce(nullif(trim(t.reference), ''), trim(t.title), 'unknown credit')) as counterparty_key,
+          coalesce(nullif(trim(t.reference), ''), trim(t.title), 'Credit account') as counterparty_name,
+          case
+            when t.transfer_type = 'credit_given' then t.amount::numeric
+            when t.transfer_type = 'credit_collected' then (-t.amount)::numeric
+            else 0::numeric
+          end as amount
+        from finance_transfers t
+        join branches b on b.id = t.branch_id
+        where t.transfer_type in ('credit_given', 'credit_collected')
+          and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
+      ) ct
+      group by ct.branch_id, ct.counterparty_key, ct.counterparty_name
+      having sum(ct.amount)::numeric > 0
+      union all
+      select
         (s.id::text || ':' || sle.branch_id::text) as id,
         sle.branch_id,
         'payable'::text as obligation_type,

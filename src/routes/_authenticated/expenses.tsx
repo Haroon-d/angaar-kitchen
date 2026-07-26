@@ -122,6 +122,8 @@ type FinanceTransferType =
   | "owner_withdrawal"
   | "cash_deposit"
   | "cash_withdrawal"
+  | "credit_given"
+  | "credit_collected"
   | "correction";
 
 type FinanceDayClosure = {
@@ -173,7 +175,7 @@ type FinanceObligation = {
   id: string;
   branch_id: string;
   obligation_type: "receivable" | "payable";
-  source_type: "order" | "expense" | "supplier";
+  source_type: "order" | "expense" | "supplier" | "credit";
   source_id: string;
   counterparty_name: string;
   reference: string | null;
@@ -235,6 +237,8 @@ const FinanceTransferSchema = z
       "owner_withdrawal",
       "cash_deposit",
       "cash_withdrawal",
+      "credit_given",
+      "credit_collected",
       "correction",
     ]),
     occurred_at: z.string().min(1),
@@ -247,6 +251,14 @@ const FinanceTransferSchema = z
   .refine((value) => value.from_account_id || value.to_account_id, {
     message: "Select at least one source.",
     path: ["from_account_id"],
+  })
+  .refine((value) => value.transfer_type !== "credit_given" || value.from_account_id, {
+    message: "Select where the credit money was paid from.",
+    path: ["from_account_id"],
+  })
+  .refine((value) => value.transfer_type !== "credit_collected" || value.to_account_id, {
+    message: "Select where the collected credit money arrived.",
+    path: ["to_account_id"],
   })
   .refine((value) => value.from_account_id !== value.to_account_id, {
     message: "From and To cannot be the same source.",
@@ -362,6 +374,17 @@ function movementTypeLabel(type: FinanceMovement["movement_type"] | string) {
       return "Transfer out";
     default:
       return "Movement";
+  }
+}
+
+function financeMovementDisplayLabel(movement: FinanceMovement) {
+  switch (movement.payment_kind) {
+    case "credit_given":
+      return "Credit given";
+    case "credit_collected":
+      return "Credit collected";
+    default:
+      return movementTypeLabel(movement.movement_type);
   }
 }
 
@@ -1179,6 +1202,8 @@ function sourceObligationLabel(type: FinanceObligation["source_type"]) {
       return "Due expense";
     case "supplier":
       return "Supplier balance";
+    case "credit":
+      return "Credit given";
     default:
       return "Open record";
   }
@@ -1229,7 +1254,7 @@ function FinanceMovementProofPanel({
                 >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">{movementTypeLabel(movement.movement_type)}</Badge>
+                      <Badge variant="outline">{financeMovementDisplayLabel(movement)}</Badge>
                       <span className="truncate font-medium">{movement.title || "Finance movement"}</span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
@@ -1365,6 +1390,22 @@ function FinanceActionCenter({
               icon={HandCoins}
               title="Owner/staff took or added money"
               description="Pocket cash, owner withdrawal, or correction."
+            />
+          }
+        />
+        <FinanceTransferDialog
+          branchId={branchId}
+          restaurantId={restaurantId}
+          accounts={accounts}
+          accountBalances={accountBalances}
+          businessDayStart={businessDayStart}
+          symbol={symbol}
+          initialPreset="give_credit"
+          trigger={
+            <FinanceQuickAction
+              icon={HandCoins}
+              title="Give / collect credit"
+              description="Money given to someone or credit recovered later."
             />
           }
         />
@@ -2143,7 +2184,12 @@ function FinanceTransferDialog({
   businessDayStart: string;
   symbol: string;
   trigger?: ReactNode;
-  initialPreset?: "pocket_to_counter" | "counter_to_online" | "owner_took_cash";
+  initialPreset?:
+    | "pocket_to_counter"
+    | "counter_to_online"
+    | "owner_took_cash"
+    | "give_credit"
+    | "collect_credit";
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -2176,7 +2222,14 @@ function FinanceTransferDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialPreset]);
 
-  function applyPreset(preset: "pocket_to_counter" | "counter_to_online" | "owner_took_cash") {
+  function applyPreset(
+    preset:
+      | "pocket_to_counter"
+      | "counter_to_online"
+      | "owner_took_cash"
+      | "give_credit"
+      | "collect_credit",
+  ) {
     if (preset === "pocket_to_counter") {
       setF((current) => ({
         ...current,
@@ -2198,6 +2251,30 @@ function FinanceTransferDialog({
         to_account_id: onlineAccount?.id ?? "outside",
         reference: "",
         notes: "Example: Cash taken from counter and transferred to JazzCash/bank.",
+      }));
+      return;
+    }
+    if (preset === "give_credit") {
+      setF((current) => ({
+        ...current,
+        title: "Credit given",
+        transfer_type: "credit_given",
+        from_account_id: counterAccount?.id ?? "outside",
+        to_account_id: "outside",
+        reference: "",
+        notes: "Write the person name in Reference. This will show in Need to collect.",
+      }));
+      return;
+    }
+    if (preset === "collect_credit") {
+      setF((current) => ({
+        ...current,
+        title: "Credit collected",
+        transfer_type: "credit_collected",
+        from_account_id: "outside",
+        to_account_id: counterAccount?.id ?? onlineAccount?.id ?? "outside",
+        reference: "",
+        notes: "Use the same person name/reference used when credit was given.",
       }));
       return;
     }
@@ -2225,6 +2302,14 @@ function FinanceTransferDialog({
     });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0].message);
+      return;
+    }
+    if (
+      (parsed.data.transfer_type === "credit_given" ||
+        parsed.data.transfer_type === "credit_collected") &&
+      !parsed.data.reference
+    ) {
+      toast.error("Write the person name in Reference so the credit can be tracked.");
       return;
     }
     const source = accounts.find((account) => account.id === parsed.data.from_account_id);
@@ -2288,7 +2373,7 @@ function FinanceTransferDialog({
             Use this when money changes place, not when the business spends money. Examples: pocket
             cash added to counter, counter cash sent online, or owner takes cash.
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <Button
               type="button"
               variant="outline"
@@ -2313,6 +2398,22 @@ function FinanceTransferDialog({
             >
               Owner took cash
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto justify-start whitespace-normal py-3 text-left"
+              onClick={() => applyPreset("give_credit")}
+            >
+              Give credit
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto justify-start whitespace-normal py-3 text-left"
+              onClick={() => applyPreset("collect_credit")}
+            >
+              Collect credit
+            </Button>
           </div>
           <div className="space-y-1.5">
             <Label>What happened?</Label>
@@ -2334,6 +2435,8 @@ function FinanceTransferDialog({
                   <SelectItem value="cash_deposit">Cash deposited online/bank</SelectItem>
                   <SelectItem value="cash_withdrawal">Cash withdrawn</SelectItem>
                   <SelectItem value="owner_withdrawal">Owner took money</SelectItem>
+                  <SelectItem value="credit_given">Credit given to someone</SelectItem>
+                  <SelectItem value="credit_collected">Credit collected back</SelectItem>
                   <SelectItem value="correction">Correction</SelectItem>
                 </SelectContent>
               </Select>
@@ -2413,8 +2516,13 @@ function FinanceTransferDialog({
               <Input
                 value={f.reference}
                 onChange={(e) => setF({ ...f, reference: e.target.value })}
-                placeholder="JazzCash ref, note no, person name"
+                placeholder="Person name, JazzCash ref, note no"
               />
+              {(f.transfer_type === "credit_given" || f.transfer_type === "credit_collected") && (
+                <p className="text-xs text-muted-foreground">
+                  Use the same person name when giving and collecting credit.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Notes</Label>
@@ -3130,7 +3238,7 @@ function renderFinanceMovementRaseedHtml({
   const direction = financeMovementDirection(movement);
   const rows = [
     ["Date", reportDateTime(movement.occurred_at)],
-    ["Type", movementTypeLabel(movement.movement_type)],
+    ["Type", financeMovementDisplayLabel(movement)],
     ["Direction", direction],
     ["Source", movement.account_name || "Unknown source"],
     ["Amount", formatMoney(Math.abs(amount), symbol)],
@@ -3315,8 +3423,8 @@ function openFinanceControlReport({
     (a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
   );
   const totalsByType = movementRows.reduce<Record<string, number>>((totals, movement) => {
-    totals[movement.movement_type] =
-      (totals[movement.movement_type] ?? 0) + Number(movement.amount || 0);
+    const label = financeMovementDisplayLabel(movement);
+    totals[label] = (totals[label] ?? 0) + Number(movement.amount || 0);
     return totals;
   }, {});
   const cashPosition = positions
@@ -3425,7 +3533,7 @@ function openFinanceControlReport({
     .map(
       ([type, value]) => `
       <tr>
-        <td>${escapeHtml(movementTypeLabel(type))}</td>
+        <td>${escapeHtml(type)}</td>
         <td class="num strong">${escapeHtml(formatMoney(value, symbol))}</td>
       </tr>`,
     )
@@ -3437,7 +3545,7 @@ function openFinanceControlReport({
         <tr>
           <td>${escapeHtml(reportDateTime(movement.occurred_at))}</td>
           <td>${escapeHtml(movement.account_name || "Unknown source")}</td>
-          <td>${escapeHtml(movementTypeLabel(movement.movement_type))}</td>
+          <td>${escapeHtml(financeMovementDisplayLabel(movement))}</td>
           <td>${escapeHtml(movement.title)}</td>
           <td>${escapeHtml(movement.payment_method ?? "")}</td>
           <td>${escapeHtml(movement.reference ?? "")}</td>
