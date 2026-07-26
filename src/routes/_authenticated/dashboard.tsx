@@ -429,7 +429,7 @@ function DashboardPage() {
             <UsageTable
               title="Menu items sold or in progress"
               emptyText="No menu items moved in this period."
-              rows={menuUsage.slice(0, 12)}
+              rows={menuUsage}
               metricLabel="Qty"
               moneyLabel="Sales"
               symbol={symbol}
@@ -438,7 +438,7 @@ function DashboardPage() {
             <UsageTable
               title="Inventory consumed"
               emptyText="No recipe stock consumed in this period."
-              rows={inventoryUsage.slice(0, 12)}
+              rows={inventoryUsage}
               metricLabel="Used"
               moneyLabel="Cost"
               symbol={symbol}

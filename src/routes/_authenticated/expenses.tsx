@@ -561,6 +561,30 @@ function ExpensesWorkspace({
             .some((v) => String(v).toLowerCase().includes(s))),
     );
   }, [accountById, categoryFilter, expenses, methodFilter, search, sourceFilter, statusFilter]);
+  const financeProofMovements = useMemo(() => {
+    const rows = [...(movementsQ.data ?? [])];
+    const existingExpenseIds = new Set(
+      rows
+        .filter((movement) => movement.movement_type === "expense")
+        .map((movement) => movement.id),
+    );
+
+    for (const expense of expenses) {
+      if (expense.status !== "paid" || existingExpenseIds.has(expense.id)) continue;
+      const account = expense.finance_account_id ? accountById.get(expense.finance_account_id) : null;
+      rows.push(
+        expenseToFinanceMovement(
+          expense,
+          account?.name ?? (expense.finance_account_id ? null : "External / old sale / pocket"),
+          account,
+        ),
+      );
+    }
+
+    return rows.sort(
+      (a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime(),
+    );
+  }, [accountById, expenses, movementsQ.data]);
 
   const activeExpenses = expenses.filter((e) => e.status !== "void");
   const total = activeExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
@@ -755,7 +779,7 @@ function ExpensesWorkspace({
 
       {manager && (
         <FinanceMovementProofPanel
-          movements={movementsQ.data ?? []}
+          movements={financeProofMovements}
           branchName={branchName}
           symbol={symbol}
         />
@@ -1187,7 +1211,7 @@ function FinanceMovementProofPanel({
               const printing = printingId === movement.id;
               return (
                 <div
-                  key={movement.id}
+                  key={`${movement.id}-${movement.movement_type}-${movement.finance_account_id ?? "none"}`}
                   className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/35 p-3"
                 >
                   <div className="min-w-0">
