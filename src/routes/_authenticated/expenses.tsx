@@ -472,6 +472,7 @@ function ExpensesPage() {
       businessDayStart={(
         (branch as { business_day_start_time?: string }).business_day_start_time ?? "10:00"
       ).slice(0, 5)}
+      financeCutoverAt={(branch as { finance_cutover_at?: string | null }).finance_cutover_at ?? null}
       branchName={branch.name}
       ownerWhatsAppPhone={branch.phone ?? restaurant.phone ?? "0335 7200955"}
       manager={manager}
@@ -484,6 +485,7 @@ function ExpensesWorkspace({
   branchId,
   restaurantId,
   businessDayStart,
+  financeCutoverAt,
   branchName,
   ownerWhatsAppPhone,
   manager,
@@ -492,6 +494,7 @@ function ExpensesWorkspace({
   branchId: string;
   restaurantId: string;
   businessDayStart: string;
+  financeCutoverAt: string | null;
   branchName: string;
   ownerWhatsAppPhone: string;
   manager: boolean;
@@ -513,7 +516,7 @@ function ExpensesWorkspace({
   const closureQ = useFinanceDayClosure(branchId, startDate, startDate === endDate);
   const positionsQ = useFinanceAccountPositions(branchId);
   const obligationsQ = useFinanceObligations(branchId);
-  const dueExpensesQ = useDueExpenseObligations(branchId);
+  const dueExpensesQ = useDueExpenseObligations(branchId, financeCutoverAt);
   const expensesQ = useQuery({
     queryKey: ["operational-expenses", branchId, startDate, endDate],
     queryFn: async () => {
@@ -1536,9 +1539,9 @@ function useFinanceObligations(branchId: string) {
   });
 }
 
-function useDueExpenseObligations(branchId: string) {
+function useDueExpenseObligations(branchId: string, financeCutoverAt: string | null) {
   return useQuery({
-    queryKey: ["due-expense-obligations", branchId],
+    queryKey: ["due-expense-obligations", branchId, financeCutoverAt],
     queryFn: async () => {
       const { data, error } = await db
         .from("operational_expenses")
@@ -1548,7 +1551,9 @@ function useDueExpenseObligations(branchId: string) {
         .order("expense_date", { ascending: false })
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return ((data ?? []) as Expense[]).map(expenseToPayableObligation);
+      return ((data ?? []) as Expense[])
+        .map(expenseToPayableObligation)
+        .filter((obligation) => isOnOrAfterFinanceCutover(obligation.occurred_at, financeCutoverAt));
     },
   });
 }
@@ -1585,6 +1590,14 @@ function expenseToPayableObligation(expense: Expense): FinanceObligation {
     occurred_at: new Date(`${expenseDate}T12:00:00+05:00`).toISOString(),
     notes: expense.notes,
   };
+}
+
+function isOnOrAfterFinanceCutover(occurredAt: string, financeCutoverAt: string | null) {
+  if (!financeCutoverAt) return true;
+  const occurredMs = new Date(occurredAt).getTime();
+  const cutoverMs = new Date(financeCutoverAt).getTime();
+  if (!Number.isFinite(occurredMs) || !Number.isFinite(cutoverMs)) return true;
+  return occurredMs >= cutoverMs;
 }
 
 function defaultAccountId(accounts: FinanceAccount[], method: PaymentMethod | "none" | null) {

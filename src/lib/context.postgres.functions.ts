@@ -63,6 +63,7 @@ function serializeBranch(branch: {
   address: string | null;
   phone: string | null;
   deliveryFee: string | number;
+  financeCutoverAt: Date | string | null;
   isActive: boolean;
 }) {
   return {
@@ -73,6 +74,9 @@ function serializeBranch(branch: {
     address: branch.address,
     phone: branch.phone,
     delivery_fee: branch.deliveryFee,
+    finance_cutover_at: branch.financeCutoverAt
+      ? new Date(branch.financeCutoverAt).toISOString()
+      : null,
     is_active: branch.isActive,
   };
 }

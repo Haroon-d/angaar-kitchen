@@ -24,6 +24,7 @@ type Branch = {
   address: string | null;
   phone: string | null;
   delivery_fee?: number | string | null;
+  finance_cutover_at?: string | null;
   is_active: boolean;
 };
 
