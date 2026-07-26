@@ -633,21 +633,75 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         select
           b.id as branch_id,
           case
-            when (now() at time zone b.timezone)::time < b.business_day_start_time
-              then ((now() at time zone b.timezone)::date - 1)
-            else (now() at time zone b.timezone)::date
+            when (now() at time zone 'Asia/Karachi')::time < b.business_day_start_time
+              then ((now() at time zone 'Asia/Karachi')::date - 1)
+            else (now() at time zone 'Asia/Karachi')::date
           end as business_date,
-          b.business_day_start_time,
-          b.timezone
+          b.business_day_start_time
         from branches b
       ),
       branch_window as (
         select
           bd.branch_id,
           bd.business_date,
-          ((bd.business_date + bd.business_day_start_time) at time zone bd.timezone) as start_at,
-          (((bd.business_date + 1) + bd.business_day_start_time) at time zone bd.timezone) as end_at
+          ((bd.business_date + bd.business_day_start_time) at time zone 'Asia/Karachi') as start_at,
+          (((bd.business_date + 1) + bd.business_day_start_time) at time zone 'Asia/Karachi') as end_at
         from branch_day bd
+      ),
+      current_closure as (
+        select distinct on (fdc.branch_id)
+          fdc.branch_id,
+          fdc.business_date,
+          fdc.opening_cash::numeric as opening_cash,
+          fdc.opening_online::numeric as opening_online
+        from finance_day_closures fdc
+        join branch_window bw
+          on bw.branch_id = fdc.branch_id
+         and bw.business_date = fdc.business_date
+        order by fdc.branch_id, fdc.created_at desc
+      ),
+      ranked_accounts as (
+        select
+          fa.id,
+          case
+            when fa.is_cash or fa.account_type::text = 'counter_cash' then
+              count(*) filter (
+                where fa.is_cash or fa.account_type::text = 'counter_cash'
+              ) over (
+                partition by fa.branch_id
+                order by fa.sort_order asc, fa.created_at asc
+              )
+            else null
+          end as cash_rank,
+          case
+            when not coalesce(fa.is_cash, false)
+              and fa.account_type::text in ('online', 'bank', 'wallet') then
+              count(*) filter (
+                where not coalesce(fa.is_cash, false)
+                  and fa.account_type::text in ('online', 'bank', 'wallet')
+              ) over (
+                partition by fa.branch_id
+                order by fa.sort_order asc, fa.created_at asc
+              )
+            else null
+          end as online_rank
+        from finance_accounts fa
+        where fa.is_active = true
+      ),
+      account_openings as (
+        select
+          fa.id as finance_account_id,
+          case
+            when (fa.is_cash or fa.account_type::text = 'counter_cash')
+              and ra.cash_rank = 1 then coalesce(cc.opening_cash, 0)
+            when not coalesce(fa.is_cash, false)
+              and fa.account_type::text in ('online', 'bank', 'wallet')
+              and ra.online_rank = 1 then coalesce(cc.opening_online, 0)
+            else 0
+          end::numeric as opening_balance
+        from finance_accounts fa
+        left join ranked_accounts ra on ra.id = fa.id
+        left join current_closure cc on cc.branch_id = fa.branch_id
       ),
       movement_totals as (
         select
@@ -673,10 +727,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         bw.business_date::text as business_date,
         coalesce(mt.all_time_movement, 0)::numeric as all_time_movement,
         coalesce(mt.current_shift_movement, 0)::numeric as current_shift_movement,
-        coalesce(mt.all_time_movement, 0)::numeric as balance
+        (coalesce(ao.opening_balance, 0) + coalesce(mt.current_shift_movement, 0))::numeric as balance
       from finance_accounts fa
       join branch_window bw on bw.branch_id = fa.branch_id
       left join movement_totals mt on mt.finance_account_id = fa.id
+      left join account_openings ao on ao.finance_account_id = fa.id
       `,
       input,
     );
@@ -859,6 +914,32 @@ async function selectInventoryMenuPerformance(input: z.infer<typeof SelectSchema
 async function runInsert(input: z.infer<typeof InsertSchema>) {
   const rows = Array.isArray(input.values) ? input.values : [input.values];
   if (!rows.length) return { data: input.returning ? [] : null };
+  if (input.table === "operational_expenses") {
+    const client = await pgPool.connect();
+    try {
+      await client.query("begin");
+      for (const row of rows) {
+        await assertExpensePaymentSourceCanCover(client, row, 0);
+      }
+      const result = await insertRows(client, input.table, rows, input.returning);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return insertRows(pgPool, input.table, rows, input.returning);
+}
+
+async function insertRows(
+  client: Pick<PoolClient, "query">,
+  table: string,
+  rows: Record<string, unknown>[],
+  returning: boolean,
+) {
   const columns = Object.keys(rows[0]);
   const params: unknown[] = [];
   const valuesSql = rows
@@ -870,27 +951,62 @@ async function runInsert(input: z.infer<typeof InsertSchema>) {
       return `(${placeholders.join(", ")})`;
     })
     .join(", ");
-  const sql = `insert into ${ident(input.table)} (${columns.map(ident).join(", ")}) values ${valuesSql}${input.returning ? " returning *" : ""}`;
-  const result = await pgPool.query(sql, params);
-  return { data: input.returning ? result.rows : null };
+  const sql = `insert into ${ident(table)} (${columns.map(ident).join(", ")}) values ${valuesSql}${returning ? " returning *" : ""}`;
+  const result = await client.query(sql, params);
+  return { data: returning ? result.rows : null };
 }
 
 async function runUpdate(input: z.infer<typeof UpdateSchema>) {
   if (!input.filters.length) throw new Error("Refusing to update without a filter.");
+  if (input.table === "operational_expenses") {
+    const client = await pgPool.connect();
+    try {
+      await client.query("begin");
+      const targets = await selectRowsForUpdate(client, input.table, input.filters);
+      for (const target of targets) {
+        const next = { ...target, ...input.values };
+        const existingCredit =
+          target.status === "paid" &&
+          target.finance_account_id &&
+          target.finance_account_id === next.finance_account_id
+            ? Number(target.amount || 0)
+            : 0;
+        await assertExpensePaymentSourceCanCover(client, next, existingCredit);
+      }
+      const result = await updateRows(client, input.table, input.values, input.filters, input.returning);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return updateRows(pgPool, input.table, input.values, input.filters, input.returning);
+}
+
+async function updateRows(
+  client: Pick<PoolClient, "query">,
+  table: string,
+  values: Record<string, unknown>,
+  filters: Array<z.infer<typeof FilterSchema>>,
+  returning: boolean,
+) {
   const params: unknown[] = [];
-  const setSql = Object.entries(input.values)
+  const setSql = Object.entries(values)
     .map(([column, value]) => {
       params.push(normalizeValue(value));
       return `${ident(column)} = $${params.length}`;
     })
     .join(", ");
-  const { where, params: filterParams } = buildWhere(input.filters, params.length);
+  const { where, params: filterParams } = buildWhere(filters, params.length);
   params.push(...filterParams);
-  const result = await pgPool.query(
-    `update ${ident(input.table)} set ${setSql}${where}${input.returning ? " returning *" : ""}`,
+  const result = await client.query(
+    `update ${ident(table)} set ${setSql}${where}${returning ? " returning *" : ""}`,
     params,
   );
-  return { data: input.returning ? result.rows : null };
+  return { data: returning ? result.rows : null };
 }
 
 async function runDelete(input: z.infer<typeof DeleteSchema>) {
@@ -923,6 +1039,199 @@ async function runUpsert(input: z.infer<typeof UpsertSchema>) {
   const sql = `insert into ${ident(input.table)} (${columns.map(ident).join(", ")}) values ${valuesSql} on conflict (${input.conflictColumns.map(ident).join(", ")}) do update set ${setSql}${input.returning ? " returning *" : ""}`;
   const result = await pgPool.query(sql, params);
   return { data: input.returning ? result.rows : null };
+}
+
+async function selectRowsForUpdate(
+  client: PoolClient,
+  table: string,
+  filters: Array<z.infer<typeof FilterSchema>>,
+) {
+  const params: unknown[] = [];
+  const { where, params: filterParams } = buildWhere(filters, params.length);
+  params.push(...filterParams);
+  const result = await client.query(`select * from ${ident(table)}${where} for update`, params);
+  return result.rows as Record<string, unknown>[];
+}
+
+async function assertExpensePaymentSourceCanCover(
+  client: PoolClient,
+  expense: Record<string, unknown>,
+  existingCredit: number,
+) {
+  if (expense.status !== "paid") return;
+  const branchId = nullableText(expense.branch_id);
+  const accountId = nullableText(expense.finance_account_id);
+  const amount = Number(expense.amount ?? 0);
+  if (!branchId || !accountId || !Number.isFinite(amount) || amount <= 0) return;
+
+  const account = await client.query(
+    `select id, name, account_type::text as account_type, is_cash
+       from finance_accounts
+      where id = $1 and branch_id = $2 and is_active = true
+      for update`,
+    [accountId, branchId],
+  );
+  const row = account.rows[0];
+  if (!row) throw new Error("Payment source is not available for this branch.");
+  if (!financeAccountRequiresBalance(row.account_type)) return;
+
+  const balance = await getLiveFinanceAccountBalance(client, branchId, accountId);
+  const available = balance + existingCredit;
+  if (amount > available + 0.001) {
+    throw new Error(
+      `${row.name} has ${moneyString(available)} available. Mark this expense as due or use pocket/backup money.`,
+    );
+  }
+}
+
+function financeAccountRequiresBalance(accountType: unknown) {
+  return ["counter_cash", "online", "bank", "wallet"].includes(String(accountType ?? ""));
+}
+
+async function getLiveFinanceAccountBalance(
+  client: PoolClient,
+  branchId: string,
+  accountId: string,
+) {
+  const result = await client.query(
+    `
+    with branch_day as (
+      select
+        b.id as branch_id,
+        case
+          when (now() at time zone 'Asia/Karachi')::time < b.business_day_start_time
+            then ((now() at time zone 'Asia/Karachi')::date - 1)
+          else (now() at time zone 'Asia/Karachi')::date
+        end as business_date,
+        b.business_day_start_time,
+        b.finance_cutover_at
+      from branches b
+      where b.id = $1
+    ),
+    branch_window as (
+      select
+        bd.branch_id,
+        bd.business_date,
+        bd.finance_cutover_at,
+        ((bd.business_date + bd.business_day_start_time) at time zone 'Asia/Karachi') as start_at,
+        (((bd.business_date + 1) + bd.business_day_start_time) at time zone 'Asia/Karachi') as end_at
+      from branch_day bd
+    ),
+    current_closure as (
+      select distinct on (fdc.branch_id)
+        fdc.branch_id,
+        fdc.opening_cash::numeric as opening_cash,
+        fdc.opening_online::numeric as opening_online
+      from finance_day_closures fdc
+      join branch_window bw
+        on bw.branch_id = fdc.branch_id
+       and bw.business_date = fdc.business_date
+      order by fdc.branch_id, fdc.created_at desc
+    ),
+    ranked_accounts as (
+      select
+        fa.id,
+        case
+          when fa.is_cash or fa.account_type::text = 'counter_cash' then
+            count(*) filter (
+              where fa.is_cash or fa.account_type::text = 'counter_cash'
+            ) over (
+              partition by fa.branch_id
+              order by fa.sort_order asc, fa.created_at asc
+            )
+          else null
+        end as cash_rank,
+        case
+          when not coalesce(fa.is_cash, false)
+            and fa.account_type::text in ('online', 'bank', 'wallet') then
+            count(*) filter (
+              where not coalesce(fa.is_cash, false)
+                and fa.account_type::text in ('online', 'bank', 'wallet')
+            ) over (
+              partition by fa.branch_id
+              order by fa.sort_order asc, fa.created_at asc
+            )
+          else null
+        end as online_rank
+      from finance_accounts fa
+      where fa.branch_id = $1 and fa.is_active = true
+    ),
+    account_opening as (
+      select
+        case
+          when (fa.is_cash or fa.account_type::text = 'counter_cash')
+            and ra.cash_rank = 1 then coalesce(cc.opening_cash, 0)
+          when not coalesce(fa.is_cash, false)
+            and fa.account_type::text in ('online', 'bank', 'wallet')
+            and ra.online_rank = 1 then coalesce(cc.opening_online, 0)
+          else 0
+        end::numeric as opening_balance
+      from finance_accounts fa
+      left join ranked_accounts ra on ra.id = fa.id
+      left join current_closure cc on cc.branch_id = fa.branch_id
+      where fa.id = $2 and fa.branch_id = $1
+    ),
+    movement_rows as (
+      select p.finance_account_id, p.paid_at as occurred_at, p.amount::numeric as amount
+      from payments p
+      join orders o on o.id = p.order_id
+      join branch_window bw on bw.branch_id = o.branch_id
+      where p.finance_account_id = $2
+        and p.paid_at >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+      union all
+      select e.finance_account_id,
+        ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi'),
+        (-e.amount)::numeric
+      from operational_expenses e
+      join branch_window bw on bw.branch_id = e.branch_id
+      where e.status = 'paid'
+        and e.finance_account_id = $2
+        and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+      union all
+      select ip.finance_account_id,
+        ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi'),
+        (-ip.total)::numeric
+      from inventory_purchases ip
+      join branch_window bw on bw.branch_id = ip.branch_id
+      where ip.finance_account_id = $2
+        and ((ip.purchase_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+      union all
+      select sle.finance_account_id,
+        ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi'),
+        sle.amount::numeric
+      from supplier_ledger_entries sle
+      join branch_window bw on bw.branch_id = sle.branch_id
+      where sle.entry_type = 'payment'
+        and sle.finance_account_id = $2
+        and ((sle.occurred_on::timestamp + time '12:00') at time zone 'Asia/Karachi')
+          >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+      union all
+      select t.from_account_id, t.occurred_at, (-t.amount)::numeric
+      from finance_transfers t
+      join branch_window bw on bw.branch_id = t.branch_id
+      where t.from_account_id = $2
+        and t.occurred_at >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+      union all
+      select t.to_account_id, t.occurred_at, t.amount::numeric
+      from finance_transfers t
+      join branch_window bw on bw.branch_id = t.branch_id
+      where t.to_account_id = $2
+        and t.occurred_at >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
+    )
+    select
+      (coalesce((select opening_balance from account_opening), 0) +
+       coalesce(sum(mr.amount) filter (
+         where mr.occurred_at >= bw.start_at and mr.occurred_at < bw.end_at
+       ), 0))::numeric as balance
+    from branch_window bw
+    left join movement_rows mr on true
+    group by bw.branch_id
+    `,
+    [branchId, accountId],
+  );
+  return Number(result.rows[0]?.balance ?? 0);
 }
 
 async function runRpc(fn: string, args: Record<string, unknown>, actorId: string) {
