@@ -1476,19 +1476,18 @@ function CustomerHome() {
           </div>
         </aside>
 
-        {menu?.branch && (
+        {menu?.branch && (menu.reviews?.totalReviews ?? 0) > 0 && (
           <section className="mt-12 overflow-hidden rounded-md border border-[#b8954e]/24 bg-[linear-gradient(135deg,rgba(26,20,11,0.92),rgba(7,6,5,0.98)_62%,rgba(20,11,6,0.9))] p-5 shadow-[0_26px_70px_-56px_rgba(216,189,119,0.55)] sm:p-7">
             <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.28em] text-[#d8bd77]">
-                  Customer trust
+                  Guest notes
                 </p>
                 <h2 className="mt-1.5 font-display text-4xl leading-tight text-[#fff8e7] sm:text-5xl">
-                  Verified guest reviews
+                  Loved by Angaar guests
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-[#bfb19a]">
-                  Reviews are linked to completed customer orders, so public feedback stays
-                  verified instead of open to fake comments.
+                  A few words from guests who ordered from Angaar Kitchen.
                 </p>
               </div>
               <div className="rounded-md border border-[#d8bd77]/35 bg-black/36 px-5 py-4">
@@ -1496,51 +1495,34 @@ function CustomerHome() {
                   {(menu.reviews?.averageRating ?? 0).toFixed(1)}
                 </div>
                 <div className="text-xs text-[#bfb19a]">
-                  from {menu.reviews?.totalReviews ?? 0} verified review
+                  average from {menu.reviews?.totalReviews ?? 0} review
                   {menu.reviews?.totalReviews === 1 ? "" : "s"}
                 </div>
               </div>
             </div>
-            {(menu.reviews?.recent.length ?? 0) > 0 ? (
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                {menu.reviews!.recent.slice(0, 3).map((review) => (
-                  <article
-                    key={review.id}
-                    className="rounded-md border border-[#b8954e]/22 bg-black/28 p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="font-mono text-sm text-[#d8bd77]">
-                        Rating {review.rating}/5
-                      </div>
-                      <span className="rounded-md border border-[#b8954e]/25 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f8efd8]">
-                        Verified
-                      </span>
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              {menu.reviews!.recent.slice(0, 3).map((review) => (
+                <article
+                  key={review.id}
+                  className="rounded-md border border-[#b8954e]/22 bg-black/28 p-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-mono text-sm text-[#d8bd77]">
+                      Rating {review.rating}/5
                     </div>
-                    <p className="mt-3 line-clamp-4 text-sm leading-6 text-[#d8cdb8]">
-                      {review.review || "A verified customer enjoyed their Angaar Kitchen order."}
-                    </p>
-                    <div className="mt-3 text-xs text-[#8f846f]">
-                      {review.customerName || "Angaar customer"}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
-                <TrustCard
-                  title="Verified only"
-                  text="Reviews appear after completed orders and admin approval."
-                />
-                <TrustCard
-                  title="Order-linked"
-                  text="Feedback stays connected to real customer history and repeat orders."
-                />
-                <TrustCard
-                  title="No fake reviews"
-                  text="The site will not show invented ratings while the review base is growing."
-                />
-              </div>
-            )}
+                    <span className="rounded-md border border-[#b8954e]/25 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#f8efd8]">
+                      Guest review
+                    </span>
+                  </div>
+                  <p className="mt-3 line-clamp-4 text-sm leading-6 text-[#d8cdb8]">
+                    {review.review || "A warm note from an Angaar Kitchen guest."}
+                  </p>
+                  <div className="mt-3 text-xs text-[#8f846f]">
+                    {review.customerName || "Angaar guest"}
+                  </div>
+                </article>
+              ))}
+            </div>
           </section>
         )}
       </main>
@@ -1673,15 +1655,6 @@ function ProductBadge({ children }: { children: React.ReactNode }) {
     <span className="rounded-md border border-[#d8bd77]/35 bg-black/72 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#f8efd8] backdrop-blur-sm">
       {children}
     </span>
-  );
-}
-
-function TrustCard({ title, text }: { title: string; text: string }) {
-  return (
-    <article className="rounded-md border border-[#b8954e]/22 bg-black/28 p-4">
-      <div className="font-display text-xl text-[#fff8e7]">{title}</div>
-      <p className="mt-2 text-sm leading-6 text-[#bfb19a]">{text}</p>
-    </article>
   );
 }
 
