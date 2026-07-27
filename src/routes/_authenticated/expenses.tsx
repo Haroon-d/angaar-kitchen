@@ -762,6 +762,8 @@ function ExpensesWorkspace({
         closure={closureQ.data ?? null}
         accounts={accounts}
         movements={movementsQ.data ?? []}
+        cashPosition={cashPosition}
+        onlinePosition={onlinePosition}
         businessDayStart={businessDayStart}
         symbol={symbol}
         onSaved={() => {
@@ -1698,6 +1700,8 @@ function DayEndPanel({
   closure,
   accounts,
   movements,
+  cashPosition,
+  onlinePosition,
   businessDayStart,
   symbol,
   onSaved,
@@ -1709,6 +1713,8 @@ function DayEndPanel({
   closure: FinanceDayClosure | null;
   accounts: FinanceAccount[];
   movements: FinanceMovement[];
+  cashPosition: number;
+  onlinePosition: number;
   businessDayStart: string;
   symbol: string;
   onSaved: () => void;
@@ -1721,14 +1727,6 @@ function DayEndPanel({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-
-  useEffect(() => {
-    setOpeningCash(String(closure?.opening_cash ?? "0"));
-    setOpeningOnline(String(closure?.opening_online ?? "0"));
-    setActualCash(closure?.actual_cash == null ? "" : String(closure.actual_cash));
-    setActualOnline(closure?.actual_online == null ? "" : String(closure.actual_online));
-    setNotes(closure?.notes ?? "");
-  }, [closure, date]);
 
   const cashMovement = movements
     .filter(isCashMovement)
@@ -1766,6 +1764,17 @@ function DayEndPanel({
       )
       .reduce((sum, movement) => sum + Number(movement.amount || 0), 0),
   );
+  const carriedOpeningCash = Math.max(0, cashPosition - cashMovement);
+  const carriedOpeningOnline = Math.max(0, onlinePosition - onlineMovement);
+
+  useEffect(() => {
+    setOpeningCash(String(closure?.opening_cash ?? moneyString(carriedOpeningCash)));
+    setOpeningOnline(String(closure?.opening_online ?? moneyString(carriedOpeningOnline)));
+    setActualCash(closure?.actual_cash == null ? "" : String(closure.actual_cash));
+    setActualOnline(closure?.actual_online == null ? "" : String(closure.actual_online));
+    setNotes(closure?.notes ?? "");
+  }, [carriedOpeningCash, carriedOpeningOnline, closure, date]);
+
   const openingCashAmount = Number(openingCash || 0);
   const openingOnlineAmount = Number(openingOnline || 0);
   const expectedCash = openingCashAmount + cashMovement;
@@ -1892,8 +1901,8 @@ function DayEndPanel({
         )}
         {enabled && !shiftOpened && (
           <div className="rounded-lg border border-primary/25 bg-primary/10 p-3 text-sm text-primary-foreground">
-            Open the shift before operational cash tracking. Opening cash is required; online
-            opening can stay 0 and be corrected later.
+            Open the shift before operational cash tracking. Opening cash is filled from the
+            carried finance balance, but you can correct it before opening.
           </div>
         )}
         {enabled && shiftClosed && (
