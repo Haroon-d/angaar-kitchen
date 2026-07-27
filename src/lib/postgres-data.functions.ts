@@ -648,17 +648,21 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
           (((bd.business_date + 1) + bd.business_day_start_time) at time zone 'Asia/Karachi') as end_at
         from branch_day bd
       ),
-      current_closure as (
+      latest_closure as (
         select distinct on (fdc.branch_id)
           fdc.branch_id,
           fdc.business_date,
           fdc.opening_cash::numeric as opening_cash,
-          fdc.opening_online::numeric as opening_online
+          fdc.opening_online::numeric as opening_online,
+          fdc.actual_cash::numeric as actual_cash,
+          fdc.actual_online::numeric as actual_online,
+          ((fdc.business_date + b.business_day_start_time) at time zone 'Asia/Karachi') as start_at,
+          (((fdc.business_date + 1) + b.business_day_start_time) at time zone 'Asia/Karachi') as end_at
         from finance_day_closures fdc
-        join branch_window bw
-          on bw.branch_id = fdc.branch_id
-         and bw.business_date = fdc.business_date
-        order by fdc.branch_id, fdc.created_at desc
+        join branches b on b.id = fdc.branch_id
+        where ((fdc.business_date + b.business_day_start_time) at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
+        order by fdc.branch_id, fdc.business_date desc, fdc.created_at desc
       ),
       ranked_accounts as (
         select
@@ -688,31 +692,48 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         from finance_accounts fa
         where fa.is_active = true
       ),
-      account_openings as (
+      account_baselines as (
         select
           fa.id as finance_account_id,
           case
             when (fa.is_cash or fa.account_type::text = 'counter_cash')
-              and ra.cash_rank = 1 then coalesce(cc.opening_cash, 0)
+              and ra.cash_rank = 1 then coalesce(lc.actual_cash, lc.opening_cash, 0)
             when not coalesce(fa.is_cash, false)
               and fa.account_type::text in ('online', 'bank', 'wallet')
-              and ra.online_rank = 1 then coalesce(cc.opening_online, 0)
+              and ra.online_rank = 1 then coalesce(lc.actual_online, lc.opening_online, 0)
             else 0
-          end::numeric as opening_balance
+          end::numeric as baseline_balance,
+          case
+            when (fa.is_cash or fa.account_type::text = 'counter_cash')
+              and ra.cash_rank = 1
+              and lc.branch_id is not null then
+                case when lc.actual_cash is not null then lc.end_at else lc.start_at end
+            when not coalesce(fa.is_cash, false)
+              and fa.account_type::text in ('online', 'bank', 'wallet')
+              and ra.online_rank = 1
+              and lc.branch_id is not null then
+                case when lc.actual_online is not null then lc.end_at else lc.start_at end
+            else coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
+          end as baseline_at
         from finance_accounts fa
+        join branches b on b.id = fa.branch_id
         left join ranked_accounts ra on ra.id = fa.id
-        left join current_closure cc on cc.branch_id = fa.branch_id
+        left join latest_closure lc on lc.branch_id = fa.branch_id
       ),
       movement_totals as (
         select
           mr.finance_account_id,
           coalesce(sum(mr.amount), 0)::numeric as all_time_movement,
           coalesce(sum(mr.amount) filter (
+            where mr.occurred_at >= ab.baseline_at
+          ), 0)::numeric as live_movement,
+          coalesce(sum(mr.amount) filter (
             where mr.occurred_at >= bw.start_at and mr.occurred_at < bw.end_at
           ), 0)::numeric as current_shift_movement
         from movement_rows mr
         join finance_accounts fa on fa.id = mr.finance_account_id
         join branch_window bw on bw.branch_id = fa.branch_id
+        join account_baselines ab on ab.finance_account_id = mr.finance_account_id
         group by mr.finance_account_id
       )
       select
@@ -727,11 +748,11 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
         bw.business_date::text as business_date,
         coalesce(mt.all_time_movement, 0)::numeric as all_time_movement,
         coalesce(mt.current_shift_movement, 0)::numeric as current_shift_movement,
-        (coalesce(ao.opening_balance, 0) + coalesce(mt.current_shift_movement, 0))::numeric as balance
+        (coalesce(ab.baseline_balance, 0) + coalesce(mt.live_movement, 0))::numeric as balance
       from finance_accounts fa
       join branch_window bw on bw.branch_id = fa.branch_id
       left join movement_totals mt on mt.finance_account_id = fa.id
-      left join account_openings ao on ao.finance_account_id = fa.id
+      left join account_baselines ab on ab.finance_account_id = fa.id
       `,
       input,
     );
@@ -1148,16 +1169,22 @@ async function getLiveFinanceAccountBalance(
         (((bd.business_date + 1) + bd.business_day_start_time) at time zone 'Asia/Karachi') as end_at
       from branch_day bd
     ),
-    current_closure as (
+    latest_closure as (
       select distinct on (fdc.branch_id)
         fdc.branch_id,
+        fdc.business_date,
         fdc.opening_cash::numeric as opening_cash,
-        fdc.opening_online::numeric as opening_online
+        fdc.opening_online::numeric as opening_online,
+        fdc.actual_cash::numeric as actual_cash,
+        fdc.actual_online::numeric as actual_online,
+        ((fdc.business_date + b.business_day_start_time) at time zone 'Asia/Karachi') as start_at,
+        (((fdc.business_date + 1) + b.business_day_start_time) at time zone 'Asia/Karachi') as end_at
       from finance_day_closures fdc
-      join branch_window bw
-        on bw.branch_id = fdc.branch_id
-       and bw.business_date = fdc.business_date
-      order by fdc.branch_id, fdc.created_at desc
+      join branches b on b.id = fdc.branch_id
+      where fdc.branch_id = $1
+        and ((fdc.business_date + b.business_day_start_time) at time zone 'Asia/Karachi')
+          >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
+      order by fdc.branch_id, fdc.business_date desc, fdc.created_at desc
     ),
     ranked_accounts as (
       select
@@ -1187,19 +1214,32 @@ async function getLiveFinanceAccountBalance(
       from finance_accounts fa
       where fa.branch_id = $1 and fa.is_active = true
     ),
-    account_opening as (
+    account_baseline as (
       select
         case
           when (fa.is_cash or fa.account_type::text = 'counter_cash')
-            and ra.cash_rank = 1 then coalesce(cc.opening_cash, 0)
+            and ra.cash_rank = 1 then coalesce(lc.actual_cash, lc.opening_cash, 0)
           when not coalesce(fa.is_cash, false)
             and fa.account_type::text in ('online', 'bank', 'wallet')
-            and ra.online_rank = 1 then coalesce(cc.opening_online, 0)
+            and ra.online_rank = 1 then coalesce(lc.actual_online, lc.opening_online, 0)
           else 0
-        end::numeric as opening_balance
+        end::numeric as baseline_balance,
+        case
+          when (fa.is_cash or fa.account_type::text = 'counter_cash')
+            and ra.cash_rank = 1
+            and lc.branch_id is not null then
+              case when lc.actual_cash is not null then lc.end_at else lc.start_at end
+          when not coalesce(fa.is_cash, false)
+            and fa.account_type::text in ('online', 'bank', 'wallet')
+            and ra.online_rank = 1
+            and lc.branch_id is not null then
+              case when lc.actual_online is not null then lc.end_at else lc.start_at end
+          else coalesce(bd.finance_cutover_at, '-infinity'::timestamp with time zone)
+        end as baseline_at
       from finance_accounts fa
+      join branch_day bd on bd.branch_id = fa.branch_id
       left join ranked_accounts ra on ra.id = fa.id
-      left join current_closure cc on cc.branch_id = fa.branch_id
+      left join latest_closure lc on lc.branch_id = fa.branch_id
       where fa.id = $2 and fa.branch_id = $1
     ),
     movement_rows as (
@@ -1252,9 +1292,9 @@ async function getLiveFinanceAccountBalance(
         and t.occurred_at >= coalesce(bw.finance_cutover_at, '-infinity'::timestamp with time zone)
     )
     select
-      (coalesce((select opening_balance from account_opening), 0) +
+      (coalesce((select baseline_balance from account_baseline), 0) +
        coalesce(sum(mr.amount) filter (
-         where mr.occurred_at >= bw.start_at and mr.occurred_at < bw.end_at
+         where mr.occurred_at >= (select baseline_at from account_baseline)
        ), 0))::numeric as balance
     from branch_window bw
     left join movement_rows mr on true
