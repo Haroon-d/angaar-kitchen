@@ -183,6 +183,7 @@ type FinanceObligation = {
   status: string;
   occurred_at: string;
   notes: string | null;
+  expense?: Expense;
 };
 
 type Expense = {
@@ -212,6 +213,18 @@ type ExpenseFormState = {
   status: ExpenseStatus;
   amount: string;
   notes: string;
+};
+
+type OpenMoneyGroup = {
+  id: string;
+  obligation_type: FinanceObligation["obligation_type"];
+  source_type: FinanceObligation["source_type"];
+  counterparty_name: string;
+  reference: string | null;
+  amount: number;
+  count: number;
+  latestAt: string;
+  obligations: FinanceObligation[];
 };
 
 const CategorySchema = z.object({
@@ -479,6 +492,57 @@ function accountRequiresBalance(account: FinanceAccount | undefined) {
   );
 }
 
+function normalizeMoneyName(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function openMoneyGroupKey(obligation: FinanceObligation) {
+  const nameKey = normalizeMoneyName(obligation.counterparty_name) || "unknown";
+  return `${obligation.obligation_type}:${obligation.source_type}:${nameKey}`;
+}
+
+function groupOpenMoneyRecords(obligations: FinanceObligation[]): OpenMoneyGroup[] {
+  const groups = new Map<string, OpenMoneyGroup>();
+
+  for (const obligation of obligations) {
+    const key = openMoneyGroupKey(obligation);
+    const amount = Number(obligation.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.amount += amount;
+      existing.count += 1;
+      existing.obligations.push(obligation);
+      if (new Date(obligation.occurred_at).getTime() > new Date(existing.latestAt).getTime()) {
+        existing.latestAt = obligation.occurred_at;
+      }
+      continue;
+    }
+    groups.set(key, {
+      id: key,
+      obligation_type: obligation.obligation_type,
+      source_type: obligation.source_type,
+      counterparty_name: obligation.counterparty_name,
+      reference: obligation.reference,
+      amount,
+      count: 1,
+      latestAt: obligation.occurred_at,
+      obligations: [obligation],
+    });
+  }
+
+  return [...groups.values()].sort(
+    (a, b) =>
+      b.amount - a.amount ||
+      new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime() ||
+      a.counterparty_name.localeCompare(b.counterparty_name),
+  );
+}
+
 function ExpensesPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
@@ -720,6 +784,9 @@ function ExpensesWorkspace({
         <FinancePositionOverview
           positions={positions}
           obligations={obligations}
+          accounts={accounts}
+          accountBalances={currentAccountBalances}
+          businessDayStart={businessDayStart}
           cashPosition={cashPosition}
           onlinePosition={onlinePosition}
           receivableTotal={receivableTotal}
@@ -957,6 +1024,9 @@ function ExpensesWorkspace({
 function FinancePositionOverview({
   positions,
   obligations,
+  accounts,
+  accountBalances,
+  businessDayStart,
   cashPosition,
   onlinePosition,
   receivableTotal,
@@ -967,6 +1037,9 @@ function FinancePositionOverview({
 }: {
   positions: FinanceAccountPosition[];
   obligations: FinanceObligation[];
+  accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
+  businessDayStart: string;
   cashPosition: number;
   onlinePosition: number;
   receivableTotal: number;
@@ -977,12 +1050,12 @@ function FinancePositionOverview({
 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [recordsLimit, setRecordsLimit] = useState(8);
-  const sortedObligations = useMemo(
-    () => obligations.slice().sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)),
+  const groupedRecords = useMemo(
+    () => groupOpenMoneyRecords(obligations),
     [obligations],
   );
-  const visibleObligations = sortedObligations.slice(0, recordsLimit);
-  const remainingObligations = Math.max(0, sortedObligations.length - visibleObligations.length);
+  const visibleOpenRecords = groupedRecords.slice(0, recordsLimit);
+  const remainingOpenRecords = Math.max(0, groupedRecords.length - visibleOpenRecords.length);
   const totalAvailable = cashPosition + onlinePosition;
   const receivableRecords = obligations.filter(
     (obligation) => obligation.obligation_type === "receivable",
@@ -1131,10 +1204,10 @@ function FinancePositionOverview({
               People to collect from and vendors/suppliers to pay.
             </p>
             <div className="mt-3 space-y-2">
-              {visibleObligations.length ? (
-                visibleObligations.map((obligation) => (
+              {visibleOpenRecords.length ? (
+                visibleOpenRecords.map((record) => (
                   <div
-                    key={`${obligation.source_type}-${obligation.id}`}
+                    key={record.id}
                     className="rounded-lg border border-border p-3"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -1143,26 +1216,37 @@ function FinancePositionOverview({
                           <Badge
                             variant="outline"
                             className={
-                              obligation.obligation_type === "receivable"
+                              record.obligation_type === "receivable"
                                 ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200"
                                 : "border-amber-500/35 bg-amber-500/10 text-amber-200"
                             }
                           >
-                            {obligation.obligation_type === "receivable"
-                              ? "Collect"
-                              : "Pay"}
+                            {record.obligation_type === "receivable" ? "Collect" : "Pay"}
                           </Badge>
                           <span className="truncate font-medium">
-                            {obligation.counterparty_name}
+                            {record.counterparty_name}
                           </span>
+                          {record.count > 1 && <Badge variant="secondary">{record.count} records</Badge>}
                         </div>
                         <p className="mt-1 truncate text-xs text-muted-foreground">
-                          {obligation.reference || sourceObligationLabel(obligation.source_type)}
+                          {record.reference || sourceObligationLabel(record.source_type)}
                         </p>
                       </div>
-                      <p className="shrink-0 font-mono font-semibold">
-                        {formatMoney(obligation.amount, symbol)}
-                      </p>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <p className="font-mono font-semibold">
+                          {formatMoney(record.amount, symbol)}
+                        </p>
+                        {record.obligation_type === "payable" && record.source_type === "expense" && (
+                          <PayExpenseGroupDialog
+                            record={record}
+                            accounts={accounts}
+                            accountBalances={accountBalances}
+                            businessDayStart={businessDayStart}
+                            symbol={symbol}
+                            onPaid={refresh}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))
@@ -1171,7 +1255,7 @@ function FinancePositionOverview({
                   Nothing open right now.
                 </div>
               )}
-              {remainingObligations > 0 && (
+              {remainingOpenRecords > 0 && (
                 <Button
                   type="button"
                   variant="outline"
@@ -1179,10 +1263,10 @@ function FinancePositionOverview({
                   className="w-full"
                   onClick={() => setRecordsLimit((limit) => limit + 8)}
                 >
-                  Show more records ({remainingObligations} left)
+                  Show more records ({remainingOpenRecords} left)
                 </Button>
               )}
-              {recordsLimit > 8 && visibleObligations.length === sortedObligations.length && (
+              {recordsLimit > 8 && visibleOpenRecords.length === groupedRecords.length && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1234,6 +1318,272 @@ function sourceObligationLabel(type: FinanceObligation["source_type"]) {
     default:
       return "Open record";
   }
+}
+
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function appendFinanceNote(existing: string | null | undefined, note: string) {
+  const current = existing?.trim();
+  return current ? `${current}\n${note}` : note;
+}
+
+function PayExpenseGroupDialog({
+  record,
+  accounts,
+  accountBalances,
+  businessDayStart,
+  symbol,
+  onPaid,
+}: {
+  record: OpenMoneyGroup;
+  accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
+  businessDayStart: string;
+  symbol: string;
+  onPaid: () => Promise<void>;
+}) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [amount, setAmount] = useState(String(roundMoney(record.amount)));
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [accountId, setAccountId] = useState(defaultAccountId(accounts, "cash"));
+  const [reference, setReference] = useState("");
+  const dueExpenses = useMemo(
+    () =>
+      record.obligations
+        .map((obligation) => obligation.expense)
+        .filter((expense): expense is Expense => Boolean(expense))
+        .sort(
+          (a, b) =>
+            new Date(toDateInputValue(a.expense_date)).getTime() -
+            new Date(toDateInputValue(b.expense_date)).getTime(),
+        ),
+    [record.obligations],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setAmount(String(roundMoney(record.amount)));
+    setPaymentMethod("cash");
+    setAccountId(defaultAccountId(accounts, "cash"));
+    setReference("");
+  }, [accounts, open, record.amount]);
+
+  async function pay() {
+    const value = roundMoney(Number(amount));
+    if (!Number.isFinite(value) || value <= 0) {
+      toast.error("Enter a payment amount.");
+      return;
+    }
+    if (value > record.amount + 0.001) {
+      toast.error(`Maximum payable amount is ${formatMoney(record.amount, symbol)}.`);
+      return;
+    }
+    if (!dueExpenses.length) {
+      toast.error("Could not find the due expense rows for this payable.");
+      return;
+    }
+    const account = accounts.find((item) => item.id === accountId);
+    if (!account) {
+      toast.error("Select where this payment was paid from.");
+      return;
+    }
+    if (accountRequiresBalance(account)) {
+      const currentBalance = accountBalances[account.id];
+      if (currentBalance == null) {
+        toast.error("Finance balance is still loading. Press Refresh, then try again.");
+        return;
+      }
+      if (value > currentBalance + 0.001) {
+        toast.error(
+          `${account.name} has ${formatMoney(currentBalance, symbol)} available. Use another source or pay a smaller amount.`,
+        );
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      let remaining = value;
+      const paymentDate = businessDateInputValue(businessDayStart);
+      for (const expense of dueExpenses) {
+        if (remaining <= 0.001) break;
+        const dueAmount = roundMoney(Number(expense.amount || 0));
+        if (dueAmount <= 0) continue;
+        const paidAmount = roundMoney(Math.min(remaining, dueAmount));
+        const note = appendFinanceNote(
+          expense.notes,
+          `Paid ${formatMoney(paidAmount, symbol)} to ${record.counterparty_name} on ${paymentDate}${reference ? ` (${reference})` : ""}.`,
+        );
+
+        if (paidAmount >= dueAmount - 0.001) {
+          const { error } = await db
+            .from("operational_expenses")
+            .update({
+              status: "paid",
+              payment_method: paymentMethod,
+              finance_account_id: account.id,
+              expense_date: paymentDate,
+              reference_no: reference || expense.reference_no,
+              notes: note,
+            })
+            .eq("id", expense.id);
+          if (error) throw new Error(error.message);
+        } else {
+          const remainingDue = roundMoney(dueAmount - paidAmount);
+          const { error: updateError } = await db
+            .from("operational_expenses")
+            .update({
+              amount: remainingDue,
+              notes: appendFinanceNote(
+                expense.notes,
+                `Partial payment ${formatMoney(paidAmount, symbol)} recorded on ${paymentDate}; ${formatMoney(remainingDue, symbol)} still due.`,
+              ),
+            })
+            .eq("id", expense.id);
+          if (updateError) throw new Error(updateError.message);
+
+          const { error: insertError } = await db.from("operational_expenses").insert({
+            branch_id: expense.branch_id,
+            category_id: expense.category_id,
+            expense_date: paymentDate,
+            title: expense.title,
+            vendor: expense.vendor,
+            reference_no: reference || expense.reference_no,
+            payment_method: paymentMethod,
+            finance_account_id: account.id,
+            status: "paid",
+            amount: paidAmount,
+            notes: appendFinanceNote(
+              expense.notes,
+              `Partial payment for ${expense.title}; original due row kept with remaining balance.`,
+            ),
+          });
+          if (insertError) throw new Error(insertError.message);
+        }
+        remaining = roundMoney(remaining - paidAmount);
+      }
+
+      toast.success("Payable updated");
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["operational-expenses"] }),
+        qc.invalidateQueries({ queryKey: ["finance-movements"] }),
+        qc.invalidateQueries({ queryKey: ["finance-account-positions"] }),
+        qc.invalidateQueries({ queryKey: ["finance-obligations"] }),
+        qc.invalidateQueries({ queryKey: ["due-expense-obligations"] }),
+      ]);
+      await onPaid();
+      setOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not pay this record");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const selectedAccount = accounts.find((account) => account.id === accountId);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          Pay
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Pay {record.counterparty_name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/35 p-3">
+            <p className="text-sm text-muted-foreground">Open balance</p>
+            <p className="font-mono text-2xl font-semibold">{formatMoney(record.amount, symbol)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {record.count} due expense{record.count === 1 ? "" : "s"} will be paid oldest first.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Amount to pay</Label>
+              <Input
+                type="number"
+                min="0"
+                max={record.amount}
+                step="0.01"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Payment type</Label>
+              <Select
+                value={paymentMethod}
+                onValueChange={(value: PaymentMethod) => {
+                  setPaymentMethod(value);
+                  setAccountId(defaultAccountId(accounts, value));
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="upi">UPI</SelectItem>
+                  <SelectItem value="wallet">Wallet</SelectItem>
+                  <SelectItem value="other">Other / old sale / pocket</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Paid from account</Label>
+              <Select value={accountId} onValueChange={setAccountId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {accounts
+                    .filter((account) => account.is_active)
+                    .map((account) => (
+                      <SelectItem key={account.id} value={account.id}>
+                        {account.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {selectedAccount && accountRequiresBalance(selectedAccount) && (
+                <p className="text-xs text-muted-foreground">
+                  Available now: {formatMoney(accountBalances[selectedAccount.id] ?? 0, symbol)}
+                </p>
+              )}
+              {selectedAccount?.account_type === "other" && (
+                <p className="text-xs text-muted-foreground">
+                  External, old-sale, or backup source. This will not reduce Counter Cash or Online.
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Reference / proof note</Label>
+              <Input
+                value={reference}
+                onChange={(event) => setReference(event.target.value)}
+                placeholder="Receipt no, person name, JazzCash ref"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" onClick={pay} disabled={loading}>
+              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Pay record
+            </Button>
+          </DialogFooter>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function FinanceMovementProofPanel({
@@ -1613,7 +1963,9 @@ function useDueExpenseObligations(branchId: string, financeCutoverAt: string | n
     queryFn: async () => {
       const { data, error } = await db
         .from("operational_expenses")
-        .select("id, branch_id, expense_date, title, vendor, reference_no, status, amount, notes")
+        .select(
+          "id, branch_id, category_id, expense_date, title, vendor, reference_no, payment_method, finance_account_id, status, amount, notes",
+        )
         .eq("branch_id", branchId)
         .eq("status", "due")
         .order("expense_date", { ascending: false })
@@ -1657,6 +2009,7 @@ function expenseToPayableObligation(expense: Expense): FinanceObligation {
     status: expense.status,
     occurred_at: new Date(`${expenseDate}T12:00:00+05:00`).toISOString(),
     notes: expense.notes,
+    expense,
   };
 }
 
