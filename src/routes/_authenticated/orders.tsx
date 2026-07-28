@@ -15,6 +15,7 @@ import {
   MapPin,
   MessageCircle,
   StickyNote,
+  HandCoins,
 } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -78,6 +79,7 @@ type OrderRow = {
   kot_print_count: number;
   bill_print_count: number;
   receipt_print_count: number;
+  is_customer_pending: boolean | null;
 };
 
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = ["completed", "cancelled", "voided", "refunded"];
@@ -123,7 +125,7 @@ function OrdersPage() {
       const { data, error } = await supabase
         .from("orders")
         .select(
-          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, created_by, customer_name, customer_phone, table_label, notes, kot_print_count, bill_print_count, receipt_print_count",
+          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, created_by, customer_name, customer_phone, table_label, notes, kot_print_count, bill_print_count, receipt_print_count, is_customer_pending",
         )
         .eq("branch_id", branch!.id)
         .gte("created_at", selectedPeriod.start)
@@ -223,6 +225,35 @@ function OrdersPage() {
       toast.success(`Order ${order.order_no} marked ${status.replace("_", " ")}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update order");
+    } finally {
+      setUpdatingOrderId(null);
+    }
+  }
+
+  async function setOrderCustomerPending(order: OrderRow, isPending: boolean) {
+    setUpdatingOrderId(order.id);
+    try {
+      const { error } = await supabase.rpc("set_order_customer_pending", {
+        _order_id: order.id,
+        _is_pending: isPending,
+        _reason: isPending
+          ? "Marked as customer pending payment from orders list"
+          : "Removed from customer pending payment from orders list",
+      });
+      if (error) throw new Error(error.message);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["orders-list"] }),
+        qc.invalidateQueries({ queryKey: ["finance-obligations"] }),
+        qc.invalidateQueries({ queryKey: ["customer-dues"] }),
+        qc.invalidateQueries({ queryKey: ["customer-pending-orders"] }),
+      ]);
+      toast.success(
+        isPending ? "Added to customer pending payments" : "Removed from customer pending",
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not update customer pending payment",
+      );
     } finally {
       setUpdatingOrderId(null);
     }
@@ -487,6 +518,7 @@ function OrdersPage() {
                   order={order}
                   updating={updatingOrderId === order.id}
                   onUpdate={(status) => updateOrderStatus(order, status)}
+                  onCustomerPending={(next) => setOrderCustomerPending(order, next)}
                   onOpen={() =>
                     nav({
                       to: "/receipt/$orderId",
@@ -575,19 +607,43 @@ function OrderStatusActions({
   order,
   updating,
   onUpdate,
+  onCustomerPending,
   onOpen,
 }: {
   order: OrderRow;
   updating: boolean;
   onUpdate: (status: OrderStatus) => void;
+  onCustomerPending: (isPending: boolean) => void;
   onOpen: () => void;
 }) {
   const nextStatus = nextFulfillmentStatus(order);
+  const remaining = Math.max(0, Number(order.grand_total) - Number(order.amount_paid));
+  const canMarkCustomerPending =
+    remaining > 0 &&
+    ["pending", "partial"].includes(order.payment_status) &&
+    !TERMINAL_ORDER_STATUSES.includes(order.status);
   return (
     <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
       <Button type="button" variant="outline" size="sm" className="h-8" onClick={onOpen}>
         Open
       </Button>
+      {canMarkCustomerPending && (
+        <Button
+          type="button"
+          variant={order.is_customer_pending ? "secondary" : "outline"}
+          size="sm"
+          className="h-8"
+          disabled={updating}
+          onClick={() => onCustomerPending(!order.is_customer_pending)}
+        >
+          {updating ? (
+            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <HandCoins className="mr-2 h-3.5 w-3.5" />
+          )}
+          {order.is_customer_pending ? "Customer due" : "Add due"}
+        </Button>
+      )}
       {order.customer_phone && (
         <Button type="button" variant="outline" size="sm" className="h-8" asChild>
           <a href={orderWhatsAppUrl(order)} target="_blank" rel="noreferrer">

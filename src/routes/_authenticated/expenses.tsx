@@ -1160,7 +1160,7 @@ function FinancePositionOverview({
   onRefresh: () => Promise<void>;
 }) {
   const [refreshing, setRefreshing] = useState(false);
-  const [recordsLimit, setRecordsLimit] = useState(8);
+  const [recordsLimit, setRecordsLimit] = useState(20);
   const groupedRecords = useMemo(
     () => groupOpenMoneyRecords(obligations),
     [obligations],
@@ -1310,10 +1310,19 @@ function FinancePositionOverview({
           </div>
 
           <div className="rounded-xl border border-border bg-background/35 p-3">
-            <p className="font-medium">Open money records</p>
-            <p className="text-xs text-muted-foreground">
-              People to collect from and vendors/suppliers to pay.
-            </p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-medium">Open money records</p>
+                <p className="text-xs text-muted-foreground">
+                  People to collect from and vendors/suppliers to pay.
+                </p>
+              </div>
+              {groupedRecords.length > 0 && (
+                <Badge variant="secondary" className="shrink-0">
+                  {visibleOpenRecords.length}/{groupedRecords.length}
+                </Badge>
+              )}
+            </div>
             <div className="mt-3 space-y-2">
               {visibleOpenRecords.length ? (
                 visibleOpenRecords.map((record) => (
@@ -1372,18 +1381,18 @@ function FinancePositionOverview({
                   variant="outline"
                   size="sm"
                   className="w-full"
-                  onClick={() => setRecordsLimit((limit) => limit + 8)}
+                  onClick={() => setRecordsLimit((limit) => limit + 20)}
                 >
                   Show more records ({remainingOpenRecords} left)
                 </Button>
               )}
-              {recordsLimit > 8 && visibleOpenRecords.length === groupedRecords.length && (
+              {recordsLimit > 20 && visibleOpenRecords.length === groupedRecords.length && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="w-full"
-                  onClick={() => setRecordsLimit(8)}
+                  onClick={() => setRecordsLimit(20)}
                 >
                   Show less
                 </Button>
