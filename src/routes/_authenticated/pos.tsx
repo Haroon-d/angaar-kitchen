@@ -616,6 +616,7 @@ function POSPage() {
     try {
       const payload = {
         _dining_type: currentDiningType,
+        _customer_id: selectedCustomerId,
         _customer_name: customerName,
         _customer_phone: customerPhone,
         _table_label: hasSeatLabel(currentDiningType) ? tableLabel : "",

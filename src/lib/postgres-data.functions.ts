@@ -2326,6 +2326,7 @@ async function createPosOrder(args: Record<string, unknown>, actorId: string) {
       branch,
       actorId,
       diningType: String(args._dining_type ?? "dine_in"),
+      customerId: nullableText(args._customer_id),
       customerName: nullableText(args._customer_name),
       customerPhone: nullableText(args._customer_phone),
       tableLabel: nullableText(args._table_label),
@@ -2373,6 +2374,7 @@ async function updatePosOrder(args: Record<string, unknown>, actorId: string) {
       branch,
       actorId,
       diningType: String(args._dining_type ?? previousOrder.dining_type),
+      customerId: nullableText(args._customer_id),
       customerName: nullableText(args._customer_name),
       customerPhone: nullableText(args._customer_phone),
       tableLabel: nullableText(args._table_label),
@@ -2407,6 +2409,7 @@ async function writePosOrder(
     };
     actorId: string;
     diningType: string;
+    customerId: string | null;
     customerName: string | null;
     customerPhone: string | null;
     tableLabel: string | null;
@@ -2436,6 +2439,7 @@ async function writePosOrder(
   const customer = await findOrCreateOrderCustomer(client, {
     restaurantId: input.branch.restaurant_id,
     branchId: input.branch.id,
+    customerId: input.customerId,
     name: input.customerName,
     phone: input.customerPhone,
     notes: input.orderNotes,
@@ -2725,6 +2729,7 @@ async function findOrCreateOrderCustomer(
   input: {
     restaurantId: string;
     branchId: string;
+    customerId?: string | null;
     name: string | null;
     phone: string | null;
     notes: string | null;
@@ -2733,10 +2738,89 @@ async function findOrCreateOrderCustomer(
   const phone = input.phone?.trim();
   const phoneNormalized = normalizePhone(phone);
   const name = nullableText(input.name);
+  const context = parseCustomerContext(input.notes);
+
+  if (input.customerId) {
+    const selected = await client.query<{ id: string; is_blocked: boolean }>(
+      `
+      update customers
+      set branch_id = $3,
+          name = coalesce($4, customers.name),
+          primary_phone = case
+            when customers.primary_phone = '' and $5 <> '' then $5
+            else customers.primary_phone
+          end,
+          default_address = coalesce(customers.default_address, $6),
+          notes = coalesce(customers.notes, $7),
+          updated_at = now()
+      where id = $1
+        and restaurant_id = $2
+      returning id, is_blocked
+      `,
+      [
+        input.customerId,
+        input.restaurantId,
+        input.branchId,
+        name,
+        phone ?? "",
+        context.address,
+        context.preferenceNote,
+      ],
+    );
+    const customer = selected.rows[0];
+    if (!customer) throw new Error("Selected customer profile was not found.");
+
+    await addCustomerAddressIfNeeded(client, customer.id, context.address);
+
+    return customer;
+  }
+
   const identityKey = phoneNormalized || nameIdentityKey(name);
   if (!identityKey) return null;
 
-  const context = parseCustomerContext(input.notes);
+  if (!phoneNormalized) {
+    const existingByName = await client.query<{ id: string; is_blocked: boolean }>(
+      `
+      update customers
+      set branch_id = $2,
+          name = coalesce($3, customers.name),
+          default_address = coalesce(customers.default_address, $4),
+          notes = coalesce(customers.notes, $5),
+          updated_at = now()
+      where id = (
+        select c.id
+        from customers c
+        where c.restaurant_id = $1
+          and (
+            c.phone_normalized = $6
+            or 'name:' || regexp_replace(
+              regexp_replace(lower(trim(coalesce(c.name, ''))), '[^a-z0-9]+', '-', 'g'),
+              '(^-+|-+$)',
+              '',
+              'g'
+            ) = $6
+          )
+        order by c.total_orders desc, c.total_spent::numeric desc, c.updated_at desc
+        limit 1
+      )
+      returning id, is_blocked
+      `,
+      [
+        input.restaurantId,
+        input.branchId,
+        name,
+        context.address,
+        context.preferenceNote,
+        identityKey,
+      ],
+    );
+    const existingCustomer = existingByName.rows[0];
+    if (existingCustomer) {
+      await addCustomerAddressIfNeeded(client, existingCustomer.id, context.address);
+      return existingCustomer;
+    }
+  }
+
   const result = await client.query(
     `insert into customers
        (restaurant_id, branch_id, name, primary_phone, phone_normalized, default_address, notes)
@@ -2765,16 +2849,23 @@ async function findOrCreateOrderCustomer(
   const customer = result.rows[0] as { id: string; is_blocked: boolean } | undefined;
   if (!customer) return null;
 
-  if (context.address) {
-    await client.query(
-      `insert into customer_addresses (customer_id, address, is_default)
-       values ($1, $2, true)
-       on conflict (customer_id, address) do nothing`,
-      [customer.id, context.address],
-    );
-  }
+  await addCustomerAddressIfNeeded(client, customer.id, context.address);
 
   return customer;
+}
+
+async function addCustomerAddressIfNeeded(
+  client: PoolClient,
+  customerId: string,
+  address: string | null,
+) {
+  if (!address) return;
+  await client.query(
+    `insert into customer_addresses (customer_id, address, is_default)
+     values ($1, $2, true)
+     on conflict (customer_id, address) do nothing`,
+    [customerId, address],
+  );
 }
 
 async function recordCustomerOrder(

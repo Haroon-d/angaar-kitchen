@@ -314,6 +314,50 @@ async function findOrCreateCustomer(
   if (!identityKey) return null;
 
   const context = parseCustomerContext(input.notes);
+
+  if (!phoneNormalized) {
+    const existingByName = await client.query<CustomerRow>(
+      `
+      update customers
+      set branch_id = $2,
+          name = coalesce($3, customers.name),
+          default_address = coalesce(customers.default_address, $4),
+          notes = coalesce(customers.notes, $5),
+          updated_at = now()
+      where id = (
+        select c.id
+        from customers c
+        where c.restaurant_id = $1
+          and (
+            c.phone_normalized = $6
+            or 'name:' || regexp_replace(
+              regexp_replace(lower(trim(coalesce(c.name, ''))), '[^a-z0-9]+', '-', 'g'),
+              '(^-+|-+$)',
+              '',
+              'g'
+            ) = $6
+          )
+        order by c.total_orders desc, c.total_spent::numeric desc, c.updated_at desc
+        limit 1
+      )
+      returning id, is_blocked
+      `,
+      [
+        input.restaurantId,
+        input.branchId,
+        name,
+        context.address,
+        context.preferenceNote,
+        identityKey,
+      ],
+    );
+    const existingCustomer = existingByName.rows[0];
+    if (existingCustomer) {
+      await addCustomerAddressIfNeeded(client, existingCustomer.id, context.address);
+      return existingCustomer;
+    }
+  }
+
   const result = await client.query<CustomerRow>(
     `insert into customers
        (restaurant_id, branch_id, name, primary_phone, phone_normalized, default_address, notes)
@@ -341,16 +385,23 @@ async function findOrCreateCustomer(
   );
   const customer = result.rows[0];
 
-  if (customer && context.address) {
-    await client.query(
-      `insert into customer_addresses (customer_id, address, is_default)
-       values ($1, $2, true)
-       on conflict do nothing`,
-      [customer.id, context.address],
-    );
-  }
+  if (customer) await addCustomerAddressIfNeeded(client, customer.id, context.address);
 
   return customer;
+}
+
+async function addCustomerAddressIfNeeded(
+  client: PoolClient,
+  customerId: string,
+  address: string | null,
+) {
+  if (!address) return;
+  await client.query(
+    `insert into customer_addresses (customer_id, address, is_default)
+     values ($1, $2, true)
+     on conflict do nothing`,
+    [customerId, address],
+  );
 }
 
 async function recordCustomerOrder(
