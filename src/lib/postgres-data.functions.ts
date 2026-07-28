@@ -266,6 +266,7 @@ const RPC_POLICIES: Record<string, readonly AppPermission[]> = {
   void_order: ["orders:adjust"],
   refund_order: ["orders:adjust"],
   update_order_status: ["orders:manage"],
+  set_order_customer_pending: ["orders:manage"],
   recalculate_customer_stats: ["customers:manage"],
   backfill_customer_records: ["customers:manage", "orders:manage"],
   clear_customer_dues_cutoff: ["customers:manage", "orders:manage"],
@@ -776,6 +777,7 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       from orders o
       join branches b on b.id = o.branch_id
       where o.payment_status in ('pending', 'partial')
+        and o.is_customer_pending = true
         and o.status not in ('cancelled', 'voided', 'refunded')
         and greatest(o.grand_total::numeric - coalesce(o.amount_paid, 0)::numeric, 0) > 0
         and o.created_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
@@ -1331,6 +1333,8 @@ async function runRpc(fn: string, args: Record<string, unknown>, actorId: string
       return refundOrder(args, actorId);
     case "update_order_status":
       return updateOrderStatus(args, actorId, String(args._status ?? ""));
+    case "set_order_customer_pending":
+      return setOrderCustomerPending(args, actorId);
     case "recalculate_customer_stats":
       return recalculateCustomerStats(String(args._customer_id ?? ""));
     case "backfill_customer_records":
@@ -2870,6 +2874,41 @@ async function updateOrderStatus(args: Record<string, unknown>, actorId: string,
     client.release();
   }
   await auditOrder(orderId, actorId, status, nullableText(args._reason));
+  return { data: null };
+}
+
+async function setOrderCustomerPending(args: Record<string, unknown>, actorId: string) {
+  const orderId = String(args._order_id ?? "");
+  const isPending = args._is_pending !== false;
+  const reason = nullableText(args._reason);
+  if (!orderId) throw new Error("Order is required.");
+
+  const result = await pgPool.query(
+    isPending
+      ? `update orders
+         set is_customer_pending = true,
+             updated_at = now()
+         where id = $1
+           and payment_status in ('pending', 'partial')
+           and status not in ('cancelled', 'voided', 'refunded')
+           and greatest(grand_total::numeric - coalesce(amount_paid, 0)::numeric, 0) > 0
+         returning id`
+      : `update orders
+         set is_customer_pending = false,
+             updated_at = now()
+         where id = $1
+         returning id`,
+    [orderId],
+  );
+  if (!result.rowCount) {
+    throw new Error("Only active unpaid orders can be added to customer pending.");
+  }
+  await auditOrder(
+    orderId,
+    actorId,
+    isPending ? "customer_pending_added" : "customer_pending_removed",
+    reason,
+  );
   return { data: null };
 }
 

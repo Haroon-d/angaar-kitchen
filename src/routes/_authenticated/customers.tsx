@@ -115,6 +115,7 @@ type CustomerDueOrderRow = Pick<
   "id" | "status" | "payment_status" | "grand_total" | "amount_paid" | "created_at"
 > & {
   customer_id: string | null;
+  is_customer_pending: boolean | null;
 };
 
 type CustomerDue = {
@@ -240,8 +241,11 @@ function CustomersPage() {
     queryFn: async () => {
       let query = supabase
         .from("orders")
-        .select("id, customer_id, status, payment_status, grand_total, amount_paid, created_at")
+        .select(
+          "id, customer_id, status, payment_status, grand_total, amount_paid, created_at, is_customer_pending",
+        )
         .eq("branch_id", branch!.id)
+        .eq("is_customer_pending", true)
         .in("payment_status", ["pending", "partial"]);
       if (duesCutoffAt) query = query.gte("created_at", duesCutoffAt);
       const { data, error } = await query.order("created_at", { ascending: false }).limit(1000);
@@ -898,9 +902,10 @@ function CustomerSheet({
       let query = supabase
         .from("orders")
         .select(
-          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at",
+          "id, order_no, dining_type, status, payment_status, grand_total, amount_paid, created_at, is_customer_pending",
         )
         .eq("customer_id", customer!.id)
+        .eq("is_customer_pending", true)
         .in("payment_status", ["pending", "partial"]);
       if (duesCutoffAt) query = query.gte("created_at", duesCutoffAt);
       const { data, error } = await query.order("created_at", { ascending: false }).limit(100);
@@ -1984,7 +1989,7 @@ function emptyCustomerForm(): CustomerForm {
 function buildCustomerDues(orders: CustomerDueOrderRow[]) {
   const dues = new Map<string, CustomerDue>();
   for (const order of orders) {
-    if (!order.customer_id || !isCollectibleOrder(order)) continue;
+    if (!order.customer_id || !order.is_customer_pending || !isCollectibleOrder(order)) continue;
     const amount = outstandingAmount(order);
     if (amount <= 0) continue;
     const current = dues.get(order.customer_id) ?? {

@@ -581,6 +581,7 @@ export type Database = {
           grand_total: number;
           id: string;
           idempotency_key: string | null;
+          is_customer_pending: boolean;
           kot_print_count: number;
           last_printed_at: string | null;
           notes: string | null;
@@ -607,6 +608,7 @@ export type Database = {
           grand_total?: number;
           id?: string;
           idempotency_key?: string | null;
+          is_customer_pending?: boolean;
           kot_print_count?: number;
           last_printed_at?: string | null;
           notes?: string | null;
@@ -633,6 +635,7 @@ export type Database = {
           grand_total?: number;
           id?: string;
           idempotency_key?: string | null;
+          is_customer_pending?: boolean;
           kot_print_count?: number;
           last_printed_at?: string | null;
           notes?: string | null;

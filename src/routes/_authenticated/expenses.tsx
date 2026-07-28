@@ -976,10 +976,13 @@ function FinancePositionOverview({
   onRefresh: () => Promise<void>;
 }) {
   const [refreshing, setRefreshing] = useState(false);
-  const importantObligations = obligations
-    .slice()
-    .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))
-    .slice(0, 8);
+  const [recordsLimit, setRecordsLimit] = useState(8);
+  const sortedObligations = useMemo(
+    () => obligations.slice().sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)),
+    [obligations],
+  );
+  const visibleObligations = sortedObligations.slice(0, recordsLimit);
+  const remainingObligations = Math.max(0, sortedObligations.length - visibleObligations.length);
   const totalAvailable = cashPosition + onlinePosition;
   const receivableRecords = obligations.filter(
     (obligation) => obligation.obligation_type === "receivable",
@@ -1128,8 +1131,8 @@ function FinancePositionOverview({
               People to collect from and vendors/suppliers to pay.
             </p>
             <div className="mt-3 space-y-2">
-              {importantObligations.length ? (
-                importantObligations.map((obligation) => (
+              {visibleObligations.length ? (
+                visibleObligations.map((obligation) => (
                   <div
                     key={`${obligation.source_type}-${obligation.id}`}
                     className="rounded-lg border border-border p-3"
@@ -1167,6 +1170,28 @@ function FinancePositionOverview({
                 <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
                   Nothing open right now.
                 </div>
+              )}
+              {remainingObligations > 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setRecordsLimit((limit) => limit + 8)}
+                >
+                  Show more records ({remainingObligations} left)
+                </Button>
+              )}
+              {recordsLimit > 8 && visibleObligations.length === sortedObligations.length && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setRecordsLimit(8)}
+                >
+                  Show less
+                </Button>
               )}
             </div>
           </div>

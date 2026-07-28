@@ -120,6 +120,13 @@
       "when": 1784958000000,
       "tag": "0016_finance_cutover",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785196800000,
+      "tag": "0017_order_customer_pending",
+      "breakpoints": true
     }
   ]
 }

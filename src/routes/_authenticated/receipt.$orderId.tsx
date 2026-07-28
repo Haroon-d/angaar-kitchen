@@ -15,6 +15,7 @@ import {
   CreditCard,
   AlertCircle,
   Ban,
+  HandCoins,
   Pencil,
   Percent,
   Trash2,
@@ -189,6 +190,7 @@ function OrderTicketPage() {
     );
   }
   const order = q.data!.order;
+  const orderFinance = order as OrderRow & { is_customer_pending?: boolean | null };
   const paymentStatus = (order.payment_status ?? "pending") as PaymentStatus;
   const orderStatus = (order.status ?? "open") as OrderStatus;
   const remaining = Math.max(0, Number(order.grand_total) - Number(order.amount_paid));
@@ -208,6 +210,9 @@ function OrderTicketPage() {
   const canDelete = admin && cancelled;
   const canUpdateFulfillment =
     manager && !cancelled && paymentStatus !== "refunded" && orderStatus !== "completed";
+  const isCustomerPending = !!orderFinance.is_customer_pending;
+  const canMarkCustomerPending =
+    manager && !cancelled && remaining > 0 && ["pending", "partial"].includes(paymentStatus);
 
   async function refreshOrderState() {
     await Promise.all([
@@ -221,7 +226,27 @@ function OrderTicketPage() {
       qc.invalidateQueries({ queryKey: ["inventory-reports"] }),
       qc.invalidateQueries({ queryKey: ["inventory-menu-performance"] }),
       qc.invalidateQueries({ queryKey: ["inventory-control-branch"] }),
+      qc.invalidateQueries({ queryKey: ["finance-obligations"] }),
+      qc.invalidateQueries({ queryKey: ["finance-account-positions"] }),
+      qc.invalidateQueries({ queryKey: ["customer-dues"] }),
+      qc.invalidateQueries({ queryKey: ["customer-pending-orders"] }),
     ]);
+  }
+
+  async function setCustomerPending(next: boolean) {
+    try {
+      await runRpc("set_order_customer_pending", {
+        _order_id: orderId,
+        _is_pending: next,
+        _reason: next
+          ? "Marked as customer pending payment from order page"
+          : "Removed from customer pending payment from order page",
+      });
+      toast.success(next ? "Added to customer pending payments" : "Removed from customer pending");
+      await refreshOrderState();
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, "Could not update customer pending payment"));
+    }
   }
 
   async function doPrint(kind: "kot" | "bill" | "receipt") {
@@ -405,6 +430,17 @@ function OrderTicketPage() {
                   void refreshOrderState();
                 }}
               />
+            )}
+            {canMarkCustomerPending && (
+              <Button
+                type="button"
+                variant={isCustomerPending ? "outline" : "secondary"}
+                className="w-full justify-start"
+                onClick={() => void setCustomerPending(!isCustomerPending)}
+              >
+                <HandCoins className="mr-2 h-4 w-4" />
+                {isCustomerPending ? "Remove from customer pending" : "Add to customer pending"}
+              </Button>
             )}
           </div>
 

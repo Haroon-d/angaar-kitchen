@@ -614,6 +614,7 @@ export const orders = pgTable(
     deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }).default("0").notNull(),
     grandTotal: numeric("grand_total", { precision: 12, scale: 2 }).default("0").notNull(),
     amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }).default("0").notNull(),
+    isCustomerPending: boolean("is_customer_pending").default(false).notNull(),
     couponId: uuid("coupon_id").references(() => couponCampaigns.id, { onDelete: "set null" }),
     kotPrintCount: integer("kot_print_count").default(0).notNull(),
     billPrintCount: integer("bill_print_count").default(0).notNull(),
@@ -630,6 +631,12 @@ export const orders = pgTable(
     index("orders_branch_created_idx").on(table.branchId, table.createdAt),
     index("orders_customer_idx").on(table.customerId),
     index("orders_status_idx").on(table.status),
+    index("orders_customer_pending_idx").on(
+      table.branchId,
+      table.isCustomerPending,
+      table.paymentStatus,
+      table.createdAt,
+    ),
   ],
 );
 
