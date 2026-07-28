@@ -52,6 +52,7 @@ const TABLES = new Set([
   "suppliers",
   "operational_expenses",
   "operational_expense_categories",
+  "recurring_operational_expenses",
   "branch_printer_settings",
   "inventory_low_stock",
   "inventory_food_cost_by_menu_item",
@@ -243,6 +244,11 @@ const TABLE_POLICIES: Record<string, DataPolicy> = {
   },
   operational_expense_categories: {
     read: ["expenses:view"],
+    write: ["expenses:manage"],
+    delete: ["expenses:manage"],
+  },
+  recurring_operational_expenses: {
+    read: ["dashboard:view", "expenses:view"],
     write: ["expenses:manage"],
     delete: ["expenses:manage"],
   },

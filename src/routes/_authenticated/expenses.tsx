@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useState } from "react";
 import type { ComponentPropsWithoutRef, FormEvent, ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -199,7 +199,28 @@ type Expense = {
   status: ExpenseStatus;
   amount: number | string;
   notes: string | null;
+  recurring_expense_id?: string | null;
+  recurring_for_date?: string | Date | null;
   operational_expense_categories?: { name: string } | null;
+};
+
+type RecurringFrequency = "daily" | "weekly" | "monthly";
+
+type RecurringExpense = {
+  id: string;
+  branch_id: string;
+  category_id: string | null;
+  title: string;
+  vendor: string | null;
+  amount: number | string;
+  frequency: RecurringFrequency;
+  start_date: string | Date;
+  end_date: string | Date | null;
+  day_of_week: number | null;
+  day_of_month: number | null;
+  is_active: boolean;
+  last_generated_date: string | Date | null;
+  notes: string | null;
 };
 
 type ExpenseFormState = {
@@ -305,6 +326,30 @@ const ExpenseSchema = z
         code: z.ZodIssueCode.custom,
         message: "Select where this paid expense was paid from.",
         path: ["finance_account_id"],
+      });
+    }
+  });
+
+const RecurringExpenseSchema = z
+  .object({
+    title: z.string().trim().min(1).max(120),
+    category_id: z.string().uuid().nullable(),
+    vendor: z.string().trim().max(120).optional().nullable(),
+    amount: z.number().positive(),
+    frequency: z.enum(["daily", "weekly", "monthly"]),
+    start_date: z.string().min(1),
+    end_date: z.string().optional().nullable(),
+    day_of_week: z.number().int().min(0).max(6).nullable(),
+    day_of_month: z.number().int().min(1).max(31).nullable(),
+    is_active: z.boolean(),
+    notes: z.string().trim().max(500).optional().nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.end_date && value.end_date < value.start_date) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "End date cannot be before start date.",
+        path: ["end_date"],
       });
     }
   });
@@ -596,8 +641,11 @@ function ExpensesWorkspace({
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [printingReport, setPrintingReport] = useState(false);
+  const [syncingRecurring, setSyncingRecurring] = useState(false);
+  const [recurringSyncKey, setRecurringSyncKey] = useState("");
 
   const categoriesQ = useExpenseCategories(branchId);
+  const recurringQ = useRecurringExpenses(branchId);
   const accountsQ = useFinanceAccounts(branchId);
   const movementsQ = useFinanceMovements(branchId, startDate, endDate, businessDayStart);
   const closureQ = useFinanceDayClosure(branchId, startDate, startDate === endDate);
@@ -701,7 +749,57 @@ function ExpensesWorkspace({
     .filter((obligation) => obligation.obligation_type === "payable")
     .reduce((sum, obligation) => sum + Number(obligation.amount || 0), 0);
 
+  const syncRecurringExpenses = useCallback(async (showToast: boolean) => {
+    if (!manager || !recurringQ.data?.length) return 0;
+    setSyncingRecurring(true);
+    try {
+      const created = await materializeRecurringExpensesForDate({
+        branchId,
+        businessDate: todayValue,
+        templates: recurringQ.data,
+      });
+      if (created > 0) {
+        await Promise.all([
+          expensesQ.refetch(),
+          dueExpensesQ.refetch(),
+          obligationsQ.refetch(),
+          recurringQ.refetch(),
+        ]);
+        if (showToast) {
+          toast.success(`${created} fixed expense${created === 1 ? "" : "s"} added as due`);
+        }
+      } else if (showToast) {
+        toast.success("Fixed expenses are already up to date");
+      }
+      return created;
+    } catch (error) {
+      if (showToast) {
+        toast.error(error instanceof Error ? error.message : "Could not create fixed expenses");
+      }
+      return 0;
+    } finally {
+      setSyncingRecurring(false);
+    }
+  }, [branchId, dueExpensesQ, expensesQ, manager, obligationsQ, recurringQ, todayValue]);
+
+  useEffect(() => {
+    const activeCount = (recurringQ.data ?? []).filter((template) => template.is_active).length;
+    const key = `${branchId}:${todayValue}:${activeCount}`;
+    if (!manager || recurringQ.isLoading || activeCount === 0 || recurringSyncKey === key) return;
+    setRecurringSyncKey(key);
+    void syncRecurringExpenses(false);
+  }, [
+    branchId,
+    manager,
+    recurringQ.data,
+    recurringQ.isLoading,
+    recurringSyncKey,
+    syncRecurringExpenses,
+    todayValue,
+  ]);
+
   async function refreshFinanceTruth() {
+    await syncRecurringExpenses(false);
     await Promise.all([
       positionsQ.refetch(),
       obligationsQ.refetch(),
@@ -710,6 +808,7 @@ function ExpensesWorkspace({
       closureQ.refetch(),
       expensesQ.refetch(),
       accountsQ.refetch(),
+      recurringQ.refetch(),
     ]);
     toast.success("Finance position refreshed");
   }
@@ -808,6 +907,18 @@ function ExpensesWorkspace({
           symbol={symbol}
           printingReport={printingReport}
           onPrintReport={printFinanceReport}
+        />
+      )}
+
+      {manager && (
+        <RecurringExpensesPanel
+          branchId={branchId}
+          categories={categoriesQ.data ?? []}
+          recurringExpenses={recurringQ.data ?? []}
+          todayValue={todayValue}
+          syncing={syncingRecurring}
+          symbol={symbol}
+          onGenerateToday={() => void syncRecurringExpenses(true)}
         />
       )}
 
@@ -1871,6 +1982,22 @@ function useExpenseCategories(branchId: string) {
   });
 }
 
+function useRecurringExpenses(branchId: string) {
+  return useQuery({
+    queryKey: ["recurring-operational-expenses", branchId],
+    queryFn: async () => {
+      const { data, error } = await db
+        .from("recurring_operational_expenses")
+        .select("*")
+        .eq("branch_id", branchId)
+        .order("is_active", { ascending: false })
+        .order("title", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as RecurringExpense[];
+    },
+  });
+}
+
 function useFinanceAccounts(branchId: string) {
   return useQuery({
     queryKey: ["finance-accounts", branchId],
@@ -1964,7 +2091,7 @@ function useDueExpenseObligations(branchId: string, financeCutoverAt: string | n
       const { data, error } = await db
         .from("operational_expenses")
         .select(
-          "id, branch_id, category_id, expense_date, title, vendor, reference_no, payment_method, finance_account_id, status, amount, notes",
+          "id, branch_id, category_id, expense_date, title, vendor, reference_no, payment_method, finance_account_id, status, amount, notes, recurring_expense_id, recurring_for_date",
         )
         .eq("branch_id", branchId)
         .eq("status", "due")
@@ -2011,6 +2138,109 @@ function expenseToPayableObligation(expense: Expense): FinanceObligation {
     notes: expense.notes,
     expense,
   };
+}
+
+function dateInputDayOfWeek(dateValue: string) {
+  return new Date(`${dateValue}T12:00:00Z`).getUTCDay();
+}
+
+function dateInputDayOfMonth(dateValue: string) {
+  return Number(dateValue.slice(8, 10));
+}
+
+function daysInDateInputMonth(dateValue: string) {
+  const year = Number(dateValue.slice(0, 4));
+  const month = Number(dateValue.slice(5, 7));
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function recurringFrequencyLabel(frequency: RecurringFrequency) {
+  if (frequency === "weekly") return "Weekly";
+  if (frequency === "monthly") return "Monthly";
+  return "Daily";
+}
+
+function recurringExpenseIsDueOn(template: RecurringExpense, businessDate: string) {
+  if (!template.is_active) return false;
+  const startDate = toDateInputValue(template.start_date);
+  const endDate = toDateInputValue(template.end_date);
+  if (startDate && businessDate < startDate) return false;
+  if (endDate && businessDate > endDate) return false;
+
+  if (template.frequency === "weekly") {
+    const expectedDay = template.day_of_week ?? dateInputDayOfWeek(startDate || businessDate);
+    return dateInputDayOfWeek(businessDate) === expectedDay;
+  }
+
+  if (template.frequency === "monthly") {
+    const configuredDay = template.day_of_month ?? dateInputDayOfMonth(startDate || businessDate);
+    const expectedDay = Math.min(configuredDay, daysInDateInputMonth(businessDate));
+    return dateInputDayOfMonth(businessDate) === expectedDay;
+  }
+
+  return true;
+}
+
+async function materializeRecurringExpensesForDate({
+  branchId,
+  businessDate,
+  templates,
+}: {
+  branchId: string;
+  businessDate: string;
+  templates: RecurringExpense[];
+}) {
+  const dueTemplates = templates.filter((template) =>
+    recurringExpenseIsDueOn(template, businessDate),
+  );
+  if (!dueTemplates.length) return 0;
+
+  const { data: existingRows, error: existingError } = await db
+    .from("operational_expenses")
+    .select("recurring_expense_id")
+    .eq("branch_id", branchId)
+    .eq("recurring_for_date", businessDate);
+  if (existingError) throw existingError;
+
+  const existingTemplateIds = new Set(
+    ((existingRows ?? []) as Array<{ recurring_expense_id: string | null }>)
+      .map((row) => row.recurring_expense_id)
+      .filter(Boolean),
+  );
+  const missingTemplates = dueTemplates.filter((template) => !existingTemplateIds.has(template.id));
+  if (!missingTemplates.length) return 0;
+
+  const rows = missingTemplates.map((template) => ({
+    branch_id: branchId,
+    category_id: template.category_id,
+    expense_date: businessDate,
+    title: template.title,
+    vendor: template.vendor,
+    reference_no: `Fixed ${recurringFrequencyLabel(template.frequency).toLowerCase()} - ${businessDate}`,
+    payment_method: null,
+    finance_account_id: null,
+    status: "due",
+    amount: Number(template.amount || 0),
+    notes: template.notes || null,
+    recurring_expense_id: template.id,
+    recurring_for_date: businessDate,
+  }));
+
+  const { error: insertError } = await db.from("operational_expenses").insert(rows);
+  if (insertError) {
+    if (insertError.message.toLowerCase().includes("duplicate")) return 0;
+    throw insertError;
+  }
+
+  await Promise.all(
+    missingTemplates.map((template) =>
+      db
+        .from("recurring_operational_expenses")
+        .update({ last_generated_date: businessDate })
+        .eq("id", template.id),
+    ),
+  );
+  return missingTemplates.length;
 }
 
 function isOnOrAfterFinanceCutover(occurredAt: string, financeCutoverAt: string | null) {
@@ -3248,6 +3478,445 @@ function ExpenseDialog({
             <Button type="submit" disabled={loading}>
               {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save expense
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RecurringExpensesPanel({
+  branchId,
+  categories,
+  recurringExpenses,
+  todayValue,
+  syncing,
+  symbol,
+  onGenerateToday,
+}: {
+  branchId: string;
+  categories: ExpenseCategory[];
+  recurringExpenses: RecurringExpense[];
+  todayValue: string;
+  syncing: boolean;
+  symbol: string;
+  onGenerateToday: () => void;
+}) {
+  const activeCount = recurringExpenses.filter((expense) => expense.is_active).length;
+  const todayDueCount = recurringExpenses.filter((expense) =>
+    recurringExpenseIsDueOn(expense, todayValue),
+  ).length;
+
+  return (
+    <Card className="bg-card/70">
+      <CardHeader className="flex flex-col gap-3 space-y-0 md:flex-row md:items-center md:justify-between">
+        <div>
+          <CardTitle>Fixed expenses</CardTitle>
+          <CardDescription>
+            Rent, salary, subscriptions, and other repeating costs. Active rules create due
+            expenses automatically without duplicates.
+          </CardDescription>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={onGenerateToday} disabled={syncing}>
+            {syncing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="mr-2 h-4 w-4" />
+            )}
+            Create today's dues
+          </Button>
+          <RecurringExpenseDialog
+            branchId={branchId}
+            categories={categories}
+            todayValue={todayValue}
+            symbol={symbol}
+          />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border border-border bg-background/35 p-3">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Active</p>
+            <p className="mt-1 font-mono text-xl font-semibold">{activeCount}</p>
+          </div>
+          <div className="rounded-lg border border-border bg-background/35 p-3">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Due today</p>
+            <p className="mt-1 font-mono text-xl font-semibold">{todayDueCount}</p>
+          </div>
+          <div className="rounded-lg border border-border bg-background/35 p-3">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Today</p>
+            <p className="mt-1 font-mono text-xl font-semibold">{todayValue}</p>
+          </div>
+        </div>
+
+        {recurringExpenses.length ? (
+          <div className="grid gap-2">
+            {recurringExpenses.map((expense) => (
+              <RecurringExpenseRow
+                key={expense.id}
+                branchId={branchId}
+                categories={categories}
+                recurringExpense={expense}
+                todayValue={todayValue}
+                symbol={symbol}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+            Add fixed costs like rent, salary, internet, or generator rent. The system will add them
+            as due expenses on the correct date.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecurringExpenseRow({
+  branchId,
+  categories,
+  recurringExpense,
+  todayValue,
+  symbol,
+}: {
+  branchId: string;
+  categories: ExpenseCategory[];
+  recurringExpense: RecurringExpense;
+  todayValue: string;
+  symbol: string;
+}) {
+  const qc = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const category = categories.find((item) => item.id === recurringExpense.category_id);
+  const dueToday = recurringExpenseIsDueOn(recurringExpense, todayValue);
+
+  async function updateActive(isActive: boolean) {
+    setSaving(true);
+    const { error } = await db
+      .from("recurring_operational_expenses")
+      .update({ is_active: isActive })
+      .eq("id", recurringExpense.id);
+    setSaving(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(isActive ? "Fixed expense activated" : "Fixed expense paused");
+    qc.invalidateQueries({ queryKey: ["recurring-operational-expenses"] });
+  }
+
+  async function remove() {
+    const confirmed = window.confirm(
+      `Delete fixed expense "${recurringExpense.title}"? Existing expense records will stay.`,
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    const { error } = await db
+      .from("recurring_operational_expenses")
+      .delete()
+      .eq("id", recurringExpense.id);
+    setSaving(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Fixed expense deleted");
+    qc.invalidateQueries({ queryKey: ["recurring-operational-expenses"] });
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border bg-background/35 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="truncate font-semibold">{recurringExpense.title}</p>
+          <Badge variant={recurringExpense.is_active ? "default" : "outline"}>
+            {recurringExpense.is_active ? "Active" : "Paused"}
+          </Badge>
+          {dueToday && <Badge variant="outline">Due today</Badge>}
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {recurringFrequencyLabel(recurringExpense.frequency)}
+          {category ? ` - ${category.name}` : ""}
+          {recurringExpense.vendor ? ` - ${recurringExpense.vendor}` : ""}
+        </p>
+        {recurringExpense.last_generated_date && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Last created: {toDateInputValue(recurringExpense.last_generated_date)}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        <p className="mr-2 font-mono text-lg font-semibold">
+          {formatMoney(Number(recurringExpense.amount || 0), symbol)}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void updateActive(!recurringExpense.is_active)}
+          disabled={saving}
+        >
+          {recurringExpense.is_active ? "Pause" : "Activate"}
+        </Button>
+        <RecurringExpenseDialog
+          branchId={branchId}
+          categories={categories}
+          recurringExpense={recurringExpense}
+          todayValue={todayValue}
+          symbol={symbol}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={`Delete ${recurringExpense.title}`}
+          onClick={() => void remove()}
+          disabled={saving}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RecurringExpenseDialog({
+  branchId,
+  categories,
+  recurringExpense,
+  todayValue,
+  symbol,
+}: {
+  branchId: string;
+  categories: ExpenseCategory[];
+  recurringExpense?: RecurringExpense;
+  todayValue: string;
+  symbol: string;
+}) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const defaultStartDate = toDateInputValue(recurringExpense?.start_date) || todayValue;
+  const [f, setF] = useState({
+    title: recurringExpense?.title ?? "",
+    category_id: recurringExpense?.category_id ?? "none",
+    vendor: recurringExpense?.vendor ?? "",
+    amount: String(recurringExpense?.amount ?? "0"),
+    frequency: recurringExpense?.frequency ?? "daily",
+    start_date: defaultStartDate,
+    end_date: toDateInputValue(recurringExpense?.end_date) || "",
+    day_of_week: String(
+      recurringExpense?.day_of_week ?? dateInputDayOfWeek(defaultStartDate || todayValue),
+    ),
+    day_of_month: String(
+      recurringExpense?.day_of_month ?? dateInputDayOfMonth(defaultStartDate || todayValue),
+    ),
+    is_active: recurringExpense?.is_active ?? true,
+    notes: recurringExpense?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    const parsed = RecurringExpenseSchema.safeParse({
+      ...f,
+      category_id: f.category_id === "none" ? null : f.category_id,
+      vendor: f.vendor || null,
+      amount: Number(f.amount),
+      frequency: f.frequency,
+      end_date: f.end_date || null,
+      day_of_week: f.frequency === "weekly" ? Number(f.day_of_week) : null,
+      day_of_month: f.frequency === "monthly" ? Number(f.day_of_month) : null,
+      notes: f.notes || null,
+    });
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0].message);
+      return;
+    }
+
+    setSaving(true);
+    const payload = { ...parsed.data, branch_id: branchId };
+    const { error } = recurringExpense
+      ? await db.from("recurring_operational_expenses").update(parsed.data).eq("id", recurringExpense.id)
+      : await db.from("recurring_operational_expenses").insert(payload);
+    setSaving(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Fixed expense saved");
+    qc.invalidateQueries({ queryKey: ["recurring-operational-expenses"] });
+    setOpen(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        {recurringExpense ? (
+          <Button type="button" variant="ghost" size="icon" aria-label="Edit fixed expense">
+            <Pencil className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button type="button">
+            <Plus className="mr-2 h-4 w-4" />
+            Fixed expense
+          </Button>
+        )}
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{recurringExpense ? "Edit fixed expense" : "New fixed expense"}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={save} className="space-y-4">
+          <div className="rounded-lg border border-border bg-background/35 p-3 text-sm text-muted-foreground">
+            This creates a normal due expense on the selected schedule. Paying it still requires
+            confirmation from Finance.
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Name</Label>
+              <Input
+                value={f.title}
+                onChange={(e) => setF({ ...f, title: e.target.value })}
+                placeholder="Rent, staff salary, internet, generator rent"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Amount ({symbol})</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={f.amount}
+                onChange={(e) => setF({ ...f, amount: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select value={f.category_id} onValueChange={(value) => setF({ ...f, category_id: value })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Uncategorized</SelectItem>
+                  {categories
+                    .filter((category) => category.is_active || category.id === recurringExpense?.category_id)
+                    .map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Paid to / person</Label>
+              <Input
+                value={f.vendor}
+                onChange={(e) => setF({ ...f, vendor: e.target.value })}
+                placeholder="Landlord, staff member, vendor"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Repeat</Label>
+              <Select
+                value={f.frequency}
+                onValueChange={(value: RecurringFrequency) => setF({ ...f, frequency: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Every day</SelectItem>
+                  <SelectItem value="weekly">Every week</SelectItem>
+                  <SelectItem value="monthly">Every month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Start date</Label>
+              <Input
+                type="date"
+                value={f.start_date}
+                onChange={(e) =>
+                  setF({
+                    ...f,
+                    start_date: e.target.value,
+                    day_of_week: String(dateInputDayOfWeek(e.target.value)),
+                    day_of_month: String(dateInputDayOfMonth(e.target.value)),
+                  })
+                }
+              />
+            </div>
+            {f.frequency === "weekly" && (
+              <div className="space-y-1.5">
+                <Label>Weekly day</Label>
+                <Select value={f.day_of_week} onValueChange={(value) => setF({ ...f, day_of_week: value })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Sunday</SelectItem>
+                    <SelectItem value="1">Monday</SelectItem>
+                    <SelectItem value="2">Tuesday</SelectItem>
+                    <SelectItem value="3">Wednesday</SelectItem>
+                    <SelectItem value="4">Thursday</SelectItem>
+                    <SelectItem value="5">Friday</SelectItem>
+                    <SelectItem value="6">Saturday</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {f.frequency === "monthly" && (
+              <div className="space-y-1.5">
+                <Label>Monthly day</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="31"
+                  step="1"
+                  value={f.day_of_month}
+                  onChange={(e) => setF({ ...f, day_of_month: e.target.value })}
+                />
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>End date</Label>
+              <Input
+                type="date"
+                value={f.end_date}
+                onChange={(e) => setF({ ...f, end_date: e.target.value })}
+              />
+            </div>
+            <label className="flex items-center justify-between rounded-lg border border-border p-3">
+              <span>
+                <span className="block text-sm font-medium">Active</span>
+                <span className="block text-xs text-muted-foreground">
+                  Paused rules do not create due expenses.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={f.is_active}
+                onChange={(e) => setF({ ...f, is_active: e.target.checked })}
+                className="h-4 w-4"
+              />
+            </label>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={f.notes}
+                onChange={(e) => setF({ ...f, notes: e.target.value })}
+                placeholder="Optional detail for owner/accounting"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={saving}>
+              {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save fixed expense
             </Button>
           </DialogFooter>
         </form>

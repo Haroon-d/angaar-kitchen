@@ -1207,6 +1207,39 @@ export const operationalExpenseCategories = pgTable(
   ],
 );
 
+export const recurringOperationalExpenses = pgTable(
+  "recurring_operational_expenses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    branchId: uuid("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    categoryId: uuid("category_id").references(() => operationalExpenseCategories.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    vendor: text("vendor"),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    frequency: text("frequency").default("daily").notNull(),
+    startDate: date("start_date").default(sql`current_date`).notNull(),
+    endDate: date("end_date"),
+    dayOfWeek: integer("day_of_week"),
+    dayOfMonth: integer("day_of_month"),
+    isActive: boolean("is_active").default(true).notNull(),
+    lastGeneratedDate: date("last_generated_date"),
+    notes: text("notes"),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index("recurring_operational_expenses_branch_active_idx").on(
+      table.branchId,
+      table.isActive,
+      table.startDate,
+    ),
+  ],
+);
+
 export const operationalExpenses = pgTable(
   "operational_expenses",
   {
@@ -1228,6 +1261,11 @@ export const operationalExpenses = pgTable(
     status: operationalExpenseStatus("status").default("paid").notNull(),
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     notes: text("notes"),
+    recurringExpenseId: uuid("recurring_expense_id").references(
+      () => recurringOperationalExpenses.id,
+      { onDelete: "set null" },
+    ),
+    recurringForDate: date("recurring_for_date"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt,
     updatedAt,
@@ -1240,6 +1278,15 @@ export const operationalExpenses = pgTable(
     ),
     index("operational_expenses_category_idx").on(table.categoryId),
     index("operational_expenses_finance_account_idx").on(table.financeAccountId),
+    uniqueIndex("operational_expenses_recurring_unique").on(
+      table.branchId,
+      table.recurringExpenseId,
+      table.recurringForDate,
+    ),
+    index("operational_expenses_recurring_idx").on(
+      table.recurringExpenseId,
+      table.recurringForDate,
+    ),
   ],
 );
 
