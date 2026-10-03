@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db/client.server";
-import { branches, passwordCredentials, profiles, userRoles, users } from "@/db/schema";
+import { branches, passwordCredentials, profiles, sessions, userRoles, users } from "@/db/schema";
 import { hashPassword, normalizeEmail } from "@/services/auth.service.server";
 import {
   ADMIN_ROLES,
@@ -92,6 +92,43 @@ export async function listRestaurantStaff(actorId: string, restaurantId: string)
     .leftJoin(branches, eq(branches.id, userRoles.branchId))
     .where(eq(userRoles.restaurantId, restaurantId))
     .orderBy(asc(userRoles.createdAt));
+}
+
+export async function resetStaffPassword(input: {
+  actorId: string;
+  restaurantId: string;
+  targetUserId: string;
+  password: string;
+}) {
+  await requireRestaurantRole(input.actorId, input.restaurantId, ADMIN_ROLES);
+
+  const [target] = await db
+    .select({ id: users.id })
+    .from(users)
+    .innerJoin(userRoles, eq(userRoles.userId, users.id))
+    .where(
+      and(
+        eq(users.id, input.targetUserId),
+        eq(users.isActive, true),
+        eq(userRoles.restaurantId, input.restaurantId),
+      ),
+    )
+    .limit(1);
+  if (!target) {
+    throw new Error("Active staff account was not found in this restaurant.");
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(passwordCredentials)
+      .values({ userId: target.id, passwordHash, passwordChangedAt: new Date() })
+      .onConflictDoUpdate({
+        target: passwordCredentials.userId,
+        set: { passwordHash, passwordChangedAt: new Date() },
+      });
+    await tx.delete(sessions).where(eq(sessions.userId, target.id));
+  });
 }
 
 async function assertEmailAvailable(email: string) {

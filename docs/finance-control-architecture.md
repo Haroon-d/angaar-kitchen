@@ -23,6 +23,7 @@ The system should maintain finance accounts such as:
 - Online / Bank / JazzCash / Easypaisa
 - Owner Pocket
 - Backup Fund
+- Profit Reserve: funds moved from an operating account and retained for later business expenses. Managers can add funds; only owners/admins can reveal the balance or record reserve-paid expenses after password verification.
 - Supplier Payables
 - Customer Receivables
 - Staff Advances
@@ -32,6 +33,9 @@ The system should maintain finance accounts such as:
 - Refunds / Discounts / Corrections
 
 Cash and online accounts must not go negative unless the account is explicitly marked as allowed to overdraft. Owner Pocket, Supplier Credit, and Backup Fund are allowed to create payables or liability records.
+
+The Profit Reserve is a protected cash allocation, not a profit calculation. Actual profit still
+depends on complete revenue, expense, purchase, and inventory-cost records.
 
 ## Ledger
 

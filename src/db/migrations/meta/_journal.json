@@ -134,6 +134,13 @@
       "when": 1785283200000,
       "tag": "0018_recurring_expenses",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790985600000,
+      "tag": "0019_finance_profit_reserve",
+      "breakpoints": true
     }
   ]
 }
