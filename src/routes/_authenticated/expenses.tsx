@@ -7,9 +7,12 @@ import {
   Banknote,
   Calendar,
   ClipboardCheck,
+  Eye,
+  EyeOff,
   FileText,
   HandCoins,
   Loader2,
+  LockKeyhole,
   Pencil,
   Plus,
   Printer,
@@ -24,7 +27,13 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { appDb as supabase } from "@/lib/app-db";
+import { appDb as supabase, authHeaders } from "@/lib/app-db";
+import {
+  getFinanceReservePostgres,
+  recordFinanceReserveEntryPostgres,
+  revealFinanceReservePostgres,
+} from "@/lib/finance-reserve.postgres.functions";
+import { isPostgresAuthEnabled } from "@/lib/auth-backend";
 import { useActiveBranch } from "@/hooks/use-active-branch";
 import { isManager, useMyRoles } from "@/hooks/use-auth";
 import {
@@ -40,6 +49,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -75,8 +85,12 @@ type DbQuery<T = unknown> = PromiseLike<DbResult<T>> & {
   order(column: string, options?: { ascending?: boolean }): DbQuery<T>;
 };
 type DbClient = { from(table: string): DbQuery };
+type DbRpcResult<T = unknown> = PromiseLike<DbResult<T>>;
+type DbClientWithRpc = DbClient & {
+  rpc(fn: string, args?: Record<string, unknown>): DbRpcResult;
+};
 
-const db = supabase as unknown as DbClient;
+const db = supabase as unknown as DbClientWithRpc;
 
 type ExpenseCategory = {
   id: string;
@@ -90,6 +104,7 @@ type FinanceAccount = {
   name: string;
   account_type: "counter_cash" | "online" | "bank" | "wallet" | "other";
   is_cash: boolean;
+  is_reserve?: boolean;
   is_active: boolean;
   sort_order: number;
 };
@@ -592,6 +607,11 @@ function ExpensesPage() {
   const { branch, restaurant } = useActiveBranch();
   const { data: roles } = useMyRoles();
   const manager = isManager(roles);
+  const admin = !!branch && !!roles?.some(
+    (role) =>
+      (role.branch_id === null || role.branch_id === branch.id) &&
+      (role.role === "owner" || role.role === "admin"),
+  );
 
   if (!branch || !restaurant) {
     return <div className="p-8 text-center text-muted-foreground">Select a branch first.</div>;
@@ -608,6 +628,7 @@ function ExpensesPage() {
       branchName={branch.name}
       ownerWhatsAppPhone={branch.phone ?? restaurant.phone ?? "0335 7200955"}
       manager={manager}
+      admin={admin}
       symbol={restaurant.currency_symbol}
     />
   );
@@ -621,6 +642,7 @@ function ExpensesWorkspace({
   branchName,
   ownerWhatsAppPhone,
   manager,
+  admin,
   symbol,
 }: {
   branchId: string;
@@ -630,6 +652,7 @@ function ExpensesWorkspace({
   branchName: string;
   ownerWhatsAppPhone: string;
   manager: boolean;
+  admin: boolean;
   symbol: string;
 }) {
   const todayValue = businessDateInputValue(businessDayStart);
@@ -897,6 +920,17 @@ function ExpensesWorkspace({
       )}
 
       {manager && (
+        <FinanceReservePanel
+          key={branchId}
+          branchId={branchId}
+          accounts={accounts}
+          accountBalances={currentAccountBalances}
+          isAdmin={admin}
+          symbol={symbol}
+        />
+      )}
+
+      {manager && (
         <FinanceActionCenter
           branchId={branchId}
           restaurantId={restaurantId}
@@ -1129,6 +1163,396 @@ function ExpensesWorkspace({
         </div>
       </div>
     </div>
+  );
+}
+
+function FinanceReservePanel({
+  branchId,
+  accounts,
+  accountBalances,
+  isAdmin: admin,
+  symbol,
+}: {
+  branchId: string;
+  accounts: FinanceAccount[];
+  accountBalances: FinanceAccountBalanceMap;
+  isAdmin: boolean;
+  symbol: string;
+}) {
+  const queryClient = useQueryClient();
+  const [accountId, setAccountId] = useState("");
+  const [loadingAccount, setLoadingAccount] = useState(true);
+  const [accountError, setAccountError] = useState("");
+  const [accountLoadAttempt, setAccountLoadAttempt] = useState(0);
+  const [shown, setShown] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
+  const [sourceAccountId, setSourceAccountId] = useState("");
+  const [depositAmount, setDepositAmount] = useState("");
+  const [depositNote, setDepositNote] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawNote, setWithdrawNote] = useState("");
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [passwordAction, setPasswordAction] = useState<"reveal" | "withdrawal">("reveal");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const sourceBalance = sourceAccountId ? accountBalances[sourceAccountId] : undefined;
+  const requestedDeposit = Number(depositAmount);
+  const insufficientSourceBalance =
+    sourceBalance !== undefined && requestedDeposit > sourceBalance + 0.001;
+
+  useEffect(() => {
+    if (accounts.some((account) => account.id === sourceAccountId && account.is_active)) return;
+    setSourceAccountId(
+      accounts.find((account) => account.is_active && account.account_type === "counter_cash")?.id ??
+        accounts.find((account) => account.is_active)?.id ??
+        "",
+    );
+  }, [accounts, sourceAccountId]);
+
+  useEffect(() => {
+    if (!isPostgresAuthEnabled()) {
+      setLoadingAccount(false);
+      return;
+    }
+    let active = true;
+    setLoadingAccount(true);
+    setAccountError("");
+    getFinanceReservePostgres({ data: { branchId }, headers: authHeaders() })
+      .then((result) => {
+        if (active) setAccountId(result.accountId);
+      })
+      .catch((error) => {
+        if (active) {
+          setAccountError(error instanceof Error ? error.message : "Could not load reserve account.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingAccount(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountLoadAttempt, branchId]);
+
+  function openPasswordPrompt(action: "reveal" | "withdrawal") {
+    setPasswordAction(action);
+    setPassword("");
+    setPasswordDialogOpen(true);
+  }
+
+  async function recordDeposit(event: FormEvent) {
+    event.preventDefault();
+    const amount = Number(depositAmount);
+    if (!Number.isFinite(amount) || amount <= 0 || !depositNote.trim() || !sourceAccountId) {
+      toast.error("Choose an account and enter a positive amount with a short note.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await recordFinanceReserveEntryPostgres({
+        data: {
+          branchId,
+          direction: "deposit",
+          amount,
+          notes: depositNote.trim(),
+          sourceAccountId,
+        },
+        headers: authHeaders(),
+      });
+      if (shown && balance !== null) setBalance(balance + amount);
+      setDepositAmount("");
+      setDepositNote("");
+      toast.success("Money added to profit reserve.");
+      await refreshFinanceData();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not add money to reserve.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function confirmPassword(event: FormEvent) {
+    event.preventDefault();
+    if (!password) {
+      toast.error("Enter your password to continue.");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (passwordAction === "reveal") {
+        const result = await revealFinanceReservePostgres({
+          data: { branchId, password },
+          headers: authHeaders(),
+        });
+        setBalance(result.balance);
+        setShown(true);
+      } else {
+        const amount = Number(withdrawAmount);
+        if (!Number.isFinite(amount) || amount <= 0 || !withdrawNote.trim()) {
+          toast.error("Enter a positive amount and a short withdrawal note.");
+          return;
+        }
+        const result = await recordFinanceReserveEntryPostgres({
+          data: {
+            branchId,
+            direction: "withdrawal",
+            amount,
+            notes: withdrawNote.trim(),
+            password,
+          },
+          headers: authHeaders(),
+        });
+        if (typeof result.balance === "number") {
+          setBalance(result.balance);
+          setShown(true);
+        }
+        setWithdrawAmount("");
+        setWithdrawNote("");
+        toast.success("Expense recorded and reserve reduced.");
+        await refreshFinanceData();
+      }
+      setPasswordDialogOpen(false);
+      setPassword("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Password verification failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refreshFinanceData() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["finance-movements"] }),
+      queryClient.invalidateQueries({ queryKey: ["finance-account-positions"] }),
+      queryClient.invalidateQueries({ queryKey: ["finance-obligations"] }),
+      queryClient.invalidateQueries({ queryKey: ["operational-expenses"] }),
+    ]);
+  }
+
+  if (!isPostgresAuthEnabled()) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-sm text-muted-foreground">
+          Profit reserve actions are available when PostgreSQL authentication is enabled.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <LockKeyhole className="h-4 w-4 text-muted-foreground" />
+            Profit reserve
+          </CardTitle>
+          <CardDescription>
+            Set aside daily surplus here, then record month-end payments from the reserve.
+          </CardDescription>
+          {accountError && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              Could not load reserve: {accountError}{" "}
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0"
+                onClick={() => setAccountLoadAttempt((attempt) => attempt + 1)}
+              >
+                Retry
+              </Button>
+            </p>
+          )}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={shown ? "Hide reserve balance" : "Show reserve balance"}
+          title={shown ? "Hide balance" : "Show balance"}
+          disabled={loadingAccount || !accountId}
+          onClick={() => {
+            if (shown) {
+              setShown(false);
+              setBalance(null);
+            } else {
+              openPasswordPrompt("reveal");
+            }
+          }}
+        >
+          {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex flex-wrap items-end justify-between gap-3 border-y py-4">
+          <div>
+            <p className="text-xs font-medium uppercase text-muted-foreground">Available reserve</p>
+            <p className="mt-1 font-display text-3xl tabular-nums">
+              {shown && balance !== null ? formatMoney(balance, symbol) : "********"}
+            </p>
+          </div>
+          <Badge variant="outline">{loadingAccount ? "Loading" : "Password protected"}</Badge>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <form onSubmit={recordDeposit} className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Add money</h3>
+              <p className="text-xs text-muted-foreground">Move today&apos;s surplus from an operating account.</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label>From account</Label>
+                <Select value={sourceAccountId} onValueChange={setSourceAccountId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts
+                      .filter((account) => account.is_active)
+                      .map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {sourceAccountId && sourceBalance !== undefined && (
+                  <p className="text-xs text-muted-foreground">
+                    Available: {formatMoney(sourceBalance, symbol)}
+                  </p>
+                )}
+                {sourceAccountId && sourceBalance === 0 && (
+                  <p className="text-xs text-amber-600">
+                    No recorded funds. Update the shift balance or choose another account.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reserve-deposit-amount">Amount ({symbol})</Label>
+                <Input
+                  id="reserve-deposit-amount"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={depositAmount}
+                  onChange={(event) => setDepositAmount(event.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reserve-deposit-note">Reference / note</Label>
+                <Input
+                  id="reserve-deposit-note"
+                  value={depositNote}
+                  onChange={(event) => setDepositNote(event.target.value)}
+                  placeholder="Daily surplus, date, or reference"
+                  maxLength={500}
+                  required
+                />
+              </div>
+            </div>
+              {insufficientSourceBalance && (
+                <p role="alert" className="text-xs text-destructive">
+                  This amount is more than the selected account&apos;s available balance.
+                </p>
+              )}
+              <Button
+                type="submit"
+                disabled={
+                  saving || loadingAccount || !accountId || !sourceAccountId || insufficientSourceBalance
+                }
+              >
+              <Plus className="mr-2 h-4 w-4" />
+              Add to reserve
+            </Button>
+          </form>
+
+          {admin && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                openPasswordPrompt("withdrawal");
+              }}
+              className="space-y-3 border-t pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0"
+            >
+              <div>
+                <h3 className="text-sm font-semibold">Withdraw</h3>
+                <p className="text-xs text-muted-foreground">Owner/admin password is required to record a payment.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[150px_1fr]">
+                <div className="space-y-1.5">
+                  <Label htmlFor="reserve-withdraw-amount">Amount ({symbol})</Label>
+                  <Input
+                    id="reserve-withdraw-amount"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={withdrawAmount}
+                    onChange={(event) => setWithdrawAmount(event.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="reserve-withdraw-note">Expense name</Label>
+                  <Input
+                    id="reserve-withdraw-note"
+                    value={withdrawNote}
+                    onChange={(event) => setWithdrawNote(event.target.value)}
+                    placeholder="Staff salary, rent, or bill"
+                    maxLength={500}
+                    required
+                  />
+                </div>
+              </div>
+              <Button type="submit" variant="outline" disabled={saving || loadingAccount || !accountId}>
+                <LockKeyhole className="mr-2 h-4 w-4" />
+                Verify and withdraw
+              </Button>
+            </form>
+          )}
+        </div>
+      </CardContent>
+
+      <Dialog
+        open={passwordDialogOpen}
+        onOpenChange={(open) => {
+          setPasswordDialogOpen(open);
+          if (!open) setPassword("");
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {passwordAction === "reveal" ? "Show reserve balance" : "Confirm withdrawal"}
+            </DialogTitle>
+            <DialogDescription>
+              Re-enter your account password to continue. The password is verified on the server.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={confirmPassword} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="reserve-password">Password</Label>
+              <Input
+                id="reserve-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </div>
+            <DialogFooter>
+              <Button type="submit" disabled={saving}>
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Continue
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }
 

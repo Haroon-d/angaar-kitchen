@@ -4,6 +4,7 @@ import { requirePostgresAuth } from "@/integrations/postgres/auth-middleware";
 import {
   createStaffUser,
   listRestaurantStaff,
+  resetStaffPassword,
   STAFF_ROLES,
   type StaffRole,
 } from "@/services/staff.service.server";
@@ -19,6 +20,11 @@ const CreateStaffSchema = z.object({
 
 const ListStaffSchema = z.object({
   restaurantId: z.string().uuid(),
+});
+const ResetStaffPasswordSchema = z.object({
+  restaurantId: z.string().uuid(),
+  targetUserId: z.string().uuid(),
+  password: z.string().min(8).max(128),
 });
 
 export const createStaffAccountPostgres = createServerFn({ method: "POST" })
@@ -56,6 +62,20 @@ export const listRestaurantStaffPostgres = createServerFn({ method: "GET" })
       is_active: row.isActive,
       created_at: row.createdAt.toISOString(),
     }));
+  });
+
+export const resetStaffPasswordPostgres = createServerFn({ method: "POST" })
+  .middleware([requirePostgresAuth])
+  .inputValidator((input) => ResetStaffPasswordSchema.parse(input))
+  .handler(async ({ data, context }) => {
+    const auth = requireAuthContext(context);
+    await resetStaffPassword({
+      actorId: auth.userId,
+      restaurantId: data.restaurantId,
+      targetUserId: data.targetUserId,
+      password: data.password,
+    });
+    return { ok: true };
   });
 
 function requireAuthContext(context: { userId: string } | undefined) {

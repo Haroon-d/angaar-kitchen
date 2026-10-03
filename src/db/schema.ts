@@ -210,6 +210,7 @@ export const financeAccounts = pgTable(
     name: text("name").notNull(),
     accountType: financeAccountType("account_type").default("other").notNull(),
     isCash: boolean("is_cash").default(false).notNull(),
+    isReserve: boolean("is_reserve").default(false).notNull(),
     isActive: boolean("is_active").default(true).notNull(),
     sortOrder: integer("sort_order").default(0).notNull(),
     createdAt,

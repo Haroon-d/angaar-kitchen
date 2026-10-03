@@ -397,6 +397,25 @@ export const postgresRpc = createServerFn({ method: "POST" })
   });
 
 async function runSelect(input: z.infer<typeof SelectSchema>) {
+  if (input.table === "finance_accounts") {
+    return selectVirtualRows(
+      "select * from finance_accounts where is_reserve = false",
+      input,
+    );
+  }
+
+  if (input.table === "finance_transfers") {
+    return selectVirtualRows(
+      `select t.* from finance_transfers t
+      where not exists (
+        select 1 from finance_accounts fa
+        where fa.is_reserve = true
+          and (fa.id = t.from_account_id or fa.id = t.to_account_id)
+      )`,
+      input,
+    );
+  }
+
   if (input.table === "inventory_low_stock") {
     return selectVirtualRows(
       `select * from inventory_items where is_active = true and current_qty <= reorder_level`,
@@ -487,6 +506,7 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       join branches b on b.id = e.branch_id
       left join finance_accounts fa on fa.id = e.finance_account_id
       where e.status = 'paid'
+        and coalesce(fa.is_reserve, false) = false
         and ((e.expense_date::timestamp + time '12:00') at time zone 'Asia/Karachi')
           >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
@@ -552,6 +572,7 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       join branches b on b.id = t.branch_id
       left join finance_accounts fa on fa.id = t.from_account_id
       where t.from_account_id is not null
+        and coalesce(fa.is_reserve, false) = false
         and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       union all
       select
@@ -572,6 +593,7 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       join branches b on b.id = t.branch_id
       left join finance_accounts fa on fa.id = t.to_account_id
       where t.to_account_id is not null
+        and coalesce(fa.is_reserve, false) = false
         and t.occurred_at >= coalesce(b.finance_cutover_at, '-infinity'::timestamp with time zone)
       `,
       input,
@@ -760,6 +782,7 @@ async function runSelect(input: z.infer<typeof SelectSchema>) {
       join branch_window bw on bw.branch_id = fa.branch_id
       left join movement_totals mt on mt.finance_account_id = fa.id
       left join account_baselines ab on ab.finance_account_id = fa.id
+      where fa.is_reserve = false
       `,
       input,
     );
@@ -974,12 +997,23 @@ async function selectInventoryMenuPerformance(input: z.infer<typeof SelectSchema
 async function runInsert(input: z.infer<typeof InsertSchema>) {
   const rows = Array.isArray(input.values) ? input.values : [input.values];
   if (!rows.length) return { data: input.returning ? [] : null };
-  if (input.table === "operational_expenses") {
+  if (input.table === "finance_accounts" && rows.some((row) => row.is_reserve === true)) {
+    throw new AuthorizationError("Reserve accounts can only be managed by the finance reserve actions.");
+  }
+  if (
+    input.table === "operational_expenses" ||
+    rows.some((row) => hasFinanceAccountReference(row))
+  ) {
     const client = await pgPool.connect();
     try {
       await client.query("begin");
       for (const row of rows) {
-        await assertExpensePaymentSourceCanCover(client, row, 0);
+        await assertNoReserveFinanceAccount(client, row);
+      }
+      if (input.table === "operational_expenses") {
+        for (const row of rows) {
+          await assertExpensePaymentSourceCanCover(client, row, 0);
+        }
       }
       const result = await insertRows(client, input.table, rows, input.returning);
       await client.query("commit");
@@ -1018,20 +1052,50 @@ async function insertRows(
 
 async function runUpdate(input: z.infer<typeof UpdateSchema>) {
   if (!input.filters.length) throw new Error("Refusing to update without a filter.");
-  if (input.table === "operational_expenses") {
+  if (input.table === "finance_transfers") {
+    throw new AuthorizationError("Finance transfers are append-only; record a correction instead.");
+  }
+  if (input.table === "finance_accounts" && "is_reserve" in input.values) {
+    throw new AuthorizationError("Reserve accounts can only be managed by finance reserve actions.");
+  }
+  if (input.table === "finance_accounts") {
+    const client = await pgPool.connect();
+    try {
+      await client.query("begin");
+      const targets = await selectRowsForUpdate(client, input.table, input.filters);
+      if (targets.some((target) => target.is_reserve === true)) {
+        throw new AuthorizationError("Reserve accounts can only be managed by finance reserve actions.");
+      }
+      const result = await updateRows(client, input.table, input.values, input.filters, input.returning);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  if (
+    input.table === "operational_expenses" ||
+    ["payments", "inventory_purchases", "supplier_ledger_entries"].includes(input.table)
+  ) {
     const client = await pgPool.connect();
     try {
       await client.query("begin");
       const targets = await selectRowsForUpdate(client, input.table, input.filters);
       for (const target of targets) {
         const next = { ...target, ...input.values };
-        const existingCredit =
-          target.status === "paid" &&
-          target.finance_account_id &&
-          target.finance_account_id === next.finance_account_id
-            ? Number(target.amount || 0)
-            : 0;
-        await assertExpensePaymentSourceCanCover(client, next, existingCredit);
+        await assertNoReserveFinanceAccount(client, next);
+        if (input.table === "operational_expenses") {
+          const existingCredit =
+            target.status === "paid" &&
+            target.finance_account_id &&
+            target.finance_account_id === next.finance_account_id
+              ? Number(target.amount || 0)
+              : 0;
+          await assertExpensePaymentSourceCanCover(client, next, existingCredit);
+        }
       }
       const result = await updateRows(client, input.table, input.values, input.filters, input.returning);
       await client.query("commit");
@@ -1071,6 +1135,18 @@ async function updateRows(
 
 async function runDelete(input: z.infer<typeof DeleteSchema>) {
   if (!input.filters.length) throw new Error("Refusing to delete without a filter.");
+  if (input.table === "finance_transfers") {
+    throw new AuthorizationError("Finance transfers are append-only; record a correction instead.");
+  }
+  if (input.table === "finance_accounts") {
+    const params: unknown[] = [];
+    const { where, params: filterParams } = buildWhere(input.filters, params.length);
+    params.push(...filterParams);
+    const result = await pgPool.query(`select is_reserve from finance_accounts${where}`, params);
+    if (result.rows.some((row) => row.is_reserve)) {
+      throw new AuthorizationError("Reserve accounts cannot be deleted.");
+    }
+  }
   const params: unknown[] = [];
   const { where, params: filterParams } = buildWhere(input.filters, params.length);
   params.push(...filterParams);
@@ -1081,6 +1157,35 @@ async function runDelete(input: z.infer<typeof DeleteSchema>) {
 async function runUpsert(input: z.infer<typeof UpsertSchema>) {
   const rows = Array.isArray(input.values) ? input.values : [input.values];
   if (!rows.length) return { data: input.returning ? [] : null };
+  if (input.table === "finance_transfers") {
+    throw new AuthorizationError("Finance transfers are append-only; use a finance action instead.");
+  }
+  if (input.table === "finance_accounts") {
+    throw new AuthorizationError("Finance accounts cannot be upserted through the generic data API.");
+  }
+  if (rows.some((row) => hasFinanceAccountReference(row))) {
+    const client = await pgPool.connect();
+    try {
+      await client.query("begin");
+      for (const row of rows) await assertNoReserveFinanceAccount(client, row);
+      const result = await runUpsertRows(client, input);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  return runUpsertRows(pgPool, input);
+}
+
+async function runUpsertRows(
+  client: Pick<PoolClient, "query">,
+  input: z.infer<typeof UpsertSchema>,
+) {
+  const rows = Array.isArray(input.values) ? input.values : [input.values];
   const columns = Object.keys(rows[0]);
   const params: unknown[] = [];
   const valuesSql = rows
@@ -1097,7 +1202,7 @@ async function runUpsert(input: z.infer<typeof UpsertSchema>) {
     .map((column) => `${ident(column)} = excluded.${ident(column)}`)
     .join(", ");
   const sql = `insert into ${ident(input.table)} (${columns.map(ident).join(", ")}) values ${valuesSql} on conflict (${input.conflictColumns.map(ident).join(", ")}) do update set ${setSql}${input.returning ? " returning *" : ""}`;
-  const result = await pgPool.query(sql, params);
+  const result = await client.query(sql, params);
   return { data: input.returning ? result.rows : null };
 }
 
@@ -1111,6 +1216,37 @@ async function selectRowsForUpdate(
   params.push(...filterParams);
   const result = await client.query(`select * from ${ident(table)}${where} for update`, params);
   return result.rows as Record<string, unknown>[];
+}
+
+const FINANCE_ACCOUNT_REFERENCE_FIELDS = [
+  "finance_account_id",
+  "from_account_id",
+  "to_account_id",
+] as const;
+
+function hasFinanceAccountReference(row: Record<string, unknown>) {
+  return FINANCE_ACCOUNT_REFERENCE_FIELDS.some((field) => row[field] != null);
+}
+
+async function assertNoReserveFinanceAccount(
+  client: Pick<PoolClient, "query">,
+  row: Record<string, unknown>,
+) {
+  const accountIds = FINANCE_ACCOUNT_REFERENCE_FIELDS
+    .map((field) => row[field])
+    .filter((value): value is string => typeof value === "string");
+  if (!accountIds.length) return;
+
+  const result = await client.query<{ exists: boolean }>(
+    `select exists (
+      select 1 from finance_accounts
+      where is_reserve = true and id = any($1::uuid[])
+    ) as exists`,
+    [accountIds],
+  );
+  if (result.rows[0]?.exists) {
+    throw new AuthorizationError("Use the protected reserve actions for this finance account.");
+  }
 }
 
 async function assertExpensePaymentSourceCanCover(
@@ -1148,11 +1284,15 @@ function financeAccountRequiresBalance(accountType: unknown) {
   return ["counter_cash", "online", "bank", "wallet"].includes(String(accountType ?? ""));
 }
 
-async function getLiveFinanceAccountBalance(
+export async function getLiveFinanceAccountBalance(
   client: PoolClient,
   branchId: string,
   accountId: string,
 ) {
+  await client.query(
+    "select id from finance_accounts where id = $1 and branch_id = $2 for update",
+    [accountId, branchId],
+  );
   const result = await client.query(
     `
     with branch_day as (

@@ -264,7 +264,7 @@ async function withResult<T>(fn: () => Promise<T>): Promise<QueryResult<T>> {
   }
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   const token =
     typeof window !== "undefined"
       ? window.localStorage.getItem(POSTGRES_SESSION_STORAGE_KEY)
